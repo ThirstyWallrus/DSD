@@ -18,7 +18,7 @@ public extension Color {
     static func mgmtPercentColor(_ percent: Double) -> Color {
         let p = percent
         switch p {
-        case 95...100:
+        case 95...101:
             return .mgmtGold
         case 90..<95:
             return .mgmtSilverBlue

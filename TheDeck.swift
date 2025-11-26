@@ -279,7 +279,7 @@ struct DeckCard: View {
         ("OPF", { $0.totalOffensivePointsFor }),
         ("OPPW", { $0.offensivePPW }),
         ("DPF", { $0.totalDefensivePointsFor }),
-        ("DPPW", { $0.stats.defensivePPW }), // <- If this was incorrect previously, left unchanged per "no other logic" request
+        ("DPPW", { $0.defensivePPW }), // FIXED: AggregatedOwnerStats is already the stats object; use defensivePPW directly
         ("Mgmt%", { $0.managementPercent }),
         ("OMgmt%", { $0.offensiveManagementPercent }),
         ("DMgmt%", { $0.defensiveManagementPercent })
