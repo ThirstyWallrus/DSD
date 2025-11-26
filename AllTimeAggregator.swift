@@ -618,8 +618,7 @@ struct AllTimeAggregator {
         var totalPF = 0.0, totalMaxPF = 0.0
         var totalOffPF = 0.0, totalMaxOffPF = 0.0
         var totalDefPF = 0.0, totalMaxDefPF = 0.0
-        var wins = 0, losses = 0, ties = 0
-        var weeksPlayed = 0
+        var wins = 0, losses = 0, weeksPlayed = 0
 
         for matchup in allPlayoffMatchups {
             // Try to find season that contains this pairing id (matchupId)
