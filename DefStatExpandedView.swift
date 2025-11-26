@@ -2,6 +2,9 @@
 //  DefStatExpandedView.swift
 //  DynastyStatDrop
 //
+//  Updated to use the centralized Color.mgmtPercentColor(_:) for consistent management-percent coloring.
+//  Removed local mgmtColor(for:) helper and replaced its usages with Color.mgmtPercentColor(...).
+//
 
 import SwiftUI
 
@@ -298,7 +301,7 @@ struct DefStatExpandedView: View {
 
     // Helper: check if a PlayerWeeklyScore's player matches the target normalized position
     private func matchesNormalizedPosition(_ score: PlayerWeeklyScore, pos: String) -> Bool {
-        guard let team = team else { return false }
+        guard let team else { return false }
         if let player = team.roster.first(where: { $0.id == score.player_id }) {
             return PositionNormalizer.normalize(player.position) == PositionNormalizer.normalize(pos)
         }
@@ -635,7 +638,7 @@ struct DefStatExpandedView: View {
                 ratio: max(0.0, min(1.0, managementPercent / 100.0)),
                 mgmtPercent: managementPercent,
                 delta: managementDelta,
-                mgmtColor: mgmtColor(for: managementPercent)
+                mgmtColor: Color.mgmtPercentColor(managementPercent)
             )
             .padding(.vertical, 2)
 
@@ -1073,17 +1076,17 @@ struct DefStatExpandedView: View {
     }
 
     // Helper to determine mgmt color (attempt to match existing MgmtColor semantics)
-    private func mgmtColor(for pct: Double) -> Color {
-        // Reasonable mapping: >75 green, 60-75 yellow, <60 red
-        switch pct {
-        case let x where x >= 75: return .green
-        case let x where x >= 60: return .yellow
-        default: return .red
-        }
-    }
+    // Note: replaced by centralized Color.mgmtPercentColor(...) usage above.
+    // private func mgmtColor(for pct: Double) -> Color {
+    //     switch pct {
+    //     case let x where x >= 75: return .green
+    //     case let x where x >= 60: return .yellow
+    //     default: return .red
+    //     }
+    // }
 
     // Helper utilities reused
-    private func inferredLineupConfig(from roster: [Player]) -> [String: Int] {
+    private func inferredLineupConfig(from roster: [Player]) -> [String:Int] {
         var counts: [String:Int] = [:]
         for p in roster {
             // Normalize position for starter slot assignment
