@@ -79,7 +79,16 @@ struct HeadToHeadStatsSection: View {
                     .foregroundColor(.cyan)
                     .bold()
                 statRow("Record vs Opponent", summary.record)
-                statRow("Mgmt % vs Opponent", String(format: "%.2f%%", summary.avgMgmtFor))
+                // Use centralized mgmt color for the mgmt percent value
+                HStack {
+                    Text("Mgmt % vs Opponent")
+                        .foregroundColor(.white.opacity(0.8))
+                    Spacer()
+                    Text(String(format: "%.2f%%", summary.avgMgmtFor))
+                        .foregroundColor(Color.mgmtPercentColor(summary.avgMgmtFor))
+                        .bold()
+                }
+                .font(.caption)
                 statRow("Avg Points/Game vs Opponent", String(format: "%.1f", summary.avgPF))
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -90,7 +99,16 @@ struct HeadToHeadStatsSection: View {
                     .bold()
                 // Use reverse format for opponent's record
                 statRow("Record vs You", HeadToHeadStatsSection.reverseRecordString(summary.record))
-                statRow("Mgmt % vs You", String(format: "%.2f%%", summary.avgMgmtAgainst))
+                // Use centralized mgmt color for opponent mgmt percent display
+                HStack {
+                    Text("Mgmt % vs You")
+                        .foregroundColor(.white.opacity(0.8))
+                    Spacer()
+                    Text(String(format: "%.2f%%", summary.avgMgmtAgainst))
+                        .foregroundColor(Color.mgmtPercentColor(summary.avgMgmtAgainst))
+                        .bold()
+                }
+                .font(.caption)
                 statRow("Avg Points/Game vs You", String(format: "%.1f", summary.avgPA))
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -129,10 +147,10 @@ struct HeadToHeadStatsSection: View {
                                     HStack {
                                         Text(String(format: "Mgmt: %.1f%%", match.userMgmtPct))
                                             .font(.caption2)
-                                            .foregroundColor(.cyan)
+                                            .foregroundColor(Color.mgmtPercentColor(match.userMgmtPct))
                                         Text(String(format: "Opp: %.1f%%", match.oppMgmtPct))
                                             .font(.caption2)
-                                            .foregroundColor(.orange)
+                                            .foregroundColor(Color.mgmtPercentColor(match.oppMgmtPct))
                                     }
                                 }
                             }

@@ -8,7 +8,7 @@
 
 import SwiftUI
 
-extension Color {
+public extension Color {
     static let mgmtSilverBlue = Color(red: 162/255, green: 209/255, blue: 241/255)
     static let mgmtGold = Color(red: 212/255, green: 175/255, blue: 55/255)
     static let mgmtLime = Color(red: 50/255, green: 205/255, blue: 50/255)
