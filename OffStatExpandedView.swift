@@ -3,21 +3,10 @@
 //  DynastyStatDrop
 //
 //  Uses authoritative matchup.players_points when available; sums starters only when starters present.
-//  Falls back to deduped roster.weeklyScores when necessary.
 //
-//  Updated: Top title + 4 stat bubbles (Grade, OPF, OMPF, OPPW) to match TeamStatExpandedView style.
-//  PATCH: Use offense-only grading routine (gradeTeamsOffense) from TeamGradeComponents and ensure
-//  each TeamGradeComponents instance is populated with offensive values as required.
-//  PATCH: Use SleeperLeagueManager player cache to include started-then-dropped players when computing weekly totals.
-//  NEW: Add ManagementPill to lineupEfficiency to mirror TeamStatExpandedView but show offense-only Mgmt%.
-//  FIX: Avoid counting full players_points (bench + starters) when matchup.players_points exists but starters list is missing.
-//       Instead attempt to reconstruct likely starters greedily from players_points + eligible slot logic (greedy) first,
-//       then from roster.weeklyScores, and only fall back to returning players_points when reconstruction fails.
-//
-//  NOTE: This file replaces the previous approach which sometimes returned the entire players_points map
-//  (bench + starters) when starters were not present in the matchup entry. That over-counted OPF in many
-//  leagues. The new logic reconstructs starters greedily from players_points (works for started-then-dropped players),
-//  using roster/league caches to determine positions. This should correct the OPF mismatch you reported.
+//  Updated to use the centralized Color.mgmtPercentColor(_:) to ensure consistent
+//  management-percent color mapping across the app.
+//  (Removed local mgmtColor(for:) helper - replaced by Color.mgmtPercentColor)
 //
 
 import SwiftUI
@@ -61,7 +50,7 @@ struct OffStatExpandedView: View {
     }
 
     // MARK: - Grade computation (use TeamGradeComponents & gradeTeams for consistency)
-    // Build TeamGradeComponents for teams in current league/season (or use all-time owner aggregates when available).
+    // Build TeamGradeComponents for teams in current league/season (or use all-time aggregate when available).
     // PATCH: Use offense-only composite scoring. Each TeamGradeComponents instance will have pointsFor set to
     // the team's OFFENSIVE Points For and ppw set to offensivePPW to satisfy gradeTeamsOffense requirements.
     private var computedGrade: (grade: String, composite: Double)? {
@@ -515,13 +504,13 @@ struct OffStatExpandedView: View {
     }
     private func allowedPositions(for slot: String) -> Set<String> {
         switch slot.uppercased() {
-        case "QB","RB","WR","TE","K","DL","LB","DB": return [slot.uppercased()]
-        case "FLEX","WRRB","WRRBTE","WRRB_TE","RBWR","RBWRTE": return ["RB","WR","TE"]
-        case "SUPER_FLEX","QBRBWRTE","QBRBWR","QBSF","SFLX": return ["QB","RB","WR","TE"]
-        case "IDP": return ["DL","LB","DB"]
+        case "QB","RB","WR","TE","K","DL","LB","DB": return Set([PositionNormalizer.normalize(slot)])
+        case "FLEX","WRRB","WRRBTE","WRRB_TE","RBWR","RBWRTE": return Set(["RB","WR","TE"].map(PositionNormalizer.normalize))
+        case "SUPER_FLEX","QBRBWRTE","QBRBWR","QBSF","SFLX": return Set(["QB","RB","WR","TE"].map(PositionNormalizer.normalize))
+        case "IDP": return Set(["DL","LB","DB"])
         default:
-            if slot.uppercased().contains("IDP") { return ["DL","LB","DB"] }
-            return [slot.uppercased()]
+            if slot.uppercased().contains("IDP") { return Set(["DL","LB","DB"]) }
+            return Set([PositionNormalizer.normalize(slot)])
         }
     }
     private func isEligible(basePos: String, fantasy: [String], allowed: Set<String>) -> Bool {
@@ -837,7 +826,7 @@ struct OffStatExpandedView: View {
                 ratio: max(0.0, min(1.0, managementPercent / 100.0)),
                 mgmtPercent: managementPercent,
                 delta: managementDelta,
-                mgmtColor: mgmtColor(for: managementPercent)
+                mgmtColor: Color.mgmtPercentColor(managementPercent)
             )
             .padding(.vertical, 2)
 
@@ -1189,16 +1178,6 @@ struct OffStatExpandedView: View {
         private var deltaText: String {
             if delta == 0 { return "0.00 pp" }
             return String(format: "%+.2f pp", delta)
-        }
-    }
-
-    // Helper to determine mgmt color (attempt to match existing MgmtColor semantics)
-    private func mgmtColor(for pct: Double) -> Color {
-        // Reasonable mapping: >75 green, 60-75 yellow, <60 red
-        switch pct {
-        case let x where x >= 75: return .green
-        case let x where x >= 60: return .yellow
-        default: return .red
         }
     }
 }
