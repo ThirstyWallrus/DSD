@@ -98,6 +98,10 @@ struct LeagueData: Identifiable, Codable, Equatable {
         guard let latest = seasons.sorted(by: { $0.id < $1.id }).last else { return [] }
         return latest.teams.map { $0.ownerId }
     }
+
+    // NEW: Computed championships container (safe/preserved, doesn't overwrite original TeamStanding.championships)
+    // Key: ownerId -> count
+    var computedChampionships: [String: Int]? = nil
 }
 
 struct SeasonData: Identifiable, Codable, Equatable {
@@ -108,6 +112,10 @@ struct SeasonData: Identifiable, Codable, Equatable {
     let playoffTeamsCount: Int?
     let matchups: [SleeperMatchup]?
     let matchupsByWeek: [Int: [MatchupEntry]]?
+
+    // NEW: Computed champion owner id for this season (string ownerId) — populated by recompute routine.
+    // Keeps original TeamStanding.championships untouched.
+    var computedChampionOwnerId: String? = nil
 }
 
 // MARK: - Player Weekly Score

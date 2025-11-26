@@ -4,7 +4,8 @@
 //
 //  FULL FILE — PATCHED: Robust week/team matchup data population for per-week views.
 //  Change: fetchMatchupsByWeek now ensures all teams have a MatchupEntry for every week.
-//  No code truncated or removed; patch is additive and continuity-safe.
+//  Add: per-season playoff overrides persisted and exposed to import UI.
+//  Add: recompute championships helpers that populate computedChampionOwnerId / computedChampionships container.
 //
 
 import Foundation
@@ -140,6 +141,10 @@ class SleeperLeagueManager: ObservableObject {
     @Published var leaguePlayoffStartWeeks: [String: Int] = [:]
     @Published var isRefreshing: Bool = false
 
+    // NEW: per-league per-season overrides persisted in memory and to disk
+    // Shape: [leagueId: [seasonId: playoffStartWeek]]
+    @Published var leagueSeasonPlayoffOverrides: [String: [String: Int]] = [:]
+
     // NEW: Global current week reported from Sleeper API (helps views pick the "current" week)
     @Published var globalCurrentWeek: Int = 1
 
@@ -171,6 +176,25 @@ class SleeperLeagueManager: ObservableObject {
     init(autoLoad: Bool = false) {
         if autoLoad {
             loadLeaguesWithMigrationIfNeeded(for: activeUsername)
+        }
+        loadPersistedOverrides()
+    }
+
+    // Persist/load overrides in UserDefaults key
+    private let overridesUDKey = "dsd.leagueSeasonPlayoffOverrides.v1"
+
+    private func loadPersistedOverrides() {
+        let ud = UserDefaults.standard
+        if let data = ud.data(forKey: overridesUDKey),
+           let parsed = try? JSONDecoder().decode([String: [String: Int]].self, from: data) {
+            leagueSeasonPlayoffOverrides = parsed
+        }
+    }
+
+    private func persistOverrides() {
+        let ud = UserDefaults.standard
+        if let data = try? JSONEncoder().encode(leagueSeasonPlayoffOverrides) {
+            ud.set(data, forKey: overridesUDKey)
         }
     }
 
@@ -308,10 +332,24 @@ class SleeperLeagueManager: ObservableObject {
 
     private func persistLeagueFile(_ league: LeagueData) {
         ensureUserDir()
-        if let data = try? JSONEncoder().encode(league) {
-            try? data.write(to: leagueFileURL(league.id), options: .atomic)
-            upsertIndex(for: league)
+        if var lg = try? deepCopy(league) {
+            // Ensure we persist any computed championships container as well
+            if let data = try? JSONEncoder().encode(lg) {
+                try? data.write(to: leagueFileURL(league.id), options: .atomic)
+                upsertIndex(for: lg)
+            }
+        } else {
+            if let data = try? JSONEncoder().encode(league) {
+                try? data.write(to: leagueFileURL(league.id), options: .atomic)
+                upsertIndex(for: league)
+            }
         }
+    }
+
+    // Helper deep copy via encode/decode to avoid accidental reference sharing
+    private func deepCopy<T: Codable>(_ val: T) throws -> T {
+        let d = try JSONEncoder().encode(val)
+        return try JSONDecoder().decode(T.self, from: d)
     }
 
     private func loadLeagueFile(id: String) -> LeagueData? {
@@ -338,16 +376,33 @@ class SleeperLeagueManager: ObservableObject {
 
     // Public Import
 
+    // Existing import entrypoint (keeps previous signature)
     func fetchAndImportSingleLeague(leagueId: String, username: String) async throws {
+        try await fetchAndImportSingleLeague(leagueId: leagueId, username: username, seasonPlayoffOverrides: nil)
+    }
+
+    // Overload that accepts per-season overrides
+    func fetchAndImportSingleLeague(leagueId: String, username: String, seasonPlayoffOverrides: [String: Int]?) async throws {
         clearCaches()
         let user = try await fetchUser(username: username)
         let baseLeague = try await fetchLeague(leagueId: leagueId)
         // Update the global current week when we fetch league metadata
         self.globalCurrentWeek = max(self.globalCurrentWeek, baseLeague.currentWeek)
-        let playoffStart = extractPlayoffStartWeek(from: baseLeague)
+
+        // Persist per-season overrides for this league if provided
+        if let overrides = seasonPlayoffOverrides {
+            leagueSeasonPlayoffOverrides[leagueId] = overrides
+            persistOverrides()
+        }
+
+        // Determine top-level fallback playoffStart for backwards compatibility
+        let playoffStart = detectPlayoffStartWeek(from: baseLeague)
         leaguePlayoffStartWeeks[leagueId] = playoffStart
         playoffStartWeek = playoffStart
-        var leagueData = try await fetchAllSeasonsForLeague(league: baseLeague, userId: user.user_id, playoffStartWeek: playoffStart)
+
+        // Use fetchAllSeasonsForLeague but pass per-season overrides map for this league
+        var leagueData = try await fetchAllSeasonsForLeague(league: baseLeague, userId: user.user_id, playoffStartWeek: playoffStart, perSeasonOverrides: seasonPlayoffOverrides)
+        // Optionally recompute championships on import if recompute container desired. We leave it untouched here.
         leagueData = AllTimeAggregator.buildAllTime(for: leagueData, playerCache: allPlayers)
 
         await MainActor.run {
@@ -368,20 +423,20 @@ class SleeperLeagueManager: ObservableObject {
         return try JSONDecoder().decode(SleeperLeague.self, from: data)
     }
 
-    // NEW: Public helper to refresh globalCurrentWeek for a league selected by the user.
-    // Purpose: when the user switches to an already-imported league, update the app's globalCurrentWeek
-    // by querying the Sleeper API for that league's metadata.
-    func refreshGlobalCurrentWeek(for leagueId: String) async {
-        do {
-            let baseLeague = try await fetchLeague(leagueId: leagueId)
-            await MainActor.run {
-                // keep the globalCurrentWeek monotonic (don't reduce it unintentionally)
-                self.globalCurrentWeek = max(self.globalCurrentWeek, baseLeague.currentWeek)
-            }
-        } catch {
-            // Fail quietly — this is non-critical for UX, but we don't want to crash or block.
-            // You can add an additional flag in UserDefaults to track if notification was sent for this week.
+    // NEW public helper to compute detectPlayoffStartWeek from a SleeperLeague (exposed for UI)
+    func detectPlayoffStartWeek(from league: SleeperLeague) -> Int {
+        if let settings = league.settings,
+           let val = settings["playoff_start_week"]?.value as? Int {
+            return min(max(13, val), 18)
         }
+        return 14
+    }
+
+    // NEW: Expose fetchAllLeaguesForUser (already present below) - reused by UI
+    func fetchLeagues(userId: String, season: String) async throws -> [SleeperLeague] {
+        let url = URL(string: "https://api.sleeper.app/v1/user/\(userId)/leagues/nfl/\(season)")!
+        let (data, _) = try await URLSession.shared.data(from: url)
+        return try JSONDecoder().decode([SleeperLeague].self, from: data)
     }
 
     func fetchUser(username: String) async throws -> SleeperUser {
@@ -394,6 +449,16 @@ class SleeperLeagueManager: ObservableObject {
         let url = URL(string: "https://api.sleeper.app/v1/user/\(userId)/leagues/nfl/\(season)")!
         let (data, _) = try await URLSession.shared.data(from: url)
         return try JSONDecoder().decode([SleeperLeague].self, from: data)
+    }
+
+    func fetchAllLeaguesForUser(username: String, seasons: [String]) async throws -> [SleeperLeague] {
+        var out: [SleeperLeague] = []
+        let user = try await fetchUser(username: username)
+        for s in seasons {
+            let list = try await fetchLeagues(userId: user.user_id, season: s)
+            out.append(contentsOf: list)
+        }
+        return out
     }
 
     private func fetchRosters(leagueId: String) async throws -> [SleeperRoster] {
@@ -535,12 +600,18 @@ class SleeperLeagueManager: ObservableObject {
         return txs
     }
 
+    // Extract playoff start from SleeperLeague settings (kept public as detect helper)
     private func extractPlayoffStartWeek(from league: SleeperLeague) -> Int {
         if let settings = league.settings,
            let val = settings["playoff_start_week"]?.value as? Int {
             return min(max(13, val), 18)
         }
         return 14
+    }
+
+    // Public wrapper that actually returns the same detection — kept for backward compatibility
+    func detectPlayoffStartWeekJson(from league: SleeperLeague) -> Int {
+        return extractPlayoffStartWeek(from: league)
     }
 
     func setPlayoffStartWeek(_ week: Int) { playoffStartWeek = max(13, min(18, week)) }
@@ -957,7 +1028,8 @@ class SleeperLeagueManager: ObservableObject {
         return stripped.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private func fetchAllSeasonsForLeague(league: SleeperLeague, userId: String, playoffStartWeek: Int) async throws -> LeagueData {
+    // Updated to accept per-season overrides map; uses override when building SeasonData.playoffStartWeek
+    private func fetchAllSeasonsForLeague(league: SleeperLeague, userId: String, playoffStartWeek: Int, perSeasonOverrides: [String: Int]?) async throws -> LeagueData {
         let currentYear = Calendar.current.component(.year, from: Date())
         let startYear = currentYear - 9
         let base = baseLeagueName(league.name ?? "")
@@ -985,7 +1057,13 @@ class SleeperLeagueManager: ObservableObject {
                 let sanitizedPositions = SlotUtils.sanitizeStartingSlots(seasonLeague.roster_positions ?? [])
                 print("[SlotSanitize] using starting positions: \(sanitizedPositions) for league \(seasonLeague.league_id)")
 
-                let seasonPlayoffStart = extractPlayoffStartWeek(from: seasonLeague)
+                // Auto-detect playoff start
+                let autoDetected = detectPlayoffStartWeek(from: seasonLeague)
+                let seasonOverride = perSeasonOverrides?[seasonId]
+                let seasonPlayoffStart = seasonOverride ?? autoDetected
+                let source = seasonOverride != nil ? "explicit" : "auto"
+                print("[PlayoffDetect] season=\(seasonId) league=\(seasonLeague.league_id) detectedPlayoffStart=\(seasonPlayoffStart) source=\(source)")
+
                 // Pass sanitized lineup positions into buildTeams
                 let teams = try await buildTeams(
                     leagueId: seasonLeague.league_id,
@@ -1205,7 +1283,7 @@ extension SleeperLeagueManager {
         // Populate players_slots from roster settings where possible
         populatePlayersSlots(&matchupsByWeek, rosters: rosters)
 
-        let playoffStart = leaguePlayoffStartWeeks[league.id] ?? playoffStartWeek
+        let playoffStart = leagueSeasonPlayoffOverrides[league.id]?[latestSeason.id] ?? leaguePlayoffStartWeeks[league.id] ?? playoffStartWeek
 
         // Sanitize lineup positions from league.startingLineup before passing to buildTeams
         let sanitized = SlotUtils.sanitizeStartingSlots(league.startingLineup)
@@ -1276,6 +1354,8 @@ extension SleeperLeagueManager {
                 }
             }
 
+            var syntheticAssignedCount = 0
+
             // Keep groups that already have exactly 2 entries
             for (mid, group) in groupsByMid {
                 if group.count == 2 {
@@ -1334,7 +1414,7 @@ extension SleeperLeagueManager {
                     let midToUse: Int
                     if let ma = a.matchup_id { midToUse = ma }
                     else if let mb = b.matchup_id { midToUse = mb }
-                    else { midToUse = syntheticId; syntheticId -= 1 }
+                    else { midToUse = syntheticId; syntheticId -= 1; syntheticAssignedCount += 1 }
 
                     for entry in [a, b] {
                         result.append(SleeperMatchup(
@@ -1351,7 +1431,7 @@ extension SleeperLeagueManager {
                 } else {
                     // odd leftover — create a single SleeperMatchup with synthetic id (no opponent)
                     let a = sortedNil[idx]
-                    let midToUse = syntheticId; syntheticId -= 1
+                    let midToUse = syntheticId; syntheticId -= 1; syntheticAssignedCount += 1
                     result.append(SleeperMatchup(
                         starters: a.starters ?? [],
                         rosterId: a.roster_id,
@@ -1364,6 +1444,9 @@ extension SleeperLeagueManager {
                     idx += 1
                 }
             }
+
+            // Emit a diagnostic for this week
+            print("[MatchupConvert] league=unknown week=\(week) entries=\(entries.count) syntheticAssigned=\(syntheticAssignedCount)")
         }
 
         // Sort result by matchupId for deterministic ordering

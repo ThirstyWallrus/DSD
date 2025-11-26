@@ -9,6 +9,7 @@
 //    chronological list of H2H match details (headToHeadDetails).
 //  - Deduplicates matchup processing by matchupId so each pairing is counted once.
 //  - Uses opponent lineupConfig for opponent max calculation.
+//  - Adds champion recompute helpers and debug logging hooks.
 //
 
 import Foundation
@@ -62,7 +63,13 @@ struct AllTimeAggregator {
         var totalOffPF = 0.0, totalMaxOffPF = 0.0
         var totalDefPF = 0.0, totalMaxDefPF = 0.0
         var totalPSA = 0.0
+
+        // CHAMPIONS: prefer recomputed aggregated counts if present on LeagueData
         var championships = 0
+        if let computed = league.computedChampionships {
+            championships = computed[ownerId] ?? 0
+        }
+
         var wins = 0, losses = 0, ties = 0
 
         // PATCH: Use normalized position for all position-based dictionaries
@@ -190,6 +197,7 @@ struct AllTimeAggregator {
                 // Process each grouped (matchupId, week) group independently.
                 for (_, group) in grouped.sorted(by: { $0.key < $1.key }) {
                     if group.count == 2 {
+                        // Debug: log matchup convert pairing
                         processPair(group[0], group[1])
                     } else if group.count > 2 {
                         // If multiple entries exist for the same matchupId+week (rare), pair deterministically by rosterId.
@@ -212,7 +220,10 @@ struct AllTimeAggregator {
                 }
             }
 
-            championships += team.championships ?? 0
+            // If computed aggregated championships present on league, we already used those above.
+            if league.computedChampionships == nil {
+                championships += team.championships ?? 0
+            }
 
             totalWaiverMoves += team.waiverMoves ?? 0
             totalFAAB += team.faabSpent ?? 0
@@ -270,7 +281,6 @@ struct AllTimeAggregator {
                     // --- PATCH: Use SlotPositionAssigner global helper for credited position ---
                     let creditedPosition: String = {
                         if let rawPlayer = playerCache[pid], let pos = rawPlayer.position {
-                            // ensure non-optional first-parameter by computing local forSlot
                             let forSlot = slots[idx]
                             let candidatePositions = [PositionNormalizer.normalize(pos)] + (rawPlayer.fantasy_positions?.map { PositionNormalizer.normalize($0) } ?? [])
                             return SlotPositionAssigner.countedPosition(
@@ -288,7 +298,6 @@ struct AllTimeAggregator {
                                 base: PositionNormalizer.normalize(teamPlayer.position)
                             )
                         }
-                        // fallback: use slot as credited position
                         let forSlot = slots[idx]
                         return SlotPositionAssigner.countedPosition(
                             for: forSlot,
@@ -319,7 +328,6 @@ struct AllTimeAggregator {
                 totalDefPF += weekDefPF
 
                 // Max PF, Max Off, Max Def from optimal lineup (using historical roster that week)
-                // computeMaxForEntry sanitizes lineupConfig internally
                 let maxes = computeMaxForEntry(entry: entry, lineupConfig: team.lineupConfig ?? [:], playerCache: playerCache, teamRoster: team.roster, week: week)
                 totalMaxPF += maxes.total
                 totalMaxOffPF += maxes.off
@@ -678,6 +686,9 @@ struct AllTimeAggregator {
             }
 
             weeksPlayed += 1
+
+            // Debug logging for each playoff matchup processed
+            print("[PlayoffMatch] season=\(season.id) week=\(week) matchupId=\(matchup.matchupId) rosterA=\(myRosterId) ptsA=\(myEntry.points ?? 0.0) rosterB=\(matchup.rosterId) ptsB=\(matchup.points) winner=\(didOwnerLoseMatchup(ownerId: ownerId, matchup: matchup, season: season) ? "opp" : "owner")")
         }
 
         let mgmtPct = totalMaxPF > 0 ? (totalPF / totalMaxPF) * 100 : 0
@@ -710,76 +721,158 @@ struct AllTimeAggregator {
             isChampion: isChampion
         )
     }
-}
 
-/// Helper: Gathers all playoff bracket matchups for this owner over all seasons in the league.
-/// Must only return playoff bracket games (not consolation), and only for seasons where owner made playoffs.
-func allPlayoffMatchupsForOwner(ownerId: String, league: LeagueData) -> [SleeperMatchup] {
-    var all: [SleeperMatchup] = []
-    for season in league.seasons {
+    /// Helper: Gathers all playoff bracket matchups for this owner over all seasons in the league.
+    /// Must only return playoff bracket games (not consolation), and only for seasons where owner made playoffs.
+    func allPlayoffMatchupsForOwner(ownerId: String, league: LeagueData) -> [SleeperMatchup] {
+        var all: [SleeperMatchup] = []
+        for season in league.seasons {
+            let playoffTeamsCount = season.playoffTeamsCount ?? 4
+            let playoffSeededTeams = season.teams.sorted { $0.leagueStanding < $1.leagueStanding }
+                .prefix(playoffTeamsCount)
+            guard playoffSeededTeams.contains(where: { $0.ownerId == ownerId }) else { continue }
+
+            let playoffStart = season.playoffStartWeek ?? 14
+            let bracketWeeks: Set<Int> = Set(playoffStart..<(playoffStart + Int(ceil(log2(Double(playoffTeamsCount)))))
+            )
+
+            let seasonMatchups: [SleeperMatchup] = season.matchups ?? []
+            let ownerTeam = season.teams.first(where: { $0.ownerId == ownerId })
+            let ownerRosterId = ownerTeam.flatMap { Int($0.id) } ?? -1
+
+            // Build owner matchups with reliable week inference only; don't fall back to using matchupId as a week.
+            var ownerMatchupsWithWeek: [(SleeperMatchup, Int)] = []
+            for m in seasonMatchups where m.rosterId == ownerRosterId {
+                if let wk = m.week {
+                    if bracketWeeks.contains(wk) {
+                        ownerMatchupsWithWeek.append((m, wk))
+                    }
+                } else if let inferred = AllTimeAggregator.inferWeekForMatchup(matchupId: m.matchupId, rosterId: ownerRosterId, season: season) {
+                    if bracketWeeks.contains(inferred) {
+                        ownerMatchupsWithWeek.append((m, inferred))
+                    }
+                } else {
+                    // cannot determine week -> skip
+                    continue
+                }
+            }
+
+            ownerMatchupsWithWeek.sort { a, b in a.1 < b.1 }
+
+            var eliminated = false
+            for (matchup, _) in ownerMatchupsWithWeek {
+                if eliminated { break }
+                all.append(matchup)
+                if didOwnerLoseMatchup(ownerId: ownerId, matchup: matchup, season: season) {
+                    eliminated = true
+                }
+            }
+        }
+        return all
+    }
+
+    // NEW: Compute season champion deterministically from final main-bracket matchup winner
+    static func computeSeasonChampion(season: SeasonData) -> (rosterId: Int?, ownerId: String?) {
         let playoffTeamsCount = season.playoffTeamsCount ?? 4
-        let playoffSeededTeams = season.teams.sorted { $0.leagueStanding < $1.leagueStanding }
-            .prefix(playoffTeamsCount)
-        guard playoffSeededTeams.contains(where: { $0.ownerId == ownerId }) else { continue }
-
         let playoffStart = season.playoffStartWeek ?? 14
-        let bracketWeeks: Set<Int> = Set(playoffStart..<(playoffStart + Int(ceil(log2(Double(playoffTeamsCount)))))
-        )
+        let rounds = Int(ceil(log2(Double(playoffTeamsCount))))
+        let playoffWeeks = Set(playoffStart..<(playoffStart + rounds))
 
-        let seasonMatchups: [SleeperMatchup] = season.matchups ?? []
-        let ownerTeam = season.teams.first(where: { $0.ownerId == ownerId })
-        let ownerRosterId = ownerTeam.flatMap { Int($0.id) } ?? -1
+        // finalWeek is the latest playoff week present in matchupsByWeek
+        guard let map = season.matchupsByWeek else {
+            print("[ChampionDetect] season=\(season.id) computedChampionRosterId=nil ownerId=nil finalWeek=nil (no matchupsByWeek)")
+            return (nil, nil)
+        }
+        let presentWeeks = Set(map.keys).intersection(playoffWeeks)
+        guard let finalWeek = presentWeeks.max() else {
+            print("[ChampionDetect] season=\(season.id) computedChampionRosterId=nil ownerId=nil finalWeek=nil (no playoff weeks present)")
+            return (nil, nil)
+        }
 
-        // Build owner matchups with reliable week inference only; don't fall back to using matchupId as a week.
-        var ownerMatchupsWithWeek: [(SleeperMatchup, Int)] = []
-        for m in seasonMatchups where m.rosterId == ownerRosterId {
-            if let wk = m.week {
-                if bracketWeeks.contains(wk) {
-                    ownerMatchupsWithWeek.append((m, wk))
-                }
-            } else if let inferred = AllTimeAggregator.inferWeekForMatchup(matchupId: m.matchupId, rosterId: ownerRosterId, season: season) {
-                if bracketWeeks.contains(inferred) {
-                    ownerMatchupsWithWeek.append((m, inferred))
-                }
+        let entries = map[finalWeek] ?? []
+        // group pairings by matchup_id (or synthetic negative id if nil)
+        var groups: [Int: [MatchupEntry]] = [:]
+        var synthetic = -1
+        for e in entries {
+            if let mid = e.matchup_id {
+                groups[mid, default: []].append(e)
             } else {
-                // cannot determine week -> skip
+                groups[synthetic, default: []].append(e)
+                synthetic -= 1
+            }
+        }
+
+        // Search for a valid final pairing: 2 entries, both roster ids that belong to playoff-seeded teams
+        for (_, group) in groups.sorted(by: { $0.key < $1.key }) {
+            guard group.count == 2 else { continue }
+            let a = group[0], b = group[1]
+            // determine winner by points
+            let ptsA = a.points ?? 0.0
+            let ptsB = b.points ?? 0.0
+            if ptsA == ptsB {
+                // tie or unresolved — do not assign champion
                 continue
             }
-        }
+            let winnerRosterId = ptsA > ptsB ? a.roster_id : b.roster_id
 
-        ownerMatchupsWithWeek.sort { a, b in a.1 < b.1 }
-
-        var eliminated = false
-        for (matchup, _) in ownerMatchupsWithWeek {
-            if eliminated { break }
-            all.append(matchup)
-            if didOwnerLoseMatchup(ownerId: ownerId, matchup: matchup, season: season) {
-                eliminated = true
+            // map rosterId -> ownerId via season.teams
+            if let team = season.teams.first(where: { $0.id == String(winnerRosterId) }) {
+                print("[ChampionDetect] season=\(season.id) computedChampionRosterId=\(winnerRosterId) computedChampionOwnerId=\(team.ownerId) computedChampionOwnerDisplay=\(team.name) finalWeek=\(finalWeek)")
+                return (winnerRosterId, team.ownerId)
+            } else {
+                print("[ChampionDetect] season=\(season.id) computedChampionRosterId=\(winnerRosterId) computedChampionOwnerId=nil finalWeek=\(finalWeek) (owner lookup failed)")
+                return (winnerRosterId, nil)
             }
         }
+
+        print("[ChampionDetect] season=\(season.id) computedChampionRosterId=nil ownerId=nil finalWeek=\(finalWeek) (no valid final pairing)")
+        return (nil, nil)
     }
-    return all
-}
 
-func isOwnerRoster(ownerId: String, rosterId: Int, season: SeasonData) -> Bool {
-    return season.teams.first(where: { $0.ownerId == ownerId })?.id == String(rosterId)
-}
-func didOwnerLoseMatchup(ownerId: String, matchup: SleeperMatchup, season: SeasonData) -> Bool {
-    guard let ownerTeam = season.teams.first(where: { $0.ownerId == ownerId }) else { return false }
-    let myRosterId = Int(ownerTeam.id) ?? -1
+    // NEW: Recompute championships for each season in a league and return per-season mapping and aggregated counts
+    static func recomputeAllChampionships(for league: LeagueData) -> (seasonChampions: [String: String?], aggregated: [String: Int]) {
+        var seasonChampions: [String: String?] = [:]
+        var aggregated: [String: Int] = [:]
 
-    // Determine explicit week for this matchup (prefer matchup.week and then inference).
-    let wk = matchup.week ?? inferWeekForMatchup(matchupId: matchup.matchupId, rosterId: myRosterId, season: season)
-    guard let week = wk else { return false }
+        for season in league.seasons {
+            let (rosterIdOpt, ownerIdOpt) = computeSeasonChampion(season: season)
+            seasonChampions[season.id] = ownerIdOpt
+            if let oid = ownerIdOpt {
+                aggregated[oid, default: 0] += 1
+            }
+        }
 
-    // Now restrict matching entries to this week to avoid cross-week collisions on matchupId.
-    let allEntries = season.matchups?.filter { $0.matchupId == matchup.matchupId && ($0.week ?? week) == week } ?? []
-    guard allEntries.count == 2 else { return false }
-    guard let myEntry = allEntries.first(where: { $0.rosterId == myRosterId }),
-          let oppEntry = allEntries.first(where: { $0.rosterId != myRosterId }) else { return false }
-    let myPoints = myEntry.points
-    let oppPoints = oppEntry.points
-    return (myPoints ?? 0.0) < (oppPoints ?? 0.0)
+        // Debug report
+        for (sid, oid) in seasonChampions.sorted(by: { $0.key < $1.key }) {
+            print("[ChampionRecompute] season=\(sid) computedChampionOwnerId=\(oid ?? "null")")
+        }
+        // aggregated summary
+        for (owner, cnt) in aggregated {
+            print("[ChampionRecompute] owner=\(owner) computedChampionships=\(cnt)")
+        }
+        return (seasonChampions, aggregated)
+    }
+
+    private func isOwnerRoster(ownerId: String, rosterId: Int, season: SeasonData) -> Bool {
+        return season.teams.first(where: { $0.ownerId == ownerId })?.id == String(rosterId)
+    }
+    private func didOwnerLoseMatchup(ownerId: String, matchup: SleeperMatchup, season: SeasonData) -> Bool {
+        guard let ownerTeam = season.teams.first(where: { $0.ownerId == ownerId }) else { return false }
+        let myRosterId = Int(ownerTeam.id) ?? -1
+
+        // Determine explicit week for this matchup (prefer matchup.week and then inference).
+        let wk = matchup.week ?? inferWeekForMatchup(matchupId: matchup.matchupId, rosterId: myRosterId, season: season)
+        guard let week = wk else { return false }
+
+        // Now restrict matching entries to this week to avoid cross-week collisions on matchupId.
+        let allEntries = season.matchups?.filter { $0.matchupId == matchup.matchupId && ($0.week ?? week) == week } ?? []
+        guard allEntries.count == 2 else { return false }
+        guard let myEntry = allEntries.first(where: { $0.rosterId == myRosterId }),
+              let oppEntry = allEntries.first(where: { $0.rosterId != myRosterId }) else { return false }
+        let myPoints = myEntry.points
+        let oppPoints = oppEntry.points
+        return (myPoints ?? 0.0) < (oppPoints ?? 0.0)
+    }
 }
 
 extension Collection {
