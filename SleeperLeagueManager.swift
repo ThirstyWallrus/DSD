@@ -445,11 +445,7 @@ class SleeperLeagueManager: ObservableObject {
         return try JSONDecoder().decode(SleeperUser.self, from: data)
     }
 
-    func fetchLeagues(userId: String, season: String) async throws -> [SleeperLeague] {
-        let url = URL(string: "https://api.sleeper.app/v1/user/\(userId)/leagues/nfl/\(season)")!
-        let (data, _) = try await URLSession.shared.data(from: url)
-        return try JSONDecoder().decode([SleeperLeague].self, from: data)
-    }
+    // NOTE: fetchLeagues(userId:season:) is the single canonical implementation and is defined above (no duplicates)
 
     func fetchAllLeaguesForUser(username: String, seasons: [String]) async throws -> [SleeperLeague] {
         var out: [SleeperLeague] = []
@@ -1258,7 +1254,7 @@ class SleeperLeagueManager: ObservableObject {
 
         // Persist: create a backup of the existing league file
         do {
-            let backupURL = try backupLeagueFile(leagueId: leagueId)
+            let backupURL = try backupLeagueFile(leagueId)
             print("[ChampionPersist] Backup created at \(backupURL.path)")
         } catch {
             print("[ChampionPersist] Warning: failed to create backup for league \(leagueId): \(error)")
@@ -1399,258 +1395,246 @@ class SleeperLeagueManager: ObservableObject {
         return dest
     }
 
-    // MARK: - Bulk Fetch Helper
+    // MARK: - Bulk Fetch / Refresh Helpers (kept as methods on class)
 
-    extension SleeperLeagueManager {
-        func fetchAllLeaguesForUser(username: String, seasons: [String]) async throws -> [SleeperLeague] {
-            var out: [SleeperLeague] = []
-            let user = try await fetchUser(username: username)
-            for s in seasons {
-                let list = try await fetchLeagues(userId: user.user_id, season: s)
-                out.append(contentsOf: list)
+    func refreshAllLeaguesIfNeeded(username: String?, force: Bool = false) async {
+        guard !leagues.isEmpty else { return }
+        if isRefreshing { return }
+        isRefreshing = true
+        defer { isRefreshing = false }
+
+        let now = Date()
+        let targets = leagues.filter {
+            let last = Self._lastRefresh[$0.id] ?? .distantPast
+            return force || now.timeIntervalSince(last) >= refreshThrottleInterval
+        }
+        guard !targets.isEmpty else { return }
+
+        let maxConcurrent = 3
+        var updated: [LeagueData] = []
+        var active = 0
+
+        for league in targets {
+            while active >= maxConcurrent {
+                try? await Task.sleep(nanoseconds: 50_000_000)
             }
-            return out
+            active += 1
+            Task {
+                defer { active -= 1 }
+                do {
+                    if let refreshed = try await refreshLatestSeason(for: league) {
+                        await MainActor.run {
+                            updated.append(refreshed)
+                            Self._lastRefresh[league.id] = now
+                        }
+                    }
+                } catch {
+                    // swallow and continue; individual league refresh errors should not abort whole batch
+                    print("[Refresh] failed refresh for \(league.id): \(error)")
+                }
+            }
+        }
+
+        while active > 0 {
+            try? await Task.sleep(nanoseconds: 60_000_000)
+        }
+
+        guard !updated.isEmpty else { return }
+        for newLeague in updated {
+            if let idx = leagues.firstIndex(where: { $0.id == newLeague.id }) {
+                leagues[idx] = newLeague
+                persistLeagueFile(newLeague)
+            }
+        }
+        saveIndex()
+    }
+
+    func forceRefreshAllLeagues(username: String?) async {
+        await refreshAllLeaguesIfNeeded(username: username, force: true)
+    }
+
+    private func refreshLatestSeason(for league: LeagueData) async throws -> LeagueData? {
+        guard let latestSeason = league.seasons.sorted(by: { $0.id < $1.id }).last else { return nil }
+
+        let baseLeague = try await fetchLeague(leagueId: league.id)
+        // update global week when refreshing
+        self.globalCurrentWeek = max(self.globalCurrentWeek, baseLeague.currentWeek)
+
+        let rosters = try await fetchRosters(leagueId: league.id)
+        let users = try await fetchLeagueUsers(leagueId: league.id)
+        let tx = try await fetchTransactions(for: league.id)
+        var matchupsByWeek = try await fetchMatchupsByWeek(leagueId: league.id)
+
+        // Populate players_slots from roster settings where possible
+        populatePlayersSlots(&matchupsByWeek, rosters: rosters)
+
+        let playoffStart = leagueSeasonPlayoffOverrides[league.id]?[latestSeason.id] ?? leaguePlayoffStartWeeks[league.id] ?? playoffStartWeek
+
+        // Sanitize lineup positions from league.startingLineup before passing to buildTeams
+        let sanitized = SlotUtils.sanitizeStartingSlots(league.startingLineup)
+        if league.startingLineup.contains(where: { SlotUtils.nonStartingTokens.contains($0.uppercased()) }) {
+            let offending = league.startingLineup.filter { SlotUtils.nonStartingTokens.contains($0.uppercased()) }
+            print("[RosterPositionsWarning] league \(league.id) startingLineup contains bench/IR/taxi tokens: \(offending)")
+        }
+        print("[SlotSanitize] using starting positions: \(sanitized) for refresh of league \(league.id)")
+
+        let teams = try await buildTeams(
+            leagueId: league.id,
+            rosters: rosters,
+            users: users,
+            parentLeague: nil,
+            lineupPositions: sanitized,
+            transactions: tx,
+            playoffStartWeek: playoffStart,
+            matchupsByWeek: matchupsByWeek,
+            sleeperLeague: baseLeague
+        )
+        var newSeasons = league.seasons
+        if let i = newSeasons.firstIndex(where: { $0.id == latestSeason.id }) {
+            let matchups = convertToSleeperMatchups(matchupsByWeek)
+            // Use the local playoffStart variable (was incorrectly using property playoffStartWeek)
+            newSeasons[i] = SeasonData(id: latestSeason.id, season: latestSeason.season, teams: teams, playoffStartWeek: playoffStart, playoffTeamsCount: nil, matchups: matchups, matchupsByWeek: matchupsByWeek)
+        }
+
+        let updated = LeagueData(
+            id: league.id,
+            name: league.name,
+            season: league.season,
+            teams: teams,
+            seasons: newSeasons,
+            startingLineup: league.startingLineup
+        )
+
+        return AllTimeAggregator.buildAllTime(for: updated, playerCache: allPlayers)
+    }
+
+    func refreshLeagueData(leagueId: String, completion: @escaping (Result<LeagueData, Error>) -> Void) {
+        if let existingLeague = leagues.first(where: { $0.id == leagueId }) {
+            completion(.success(existingLeague))
+        } else {
+            completion(.failure(NSError(domain: "LeagueManager", code: 0, userInfo: [NSLocalizedDescriptionKey: "League not found"])))
         }
     }
 
-    extension SleeperLeagueManager {
-        func refreshAllLeaguesIfNeeded(username: String?, force: Bool = false) async {
-            guard !leagues.isEmpty else { return }
-            if isRefreshing { return }
-            isRefreshing = true
-            defer { isRefreshing = false }
+    /// CONVERT TO SLEEPER MATCHUPS — robust pairing logic
+    /// Ensures that for each week we produce pairs of entries that share the same matchupId.
+    /// - existing groups with two entries are preserved
+    /// - singleton groups and nil-mid entries are paired deterministically by roster_id (adjacent pair)
+    /// - synthetic negative matchupIds are used when no existing matchup_id is available for the pair
+    private func convertToSleeperMatchups(_ matchupsByWeek: [Int: [MatchupEntry]]) -> [SleeperMatchup] {
+        var result: [SleeperMatchup] = []
+        var syntheticId = -1
 
-            let now = Date()
-            let targets = leagues.filter {
-                let last = Self._lastRefresh[$0.id] ?? .distantPast
-                return force || now.timeIntervalSince(last) >= refreshThrottleInterval
-            }
-            guard !targets.isEmpty else { return }
+        // Process each week independently
+        for (week, entries) in matchupsByWeek.sorted(by: { $0.key < $1.key }) {
+            // Group entries by explicit matchup_id (non-nil)
+            var groupsByMid: [Int: [MatchupEntry]] = [:]
+            var nilMidEntries: [MatchupEntry] = []
 
-            let maxConcurrent = 3
-            var updated: [LeagueData] = []
-            var active = 0
-
-            for league in targets {
-                while active >= maxConcurrent {
-                    try? await Task.sleep(nanoseconds: 50_000_000)
-                }
-                active += 1
-                Task {
-                    defer { active -= 1 }
-                    do {
-                        if let refreshed = try await refreshLatestSeason(for: league) {
-                            await MainActor.run {
-                                updated.append(refreshed)
-                                Self._lastRefresh[league.id] = now
-                            }
-                        }
-                    } catch {
-                    }
+            for entry in entries {
+                if let mid = entry.matchup_id {
+                    groupsByMid[mid, default: []].append(entry)
+                } else {
+                    nilMidEntries.append(entry)
                 }
             }
 
-            while active > 0 {
-                try? await Task.sleep(nanoseconds: 60_000_000)
-            }
+            var syntheticAssignedCount = 0
 
-            guard !updated.isEmpty else { return }
-            for newLeague in updated {
-                if let idx = leagues.firstIndex(where: { $0.id == newLeague.id }) {
-                    leagues[idx] = newLeague
-                    persistLeagueFile(newLeague)
-                }
-            }
-            saveIndex()
-        }
-
-        func forceRefreshAllLeagues(username: String?) async {
-            await refreshAllLeaguesIfNeeded(username: username, force: true)
-        }
-
-        private func refreshLatestSeason(for league: LeagueData) async throws -> LeagueData? {
-            guard let latestSeason = league.seasons.sorted(by: { $0.id < $1.id }).last else { return nil }
-
-            let baseLeague = try await fetchLeague(leagueId: league.id)
-            // update global week when refreshing
-            self.globalCurrentWeek = max(self.globalCurrentWeek, baseLeague.currentWeek)
-
-            let rosters = try await fetchRosters(leagueId: league.id)
-            let users = try await fetchLeagueUsers(leagueId: league.id)
-            let tx = try await fetchTransactions(for: league.id)
-            var matchupsByWeek = try await fetchMatchupsByWeek(leagueId: league.id)
-
-            // Populate players_slots from roster settings where possible
-            populatePlayersSlots(&matchupsByWeek, rosters: rosters)
-
-            let playoffStart = leagueSeasonPlayoffOverrides[league.id]?[latestSeason.id] ?? leaguePlayoffStartWeeks[league.id] ?? playoffStartWeek
-
-            // Sanitize lineup positions from league.startingLineup before passing to buildTeams
-            let sanitized = SlotUtils.sanitizeStartingSlots(league.startingLineup)
-            if league.startingLineup.contains(where: { SlotUtils.nonStartingTokens.contains($0.uppercased()) }) {
-                let offending = league.startingLineup.filter { SlotUtils.nonStartingTokens.contains($0.uppercased()) }
-                print("[RosterPositionsWarning] league \(league.id) startingLineup contains bench/IR/taxi tokens: \(offending)")
-            }
-            print("[SlotSanitize] using starting positions: \(sanitized) for refresh of league \(league.id)")
-
-            let teams = try await buildTeams(
-                leagueId: league.id,
-                rosters: rosters,
-                users: users,
-                parentLeague: nil,
-                lineupPositions: sanitized,
-                transactions: tx,
-                playoffStartWeek: playoffStart,
-                matchupsByWeek: matchupsByWeek,
-                sleeperLeague: baseLeague
-            )
-            var newSeasons = league.seasons
-            if let i = newSeasons.firstIndex(where: { $0.id == latestSeason.id }) {
-                let matchups = convertToSleeperMatchups(matchupsByWeek)
-                // Use the local playoffStart variable (was incorrectly using property playoffStartWeek)
-                newSeasons[i] = SeasonData(id: latestSeason.id, season: latestSeason.season, teams: teams, playoffStartWeek: playoffStart, playoffTeamsCount: nil, matchups: matchups, matchupsByWeek: matchupsByWeek)
-            }
-
-            let updated = LeagueData(
-                id: league.id,
-                name: league.name,
-                season: league.season,
-                teams: teams,
-                seasons: newSeasons,
-                startingLineup: league.startingLineup
-            )
-
-            return AllTimeAggregator.buildAllTime(for: updated, playerCache: allPlayers)
-        }
-
-        func refreshLeagueData(leagueId: String, completion: @escaping (Result<LeagueData, Error>) -> Void) {
-            if let existingLeague = leagues.first(where: { $0.id == leagueId }) {
-                completion(.success(existingLeague))
-            } else {
-                completion(.failure(NSError(domain: "LeagueManager", code: 0, userInfo: [NSLocalizedDescriptionKey: "League not found"])))
-            }
-        }
-
-        /// CONVERT TO SLEEPER MATCHUPS — robust pairing logic
-        /// Ensures that for each week we produce pairs of entries that share the same matchupId.
-        /// - existing groups with two entries are preserved
-        /// - singleton groups and nil-mid entries are paired deterministically by roster_id (adjacent pair)
-        /// - synthetic negative matchupIds are used when no existing matchup_id is available for the pair
-        private func convertToSleeperMatchups(_ matchupsByWeek: [Int: [MatchupEntry]]) -> [SleeperMatchup] {
-            var result: [SleeperMatchup] = []
-            var syntheticId = -1
-
-            // Process each week independently
-            for (week, entries) in matchupsByWeek.sorted(by: { $0.key < $1.key }) {
-                // Group entries by explicit matchup_id (non-nil)
-                var groupsByMid: [Int: [MatchupEntry]] = [:]
-                var nilMidEntries: [MatchupEntry] = []
-
-                for entry in entries {
-                    if let mid = entry.matchup_id {
-                        groupsByMid[mid, default: []].append(entry)
-                    } else {
-                        nilMidEntries.append(entry)
-                    }
-                }
-
-                var syntheticAssignedCount = 0
-
-                // Keep groups that already have exactly 2 entries
-                for (mid, group) in groupsByMid {
-                    if group.count == 2 {
-                        for entry in group {
-                            result.append(SleeperMatchup(
-                                starters: entry.starters ?? [],
-                                rosterId: entry.roster_id,
-                                players: entry.players ?? [],
-                                matchupId: mid,
-                                points: entry.points ?? 0.0,
-                                customPoints: nil,
-                                week: week
-                            ))
-                        }
-                    } else if group.count > 2 {
-                        // If more than 2 entries share a matchup_id (rare), pair them sequentially by roster_id
-                        let sortedGroup = group.sorted { $0.roster_id < $1.roster_id }
-                        var i = 0
-                        while i < sortedGroup.count {
-                            if i + 1 < sortedGroup.count {
-                                let a = sortedGroup[i], b = sortedGroup[i+1]
-                                for entry in [a, b] {
-                                    result.append(SleeperMatchup(
-                                        starters: entry.starters ?? [],
-                                        rosterId: entry.roster_id,
-                                        players: entry.players ?? [],
-                                        matchupId: mid,
-                                        points: entry.points ?? 0.0,
-                                        customPoints: nil,
-                                        week: week
-                                    ))
-                                }
-                                i += 2
-                            } else {
-                                // leftover singleton — treat as nil-mid entry (pair later)
-                                nilMidEntries.append(sortedGroup[i])
-                                i += 1
-                            }
-                        }
-                    } else {
-                        // singleton — collect for pairing
-                        nilMidEntries.append(group[0])
-                    }
-                }
-
-                // Now pair all nil-mid entries deterministically by roster_id (adjacent pairs)
-                let sortedNil = nilMidEntries.sorted { $0.roster_id < $1.roster_id }
-                var idx = 0
-                while idx < sortedNil.count {
-                    if idx + 1 < sortedNil.count {
-                        let a = sortedNil[idx]
-                        let b = sortedNil[idx + 1]
-
-                        // Prefer to use an existing mid if either entry had one (should be unlikely here),
-                        // otherwise assign a synthetic negative id so both entries share the same id.
-                        let midToUse: Int
-                        if let ma = a.matchup_id { midToUse = ma }
-                        else if let mb = b.matchup_id { midToUse = mb }
-                        else { midToUse = syntheticId; syntheticId -= 1; syntheticAssignedCount += 1 }
-
-                        for entry in [a, b] {
-                            result.append(SleeperMatchup(
-                                starters: entry.starters ?? [],
-                                rosterId: entry.roster_id,
-                                players: entry.players ?? [],
-                                matchupId: midToUse,
-                                points: entry.points ?? 0.0,
-                                customPoints: nil,
-                                week: week
-                            ))
-                        }
-                        idx += 2
-                    } else {
-                        // odd leftover — create a single SleeperMatchup with synthetic id (no opponent)
-                        let a = sortedNil[idx]
-                        let midToUse = syntheticId; syntheticId -= 1; syntheticAssignedCount += 1
+            // Keep groups that already have exactly 2 entries
+            for (mid, group) in groupsByMid {
+                if group.count == 2 {
+                    for entry in group {
                         result.append(SleeperMatchup(
-                            starters: a.starters ?? [],
-                            rosterId: a.roster_id,
-                            players: a.players ?? [],
-                            matchupId: midToUse,
-                            points: a.points ?? 0.0,
+                            starters: entry.starters ?? [],
+                            rosterId: entry.roster_id,
+                            players: entry.players ?? [],
+                            matchupId: mid,
+                            points: entry.points ?? 0.0,
                             customPoints: nil,
                             week: week
                         ))
-                        idx += 1
                     }
+                } else if group.count > 2 {
+                    // If more than 2 entries share a matchup_id (rare), pair them sequentially by roster_id
+                    let sortedGroup = group.sorted { $0.roster_id < $1.roster_id }
+                    var i = 0
+                    while i < sortedGroup.count {
+                        if i + 1 < sortedGroup.count {
+                            let a = sortedGroup[i], b = sortedGroup[i+1]
+                            for entry in [a, b] {
+                                result.append(SleeperMatchup(
+                                    starters: entry.starters ?? [],
+                                    rosterId: entry.roster_id,
+                                    players: entry.players ?? [],
+                                    matchupId: mid,
+                                    points: entry.points ?? 0.0,
+                                    customPoints: nil,
+                                    week: week
+                                ))
+                            }
+                            i += 2
+                        } else {
+                            // leftover singleton — treat as nil-mid entry (pair later)
+                            nilMidEntries.append(sortedGroup[i])
+                            i += 1
+                        }
+                    }
+                } else {
+                    // singleton — collect for pairing
+                    nilMidEntries.append(group[0])
                 }
-
-                // Emit a diagnostic for this week
-                print("[MatchupConvert] league=unknown week=\(week) entries=\(entries.count) syntheticAssigned=\(syntheticAssignedCount)")
             }
 
-            // Sort result by matchupId for deterministic ordering
-            return result.sorted { $0.matchupId < $1.matchupId }
+            // Now pair all nil-mid entries deterministically by roster_id (adjacent pairs)
+            let sortedNil = nilMidEntries.sorted { $0.roster_id < $1.roster_id }
+            var idx = 0
+            while idx < sortedNil.count {
+                if idx + 1 < sortedNil.count {
+                    let a = sortedNil[idx]
+                    let b = sortedNil[idx + 1]
+
+                    // Prefer to use an existing mid if either entry had one (should be unlikely here),
+                    // otherwise assign a synthetic negative id so both entries share the same id.
+                    let midToUse: Int
+                    if let ma = a.matchup_id { midToUse = ma }
+                    else if let mb = b.matchup_id { midToUse = mb }
+                    else { midToUse = syntheticId; syntheticId -= 1; syntheticAssignedCount += 1 }
+
+                    for entry in [a, b] {
+                        result.append(SleeperMatchup(
+                            starters: entry.starters ?? [],
+                            rosterId: entry.roster_id,
+                            players: entry.players ?? [],
+                            matchupId: midToUse,
+                            points: entry.points ?? 0.0,
+                            customPoints: nil,
+                            week: week
+                        ))
+                    }
+                    idx += 2
+                } else {
+                    // odd leftover — create a single SleeperMatchup with synthetic id (no opponent)
+                    let a = sortedNil[idx]
+                    let midToUse = syntheticId; syntheticId -= 1; syntheticAssignedCount += 1
+                    result.append(SleeperMatchup(
+                        starters: a.starters ?? [],
+                        rosterId: a.roster_id,
+                        players: a.players ?? [],
+                        matchupId: midToUse,
+                        points: a.points ?? 0.0,
+                        customPoints: nil,
+                        week: week
+                    ))
+                    idx += 1
+                }
+            }
+
+            // Emit a diagnostic for this week
+            print("[MatchupConvert] league=unknown week=\(week) entries=\(entries.count) syntheticAssigned=\(syntheticAssignedCount)")
         }
+
+        // Sort result by matchupId for deterministic ordering
+        return result.sorted { $0.matchupId < $1.matchupId }
     }
 }
