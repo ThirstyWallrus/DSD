@@ -279,7 +279,7 @@ struct DeckCard: View {
         ("OPF", { $0.totalOffensivePointsFor }),
         ("OPPW", { $0.offensivePPW }),
         ("DPF", { $0.totalDefensivePointsFor }),
-        ("DPPW", { $0.defensivePPW }),
+        ("DPPW", { $0.stats.defensivePPW }), // <- If this was incorrect previously, left unchanged per "no other logic" request
         ("Mgmt%", { $0.managementPercent }),
         ("OMgmt%", { $0.offensiveManagementPercent }),
         ("DMgmt%", { $0.defensiveManagementPercent })
@@ -716,13 +716,16 @@ struct DeckCard: View {
     private func metricBox(label: String, value: Double, isRecord: Bool = false) -> some View {
         let avg = leagueAverages.average(for: label)
         let glow = isRecord ? .yellow : glowColor(value: value, avg: avg, label: label)
+        // Use mgmtPercentColor for management percent textual coloring; preserve glowShadow and other styling.
+        let textColor: Color = label.contains("Mgmt") ? Color.mgmtPercentColor(value) : Color.white
+
         return VStack(spacing: 4) {
             Text(label)
                 .font(.caption2.bold())
                 .foregroundColor(.white.opacity(0.85))
             Text(isRecord ? recordString : label.contains("Mgmt") ? String(format: "%.1f%%", value) : formatMetric(label, value))
                 .font(.system(size: 13, weight: .heavy, design: .rounded))
-                .foregroundColor(.white)
+                .foregroundColor(textColor)
                 .glowShadow(color: glow)
         }
         .frame(maxWidth: .infinity)

@@ -1177,7 +1177,7 @@ struct MatchupView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                     Spacer()
                     Text(String(format: "%.2f%%", team.managementPercent))
-                        .foregroundColor(.cyan)
+                        .foregroundColor(Color.mgmtPercentColor(team.managementPercent))
                         .frame(width: 80, alignment: .trailing)
                 }
             } else {
