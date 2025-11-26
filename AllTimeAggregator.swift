@@ -717,14 +717,14 @@ struct AllTimeAggregator {
             weeks: weeksPlayed,
             wins: wins,
             losses: losses,
-            recordString: "\(wins)-\(losses)\(ties > 0 ? "-\(ties)" : "")",
+            recordString: "\(wins)-\(losses)",
             isChampion: isChampion
         )
     }
 
     /// Helper: Gathers all playoff bracket matchups for this owner over all seasons in the league.
     /// Must only return playoff bracket games (not consolation), and only for seasons where owner made playoffs.
-    func allPlayoffMatchupsForOwner(ownerId: String, league: LeagueData) -> [SleeperMatchup] {
+    static func allPlayoffMatchupsForOwner(ownerId: String, league: LeagueData) -> [SleeperMatchup] {
         var all: [SleeperMatchup] = []
         for season in league.seasons {
             let playoffTeamsCount = season.playoffTeamsCount ?? 4
@@ -853,10 +853,10 @@ struct AllTimeAggregator {
         return (seasonChampions, aggregated)
     }
 
-    private func isOwnerRoster(ownerId: String, rosterId: Int, season: SeasonData) -> Bool {
+    private static func isOwnerRoster(ownerId: String, rosterId: Int, season: SeasonData) -> Bool {
         return season.teams.first(where: { $0.ownerId == ownerId })?.id == String(rosterId)
     }
-    private func didOwnerLoseMatchup(ownerId: String, matchup: SleeperMatchup, season: SeasonData) -> Bool {
+    private static func didOwnerLoseMatchup(ownerId: String, matchup: SleeperMatchup, season: SeasonData) -> Bool {
         guard let ownerTeam = season.teams.first(where: { $0.ownerId == ownerId }) else { return false }
         let myRosterId = Int(ownerTeam.id) ?? -1
 
