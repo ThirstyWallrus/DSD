@@ -57,20 +57,23 @@ private func mainBracketPlayoffMatchups(
 
     // Updated for correct SleeperMatchup model
     let candidateMatchups = matchups
-        .filter {
-            let wk = $0.week ?? $0.matchupId
-            return playoffWeeks.contains(wk)
+        .compactMap { m -> (SleeperMatchup, Int)? in
+            // Determine a reliable week (prefer explicit week, else try to infer). Do NOT use matchupId as week.
+            let wk = m.week ?? inferWeekForMatchup(m, in: season)
+            guard let w = wk, playoffWeeks.contains(w) else { return nil }
+            return (m, w)
         }
-        .filter { $0.rosterId == teamRosterId || ($0.starters.contains { _ in true }) }
-        // NOTE: if your SleeperMatchup model has a `week` property, you should use that instead of matchupId above
+        .filter { pair in
+            // ensure this matchup is relevant to the team (either is the teamRosterId or includes starters)
+            let (m, _) = pair
+            return m.rosterId == teamRosterId || !m.starters.isEmpty
+        }
 
     // Sorting by explicit week (if present) then matchupId
     let sortedMatchups = candidateMatchups.sorted {
-        let a = $0.week ?? $0.matchupId
-        let b = $1.week ?? $1.matchupId
-        if a != b { return a < b }
-        return $0.matchupId < $1.matchupId
-    }
+        if $0.1 != $1.1 { return $0.1 < $1.1 }
+        return $0.0.matchupId < $1.0.matchupId
+    }.map { $0.0 }
 
     for matchup in sortedMatchups {
         if eliminated { break }
@@ -132,8 +135,14 @@ extension PlayoffStats {
                 matchups: allMatchups
             )
 
-            // Sorting by week (prefer explicit week when available)
-            let playoffMatchups = seasonMatchups.sorted { ($0.week ?? $0.matchupId) < ($1.week ?? $1.matchupId) }
+            // Sorting by week (prefer explicit week when available). Ensure week is inferred and valid.
+            let playoffMatchups = seasonMatchups.compactMap { m -> (SleeperMatchup, Int)? in
+                if let w = m.week ?? inferWeekForMatchup(m, in: season) { return (m, w) }
+                return nil
+            }.sorted { a, b in
+                if a.1 != b.1 { return a.1 < b.1 }
+                return a.0.matchupId < b.0.matchupId
+            }.map { $0.0 }
 
             var eliminated = false // Defensive, but already handled in helper
 
@@ -142,7 +151,7 @@ extension PlayoffStats {
                 if eliminated { break }
 
                 // Determine the week for this matchup (prefer explicit week)
-                let week = matchup.week ?? inferWeekForMatchup(matchup, in: season) ?? matchup.matchupId
+                guard let week = matchup.week ?? inferWeekForMatchup(matchup, in: season) else { continue }
 
                 // Fetch myEntry
                 let weekMatchups = season.matchupsByWeek?[week] ?? []
@@ -247,16 +256,20 @@ extension PlayoffStats {
                 maxDefensivePointsFor += weekMaxDef
 
                 // --- WIN/LOSS Detection ---
+                // Prefer the matchup pair's explicit points comparison if available
                 let myPoints = matchup.points
                 let oppPoints = matchup.customPoints ?? 0.0
                 if myPoints > oppPoints { wins += 1 }
-                else { losses += 1 }
+                else if myPoints < oppPoints { losses += 1 }
+                else {
+                    // Per user preference: do not record ties in aggregated playoff stats
+                }
 
                 // If team lost this round, they're eliminated from the main bracket
                 if myPoints < oppPoints { eliminated = true }
             }
 
-            // Champion: Use explicit Sleeper field
+            // Champion: Use explicit Sleeper field OR undefeated playoff run
             if let champ = team.championships, champ > 0 {
                 isChampion = true
             } else if gamesPlayed > 0 && losses == 0 {

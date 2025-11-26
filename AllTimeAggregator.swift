@@ -103,6 +103,7 @@ struct AllTimeAggregator {
                 // we use a sentinel (-999) so those entries don't get mixed with entries that have an explicit week.
                 var grouped: [String: [SleeperMatchup]] = [:]
                 for m in relevant {
+                    // Do not fall back to using matchupId as a week. Prefer explicit week and then inference.
                     let wk = m.week ?? inferWeekForMatchup(matchupId: m.matchupId, rosterId: nil, season: season) ?? -999
                     let key = "\(m.matchupId):\(wk)"
                     grouped[key, default: []].append(m)
@@ -150,12 +151,13 @@ struct AllTimeAggregator {
                         sumMgmtFor: curr.sumMgmtFor + uMgmt,
                         sumMgmtAgainst: curr.sumMgmtAgainst + oMgmt
                     )
+                    // Only increment wins/losses. Per user request, DO NOT record ties into aggregated counters.
                     if uPts > oPts {
                         curr = H2HStats(wins: curr.wins + 1, losses: curr.losses, ties: curr.ties, pointsFor: curr.pointsFor, pointsAgainst: curr.pointsAgainst, games: curr.games, sumMgmtFor: curr.sumMgmtFor, sumMgmtAgainst: curr.sumMgmtAgainst)
                     } else if uPts < oPts {
                         curr = H2HStats(wins: curr.wins, losses: curr.losses + 1, ties: curr.ties, pointsFor: curr.pointsFor, pointsAgainst: curr.pointsAgainst, games: curr.games, sumMgmtFor: curr.sumMgmtFor, sumMgmtAgainst: curr.sumMgmtAgainst)
                     } else {
-                        curr = H2HStats(wins: curr.wins, losses: curr.losses, ties: curr.ties + 1, pointsFor: curr.pointsFor, pointsAgainst: curr.pointsAgainst, games: curr.games, sumMgmtFor: curr.sumMgmtFor, sumMgmtAgainst: curr.sumMgmtAgainst)
+                        // tie -> do not increment wins/losses/ties in aggregate (treat as no-result)
                     }
                     headToHead[oppTeam.ownerId] = curr
 
@@ -331,7 +333,9 @@ struct AllTimeAggregator {
                     let myPoints = entry.points ?? 0.0
                     if myPoints > oppPoints { wins += 1 }
                     else if myPoints < oppPoints { losses += 1 }
-                    else { ties += 1 }
+                    else {
+                        // Per user preference: ties are not recorded. Do not increment ties.
+                    }
                 }
             }
         }
@@ -668,7 +672,9 @@ struct AllTimeAggregator {
                let oppPoints = oppEntry.points {
                 if myEntry.points ?? 0.0 > oppPoints { wins += 1 }
                 else if myEntry.points ?? 0.0 < oppPoints { losses += 1 }
-                else { ties += 1 }
+                else {
+                    // Per user preference: do not record ties in aggregated playoff stats
+                }
             }
 
             weeksPlayed += 1
@@ -723,13 +729,28 @@ func allPlayoffMatchupsForOwner(ownerId: String, league: LeagueData) -> [Sleeper
         let seasonMatchups: [SleeperMatchup] = season.matchups ?? []
         let ownerTeam = season.teams.first(where: { $0.ownerId == ownerId })
         let ownerRosterId = ownerTeam.flatMap { Int($0.id) } ?? -1
-        // Prefer matchup.week when available, else infer by matchupId
-        let ownerMatchups = seasonMatchups.filter { m in
-            let wk = m.week ?? m.matchupId
-            return bracketWeeks.contains(wk) && m.rosterId == ownerRosterId
+
+        // Build owner matchups with reliable week inference only; don't fall back to using matchupId as a week.
+        var ownerMatchupsWithWeek: [(SleeperMatchup, Int)] = []
+        for m in seasonMatchups where m.rosterId == ownerRosterId {
+            if let wk = m.week {
+                if bracketWeeks.contains(wk) {
+                    ownerMatchupsWithWeek.append((m, wk))
+                }
+            } else if let inferred = AllTimeAggregator.inferWeekForMatchup(matchupId: m.matchupId, rosterId: ownerRosterId, season: season) {
+                if bracketWeeks.contains(inferred) {
+                    ownerMatchupsWithWeek.append((m, inferred))
+                }
+            } else {
+                // cannot determine week -> skip
+                continue
+            }
         }
+
+        ownerMatchupsWithWeek.sort { a, b in a.1 < b.1 }
+
         var eliminated = false
-        for matchup in ownerMatchups.sorted(by: { ($0.week ?? $0.matchupId) < ($1.week ?? $1.matchupId) }) {
+        for (matchup, _) in ownerMatchupsWithWeek {
             if eliminated { break }
             all.append(matchup)
             if didOwnerLoseMatchup(ownerId: ownerId, matchup: matchup, season: season) {
@@ -746,13 +767,19 @@ func isOwnerRoster(ownerId: String, rosterId: Int, season: SeasonData) -> Bool {
 func didOwnerLoseMatchup(ownerId: String, matchup: SleeperMatchup, season: SeasonData) -> Bool {
     guard let ownerTeam = season.teams.first(where: { $0.ownerId == ownerId }) else { return false }
     let myRosterId = Int(ownerTeam.id) ?? -1
-    let allEntries = season.matchups?.filter { $0.matchupId == matchup.matchupId } ?? []
+
+    // Determine explicit week for this matchup (prefer matchup.week and then inference).
+    let wk = matchup.week ?? inferWeekForMatchup(matchupId: matchup.matchupId, rosterId: myRosterId, season: season)
+    guard let week = wk else { return false }
+
+    // Now restrict matching entries to this week to avoid cross-week collisions on matchupId.
+    let allEntries = season.matchups?.filter { $0.matchupId == matchup.matchupId && ($0.week ?? week) == week } ?? []
     guard allEntries.count == 2 else { return false }
     guard let myEntry = allEntries.first(where: { $0.rosterId == myRosterId }),
           let oppEntry = allEntries.first(where: { $0.rosterId != myRosterId }) else { return false }
     let myPoints = myEntry.points
     let oppPoints = oppEntry.points
-    return myPoints < oppPoints
+    return (myPoints ?? 0.0) < (oppPoints ?? 0.0)
 }
 
 extension Collection {
