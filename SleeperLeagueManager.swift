@@ -999,7 +999,8 @@ class SleeperLeagueManager: ObservableObject {
                     sleeperLeague: seasonLeague
                 )
                 let matchups = convertToSleeperMatchups(matchupsByWeek)
-                seasonData.append(SeasonData(id: seasonId, season: seasonId, teams: teams, playoffStartWeek: playoffStartWeek, playoffTeamsCount: nil, matchups: matchups, matchupsByWeek: matchupsByWeek))
+                // Use season-specific playoff start here (was incorrectly using outer playoffStartWeek)
+                seasonData.append(SeasonData(id: seasonId, season: seasonId, teams: teams, playoffStartWeek: seasonPlayoffStart, playoffTeamsCount: nil, matchups: matchups, matchupsByWeek: matchupsByWeek))
             }
         }
 
@@ -1228,7 +1229,8 @@ extension SleeperLeagueManager {
         var newSeasons = league.seasons
         if let i = newSeasons.firstIndex(where: { $0.id == latestSeason.id }) {
             let matchups = convertToSleeperMatchups(matchupsByWeek)
-            newSeasons[i] = SeasonData(id: latestSeason.id, season: latestSeason.season, teams: teams, playoffStartWeek: playoffStartWeek, playoffTeamsCount: nil, matchups: matchups, matchupsByWeek: matchupsByWeek)
+            // Use the local playoffStart variable (was incorrectly using property playoffStartWeek)
+            newSeasons[i] = SeasonData(id: latestSeason.id, season: latestSeason.season, teams: teams, playoffStartWeek: playoffStart, playoffTeamsCount: nil, matchups: matchups, matchupsByWeek: matchupsByWeek)
         }
 
         let updated = LeagueData(
