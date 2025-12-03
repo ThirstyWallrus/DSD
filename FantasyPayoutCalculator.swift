@@ -188,6 +188,7 @@ struct StyledTextField: View {
     let placeholder: String
     @Binding var value: String
     let keyboardType: UIKeyboardType
+    var focused: FocusState<Bool>.Binding
     var body: some View {
         ZStack(alignment: .leading) {
             Image("TextBar")
@@ -198,13 +199,15 @@ struct StyledTextField: View {
                 if keyboardType == .numberPad || keyboardType == .decimalPad {
                     TextField("", text: $value)
                         .keyboardType(keyboardType)
-                        .multilineTextAlignment(.trailing)
+                        .multilineTextAlignment(.center)
                         .foregroundColor(.orange)
+                        .focused(focused)
                 } else {
                     TextField("", text: $value)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled(true)
                         .foregroundColor(.orange)
+                        .focused(focused)
                 }
             }
             .padding(.horizontal, 18)
@@ -216,6 +219,7 @@ struct StyledTextField: View {
         }
         .frame(height: 44)
         .clipShape(RoundedRectangle(cornerRadius: 10))
+        .frame(maxWidth: .infinity)
     }
 }
 
@@ -224,6 +228,8 @@ struct InitialSetupView: View {
     @ObservedObject var settings: LeagueSettings
     @Binding var path: [String]
     @State private var duesText: String = ""
+    @FocusState private var duesFocused: Bool
+    @Environment(\.dismiss) var dismiss
 
     var body: some View {
         ZStack {
@@ -242,7 +248,7 @@ struct InitialSetupView: View {
                             Text("League Dues ($)")
                                 .font(.headline)
                                 .foregroundColor(.orange)
-                            StyledTextField(placeholder: "Enter dues (e.g. 100)", value: $duesText, keyboardType: .decimalPad)
+                            StyledTextField(placeholder: "Enter dues (e.g. 100)", value: $duesText, keyboardType: .decimalPad, focused: $duesFocused)
                                 .onAppear { duesText = String(format: "%.2f", settings.dues) }
                                 .onChange(of: duesText) { new in
                                     if let val = Double(new) { settings.dues = val }
@@ -295,26 +301,39 @@ struct InitialSetupView: View {
                     .padding(.horizontal, 20)
 
                     // "Next" action button (styled like RegisterView button)
-                    Button(action: {
-                        settings.setRecommendedPercentages()
-                        path.append("percentages")
-                    }) {
-                        HStack {
-                            Text("Accept Settings")
-                                .font(.headline)
-                                .foregroundColor(.orange)
+                    HStack(spacing: 16) {
+                        Button(action: {
+                            dismiss()
+                        }) {
+                            Text("Back to Dash")
                                 .bold()
+                                .foregroundColor(.orange)
                                 .padding(.vertical, 10)
                                 .padding(.horizontal, 20)
+                                .background(RoundedRectangle(cornerRadius: 10).fill(Color.black.opacity(0.5)))
                         }
-                        .frame(maxWidth: 260)
-                        .background(
-                            Image("Button")
-                                .resizable()
-                                .aspectRatio(contentMode: .fill)
-                        )
+
+                        Button(action: {
+                            settings.setRecommendedPercentages()
+                            path.append("percentages")
+                        }) {
+                            HStack {
+                                Text("Accept Settings")
+                                    .font(.headline)
+                                    .foregroundColor(.orange)
+                                    .bold()
+                                    .padding(.vertical, 10)
+                                    .padding(.horizontal, 20)
+                            }
+                            .frame(maxWidth: 260)
+                            .background(
+                                Image("Button")
+                                    .resizable()
+                                    .aspectRatio(contentMode: .fill)
+                            )
+                        }
+                        .buttonStyle(PlainButtonStyle())
                     }
-                    .buttonStyle(PlainButtonStyle())
                     .padding(.bottom, 40)
                 }
                 .padding(.top, 20)
@@ -322,6 +341,14 @@ struct InitialSetupView: View {
         }
         .navigationTitle("")
         .navigationBarHidden(true)
+        .toolbar {
+            ToolbarItemGroup(placement: .keyboard) {
+                Spacer()
+                Button("Done") {
+                    duesFocused = false
+                }
+            }
+        }
     }
 
     private var headerSection: some View {
@@ -409,7 +436,7 @@ struct PercentagesView: View {
                     Button(action: {
                         path.removeLast()
                     }) {
-                        Text("Back")
+                        Text("Previous")
                             .bold()
                             .foregroundColor(.orange)
                             .padding(.vertical, 10)
@@ -420,7 +447,7 @@ struct PercentagesView: View {
                         path.append("calculator")
                     }) {
                         HStack {
-                            Text("Accept Settings")
+                            Text("Advance")
                                 .font(.headline)
                                 .foregroundColor(.orange)
                                 .bold()
@@ -485,6 +512,8 @@ struct SliderRow: View {
 // MARK: - Calculator View (styled)
 struct CalculatorView: View {
     @ObservedObject var settings: LeagueSettings
+    @Binding var path: [String]
+    @Environment(\.dismiss) var dismiss
 
     @EnvironmentObject var appSelection: AppSelection
     @EnvironmentObject var leagueManager: SleeperLeagueManager
@@ -570,6 +599,43 @@ struct CalculatorView: View {
                     }
                     .padding(.vertical, 12)
                 }
+                
+                HStack(spacing: 16) {
+                    Button(action: {
+                        path.removeLast()
+                    }) {
+                        Text("Previous")
+                            .bold()
+                            .foregroundColor(.orange)
+                            .padding(.vertical, 10)
+                            .padding(.horizontal, 20)
+                            .background(RoundedRectangle(cornerRadius: 10).fill(Color.black.opacity(0.5)))
+                    }
+                    Button(action: {
+                        dismiss()
+                    }) {
+                        Text("Back to Dash")
+                            .bold()
+                            .foregroundColor(.orange)
+                            .padding(.vertical, 10)
+                            .padding(.horizontal, 20)
+                            .background(RoundedRectangle(cornerRadius: 10).fill(Color.black.opacity(0.5)))
+                    }
+                    Button(action: {
+                        path.append("my_league")
+                    }) {
+                        HStack {
+                            Text("My League")
+                                .font(.headline)
+                                .foregroundColor(.orange)
+                                .bold()
+                                .padding(.vertical, 10)
+                                .padding(.horizontal, 20)
+                        }
+                        .background(Image("Button").resizable().aspectRatio(contentMode: .fill))
+                    }
+                }
+                .padding(.bottom, 28)
             }
         }
         .navigationTitle("")
@@ -594,6 +660,45 @@ struct CalculatorView: View {
     }
 }
 
+// MARK: - Team Payouts View (placeholder)
+struct TeamPayoutsView: View {
+    @ObservedObject var settings: LeagueSettings
+
+    @EnvironmentObject var appSelection: AppSelection
+    @EnvironmentObject var leagueManager: SleeperLeagueManager
+
+    var body: some View {
+        ZStack {
+            Image("Background1")
+                .resizable()
+                .scaledToFill()
+                .ignoresSafeArea()
+
+            VStack(spacing: 12) {
+                Image("DynastyStatDropLogo")
+                    .resizable()
+                    .scaledToFit()
+                    .frame(height: 110)
+                    .padding(.top, 10)
+
+                Text("My League Payouts")
+                    .font(.title)
+                    .bold()
+                    .foregroundColor(.orange)
+
+                ScrollView {
+                    Text("List of teams and their payouts based on season stats.")
+                        .foregroundColor(.white)
+                        .padding()
+                    // Add calculation logic here using app file
+                }
+            }
+        }
+        .navigationTitle("")
+        .navigationBarHidden(true)
+    }
+}
+
 // MARK: - Container View (styled entry)
 struct FantasyPayoutCalculator: View {
     @StateObject var settings = LeagueSettings()
@@ -609,7 +714,11 @@ struct FantasyPayoutCalculator: View {
                     if destination == "percentages" {
                         PercentagesView(settings: settings, path: $path)
                     } else if destination == "calculator" {
-                        CalculatorView(settings: settings)
+                        CalculatorView(settings: settings, path: $path)
+                            .environmentObject(appSelection)
+                            .environmentObject(leagueManager)
+                    } else if destination == "my_league" {
+                        TeamPayoutsView(settings: settings)
                             .environmentObject(appSelection)
                             .environmentObject(leagueManager)
                     }
