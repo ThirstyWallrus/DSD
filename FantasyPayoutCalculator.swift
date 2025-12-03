@@ -17,9 +17,9 @@ final class LeagueSettings: ObservableObject {
     @Published var isWinnerTakeAll: Bool = false
     @Published var hasPlacesPayout: Bool = true
     @Published var regularSeasonWeeks: Int = 13
-    @Published var hasMultiplePayouts: Bool = false
+    // NOTE: Removed hasMultiplePayouts (sub-options are surfaced directly)
 
-    // Multiple payouts sub-options
+    // Multiple payouts sub-options (now surfaced inline)
     @Published var hasSeasonHighScore: Bool = false
     @Published var hasSeasonBestRecord: Bool = false
     @Published var hasWeeklyHighScore: Bool = false
@@ -49,7 +49,7 @@ final class LeagueSettings: ObservableObject {
     // Provide recommended defaults based on selections
     func setRecommendedPercentages() {
         // If everything selected, use a full recommendation
-        if dues >= 100 && hasPlacesPayout && hasMultiplePayouts &&
+        if dues >= 100 && hasPlacesPayout &&
             hasSeasonHighScore && hasSeasonBestRecord && hasWeeklyHighScore &&
             weeklyFullTeam && weeklyOffensive && weeklyDefensive
         {
@@ -137,30 +137,30 @@ final class LeagueSettings: ObservableObject {
             result["Winner (WTA)"] = totalPot
         }
 
-        if hasMultiplePayouts {
-            if hasSeasonHighScore {
-                result["Season High Score"] = pctAmount(seasonHSPct)
+        // NOTE: We no longer require a separate "enable multiple payouts" flag.
+        // Each sub-option contributes if it's enabled.
+        if hasSeasonHighScore {
+            result["Season High Score"] = pctAmount(seasonHSPct)
+        }
+        if hasSeasonBestRecord {
+            result["Season Best Record"] = pctAmount(seasonBRPct)
+        }
+        if hasWeeklyHighScore {
+            let weeks = max(1, regularSeasonWeeks)
+            if weeklyFullTeam && weeklyTeamHSPct > 0 {
+                let totalWeeklyTeam = pctAmount(weeklyTeamHSPct)
+                result["Weekly Team HS (Total)"] = totalWeeklyTeam
+                result["Weekly Team HS (Per Week)"] = totalWeeklyTeam / Double(weeks)
             }
-            if hasSeasonBestRecord {
-                result["Season Best Record"] = pctAmount(seasonBRPct)
+            if weeklyOffensive && weeklyOffHSPct > 0 {
+                let totalWeeklyOff = pctAmount(weeklyOffHSPct)
+                result["Weekly Offensive HS (Total)"] = totalWeeklyOff
+                result["Weekly Offensive HS (Per Week)"] = totalWeeklyOff / Double(weeks)
             }
-            if hasWeeklyHighScore {
-                let weeks = max(1, regularSeasonWeeks)
-                if weeklyFullTeam && weeklyTeamHSPct > 0 {
-                    let totalWeeklyTeam = pctAmount(weeklyTeamHSPct)
-                    result["Weekly Team HS (Total)"] = totalWeeklyTeam
-                    result["Weekly Team HS (Per Week)"] = totalWeeklyTeam / Double(weeks)
-                }
-                if weeklyOffensive && weeklyOffHSPct > 0 {
-                    let totalWeeklyOff = pctAmount(weeklyOffHSPct)
-                    result["Weekly Offensive HS (Total)"] = totalWeeklyOff
-                    result["Weekly Offensive HS (Per Week)"] = totalWeeklyOff / Double(weeks)
-                }
-                if weeklyDefensive && weeklyDefHSPct > 0 {
-                    let totalWeeklyDef = pctAmount(weeklyDefHSPct)
-                    result["Weekly Defensive HS (Total)"] = totalWeeklyDef
-                    result["Weekly Defensive HS (Per Week)"] = totalWeeklyDef / Double(weeks)
-                }
+            if weeklyDefensive && weeklyDefHSPct > 0 {
+                let totalWeeklyDef = pctAmount(weeklyDefHSPct)
+                result["Weekly Defensive HS (Total)"] = totalWeeklyDef
+                result["Weekly Defensive HS (Per Week)"] = totalWeeklyDef / Double(weeks)
             }
         }
 
@@ -251,6 +251,33 @@ struct InitialSetupView: View {
 
                         ToggleRow(title: "Winner Take All?", binding: $settings.isWinnerTakeAll)
                         ToggleRow(title: "1st, 2nd, 3rd Place Payouts?", binding: $settings.hasPlacesPayout)
+
+                        // NEW: Surface multiple-payout sub-options inline (removed separate "Enable Multiple Payouts?" control)
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("Additional Payout Options")
+                                .foregroundColor(.orange)
+                                .bold()
+                                .padding(.bottom, 4)
+
+                            ToggleRow(title: "Season High Score", binding: $settings.hasSeasonHighScore)
+                            ToggleRow(title: "Season Best Record", binding: $settings.hasSeasonBestRecord)
+
+                            VStack(alignment: .leading, spacing: 8) {
+                                ToggleRow(title: "Weekly High Score", binding: $settings.hasWeeklyHighScore)
+                                if settings.hasWeeklyHighScore {
+                                    VStack(alignment: .leading, spacing: 6) {
+                                        ToggleRow(title: "Weekly — Full Team", binding: $settings.weeklyFullTeam)
+                                        ToggleRow(title: "Weekly — Offensive", binding: $settings.weeklyOffensive)
+                                        ToggleRow(title: "Weekly — Defensive", binding: $settings.weeklyDefensive)
+                                    }
+                                    .padding(.leading, 12)
+                                }
+                            }
+                        }
+                        .padding(.vertical, 6)
+                        .padding(.horizontal, 6)
+                        .background(RoundedRectangle(cornerRadius: 8).fill(Color.black.opacity(0.08)))
+
                         HStack {
                             Text("Regular Season Weeks:")
                                 .foregroundColor(.orange)
@@ -261,8 +288,6 @@ struct InitialSetupView: View {
                         }
                         Stepper("", value: $settings.regularSeasonWeeks, in: 1...18)
                             .labelsHidden()
-
-                        ToggleRow(title: "Enable Multiple Payouts?", binding: $settings.hasMultiplePayouts)
                     }
                     .padding()
                     .background(Color.black.opacity(0.35))
@@ -359,18 +384,17 @@ struct PercentagesView: View {
                             SliderRow(label: "3rd Place", value: $settings.thirdPlacePct)
                         }
 
-                        if settings.hasMultiplePayouts {
-                            if settings.hasSeasonHighScore {
-                                SliderRow(label: "Season High Score", value: $settings.seasonHSPct)
-                            }
-                            if settings.hasSeasonBestRecord {
-                                SliderRow(label: "Season Best Record", value: $settings.seasonBRPct)
-                            }
-                            if settings.hasWeeklyHighScore {
-                                if settings.weeklyFullTeam { SliderRow(label: "Weekly Team HS (Total)", value: $settings.weeklyTeamHSPct) }
-                                if settings.weeklyOffensive { SliderRow(label: "Weekly Offensive HS (Total)", value: $settings.weeklyOffHSPct) }
-                                if settings.weeklyDefensive { SliderRow(label: "Weekly Defensive HS (Total)", value: $settings.weeklyDefHSPct) }
-                            }
+                        // Show sliders whenever the underlying option is enabled
+                        if settings.hasSeasonHighScore {
+                            SliderRow(label: "Season High Score", value: $settings.seasonHSPct)
+                        }
+                        if settings.hasSeasonBestRecord {
+                            SliderRow(label: "Season Best Record", value: $settings.seasonBRPct)
+                        }
+                        if settings.hasWeeklyHighScore {
+                            if settings.weeklyFullTeam { SliderRow(label: "Weekly Team HS (Total)", value: $settings.weeklyTeamHSPct) }
+                            if settings.weeklyOffensive { SliderRow(label: "Weekly Offensive HS (Total)", value: $settings.weeklyOffHSPct) }
+                            if settings.weeklyDefensive { SliderRow(label: "Weekly Defensive HS (Total)", value: $settings.weeklyDefHSPct) }
                         }
 
                         Spacer(minLength: 40)
@@ -602,4 +626,3 @@ struct FantasyPayoutCalculator_Previews: PreviewProvider {
             .environmentObject(SleeperLeagueManager())
     }
 }
-
