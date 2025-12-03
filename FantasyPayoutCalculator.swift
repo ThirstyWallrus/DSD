@@ -237,59 +237,59 @@ struct InitialSetupView: View {
 struct PercentagesView: View {
     @ObservedObject var settings: LeagueSettings
     @Binding var path: [String]
-
+    
     var body: some View {
         Form {
-            Section<Text, Any, EmptyView>(header: Text("Set Percentages (Total: \(settings.totalPercentage, specifier: \"%.2f\")%)")) {
+            Section(header: Text("Set Percentages (Total: \(settings.totalPercentage, specifier: "%.2f")%)")) {
                 if settings.totalPercentage > 100 {
                     Text("Warning: Total exceeds 100%!").foregroundColor(.red)
                 }
-
+                
                 if settings.hasPlacesPayout {
                     VStack(alignment: .leading) {
                         Text("1st Place: \(settings.firstPlacePct, specifier: \"%.2f\")%")
-                        Slider(value: $settings.firstPlacePct, in: 0...100, step: 0.5)
+                             Slider(value: $settings.firstPlacePct, in: 0...100, step: 0.5)
                     }
                     VStack(alignment: .leading) {
                         Text("2nd Place: \(settings.secondPlacePct, specifier: \"%.2f\")%")
-                        Slider(value: $settings.secondPlacePct, in: 0...100, step: 0.5)
+                             Slider(value: $settings.secondPlacePct, in: 0...100, step: 0.5)
                     }
                     VStack(alignment: .leading) {
                         Text("3rd Place: \(settings.thirdPlacePct, specifier: \"%.2f\")%")
-                        Slider(value: $settings.thirdPlacePct, in: 0...100, step: 0.5)
+                             Slider(value: $settings.thirdPlacePct, in: 0...100, step: 0.5)
                     }
                 }
-
+                
                 if settings.hasMultiplePayouts {
                     if settings.hasSeasonHighScore {
                         VStack(alignment: .leading) {
                             Text("Season High Score: \(settings.seasonHSPct, specifier: \"%.2f\")%")
-                            Slider(value: $settings.seasonHSPct, in: 0...100, step: 0.5)
+                                 Slider(value: $settings.seasonHSPct, in: 0...100, step: 0.5)
                         }
                     }
                     if settings.hasSeasonBestRecord {
                         VStack(alignment: .leading) {
                             Text("Season Best Record: \(settings.seasonBRPct, specifier: \"%.2f\")%")
-                            Slider(value: $settings.seasonBRPct, in: 0...100, step: 0.5)
+                                 Slider(value: $settings.seasonBRPct, in: 0...100, step: 0.5)
                         }
                     }
                     if settings.hasWeeklyHighScore {
                         if settings.weeklyFullTeam {
                             VStack(alignment: .leading) {
                                 Text("Weekly Team HS (Total for \(settings.regularSeasonWeeks) weeks): \(settings.weeklyTeamHSPct, specifier: \"%.2f\")%")
-                                Slider(value: $settings.weeklyTeamHSPct, in: 0...100, step: 0.5)
+                                     Slider(value: $settings.weeklyTeamHSPct, in: 0...100, step: 0.5)
                             }
                         }
                         if settings.weeklyOffensive {
                             VStack(alignment: .leading) {
                                 Text("Weekly Offensive HS (Total): \(settings.weeklyOffHSPct, specifier: \"%.2f\")%")
-                                Slider(value: $settings.weeklyOffHSPct, in: 0...100, step: 0.5)
+                                     Slider(value: $settings.weeklyOffHSPct, in: 0...100, step: 0.5)
                             }
                         }
                         if settings.weeklyDefensive {
                             VStack(alignment: .leading) {
                                 Text("Weekly Defensive HS (Total): \(settings.weeklyDefHSPct, specifier: \"%.2f\")%")
-                                Slider(value: $settings.weeklyDefHSPct, in: 0...100, step: 0.5)
+                                     Slider(value: $settings.weeklyDefHSPct, in: 0...100, step: 0.5)
                             }
                         }
                     }
@@ -307,117 +307,119 @@ struct PercentagesView: View {
             }
         }
     }
-
-
-struct CalculatorView: View {
-    @ObservedObject var settings: LeagueSettings
-
-    @EnvironmentObject var appSelection: AppSelection
-    @EnvironmentObject var leagueManager: SleeperLeagueManager
-
-    var body: some View {
-        let teamsCount = numberOfTeams()
-        let (breakdown, notes) = settings.calculatePayouts(numberOfTeams: teamsCount)
-        let totalPot = settings.dues * Double(max(1, teamsCount))
-
-        List {
-            Section(header: Text("Summary")) {
-                HStack {
-                    Text("Teams in League")
-                    Spacer()
-                    Text("\(teamsCount)")
-                }
-                HStack {
-                    Text("League Dues")
-                    Spacer()
-                    Text(verbatim: <#String#>"$\(settings.dues, specifier: \"%.2f\")")
-                }
-                HStack {
-                    Text("Total Pot")
-                    Spacer()
-                    Text("$\(totalPot, specifier: \"%.2f\")")
-                }
-                HStack {
-                    Text("Configured Payout %")
-                    Spacer()
-                    Text("\(settings.totalPercentage, specifier: \"%.2f\")%")
-                }
-            }
-
-            Section(header: Text("Breakdown")) {
-                ForEach(breakdown.keys.sorted(), id: \.self) { key in
+    
+    
+    struct CalculatorView: View {
+        @ObservedObject var settings: LeagueSettings
+        
+        @EnvironmentObject var appSelection: AppSelection
+        @EnvironmentObject var leagueManager: SleeperLeagueManager
+        
+        var body: some View {
+            let teamsCount = numberOfTeams()
+            let (breakdown, notes) = settings.calculatePayouts(numberOfTeams: teamsCount)
+            let totalPot = settings.dues * Double(max(1, teamsCount))
+            
+            List {
+                Section(header: Text("Summary")) {
                     HStack {
-                        Text(key)
+                        Text("Teams in League")
                         Spacer()
-                        Text("$\(breakdown[key] ?? 0.0, specifier: \"%.2f\")")
+                        Text("\(teamsCount)")
+                    }
+                    HStack {
+                        Text("League Dues")
+                        Spacer()
+                        // Removed invalid Xcode placeholder and use a valid Text interpolation
+                        Text("$\(settings.dues, specifier: \"%.2f\")")
+                    }
+                    HStack {
+                        Text("Total Pot")
+                        Spacer()
+                        Text("$\(totalPot, specifier: \"%.2f\")")
+                    }
+                    HStack {
+                        Text("Configured Payout %")
+                        Spacer()
+                        Text("\(settings.totalPercentage, specifier: \"%.2f\")%")
                     }
                 }
-            }
-
-            if !notes.isEmpty {
-                Section(header: Text("Notes")) {
-                    ForEach(notes, id: \.self) { n in
-                        Text(n).font(.footnote)
+                
+                Section(header: Text("Breakdown")) {
+                    ForEach(breakdown.keys.sorted(), id: \.self) { key in
+                        HStack {
+                            Text(key)
+                            Spacer()
+                            Text("$\(breakdown[key] ?? 0.0, specifier: \"%.2f\")")
+                        }
                     }
                 }
+                
+                if !notes.isEmpty {
+                    Section(header: Text("Notes")) {
+                        ForEach(notes, id: \.self) { n in
+                            Text(n).font(.footnote)
+                        }
+                    }
+                }
+                
+                Section {
+                    Text("Tip: Weekly payouts that are configured as a season total are shown as both a total and a per-week amount (Total / Weeks).")
+                        .font(.footnote)
+                        .foregroundColor(.gray)
+                }
             }
-
-            Section {
-                Text("Tip: Weekly payouts that are configured as a season total are shown as both a total and a per-week amount (Total / Weeks).")
-                    .font(.footnote)
-                    .foregroundColor(.gray)
-            }
+            .navigationTitle("Payout Calculator")
         }
-        .navigationTitle("Payout Calculator")
-    }
-
-    // Determine number of teams using AppSelection & league data
-    private func numberOfTeams() -> Int {
-        if let league = appSelection.selectedLeague {
-            if appSelection.selectedSeason == "All Time" || appSelection.selectedSeason.isEmpty {
-                return league.seasons.sorted { $0.id < $1.id }.last?.teams.count ?? max(0, league.teams.count)
-            } else {
-                return league.seasons.first(where: { $0.id == appSelection.selectedSeason })?.teams.count
+        
+        // Determine number of teams using AppSelection & league data
+        private func numberOfTeams() -> Int {
+            if let league = appSelection.selectedLeague {
+                if appSelection.selectedSeason == "All Time" || appSelection.selectedSeason.isEmpty {
+                    return league.seasons.sorted { $0.id < $1.id }.last?.teams.count ?? max(0, league.teams.count)
+                } else {
+                    return league.seasons.first(where: { $0.id == appSelection.selectedSeason })?.teams.count
                     ?? league.seasons.sorted { $0.id < $1.id }.last?.teams.count
                     ?? league.teams.count
+                }
+            }
+            if let first = appSelection.leagues.first {
+                return first.seasons.sorted { $0.id < $1.id }.last?.teams.count ?? first.teams.count
+            }
+            return 10
+        }
+    }
+    
+    // MARK: - Container View
+    
+    struct FantasyPayoutCalculator: View {
+        @StateObject var settings = LeagueSettings()
+        @State var path: [String] = []
+        
+        @EnvironmentObject var appSelection: AppSelection
+        @EnvironmentObject var leagueManager: SleeperLeagueManager
+        
+        var body: some View {
+            NavigationStack(path: $path) {
+                InitialSetupView(settings: settings, path: $path)
+                    .navigationDestination(for: String.self) { destination in
+                        if destination == "percentages" {
+                            PercentagesView(settings: settings, path: $path)
+                        } else if destination == "calculator" {
+                            CalculatorView(settings: settings)
+                                .environmentObject(appSelection)
+                                .environmentObject(leagueManager)
+                        }
+                    }
             }
         }
-        if let first = appSelection.leagues.first {
-            return first.seasons.sorted { $0.id < $1.id }.last?.teams.count ?? first.teams.count
-        }
-        return 10
     }
-}
-
-// MARK: - Container View
-
-struct FantasyPayoutCalculator: View {
-    @StateObject var settings = LeagueSettings()
-    @State var path: [String] = []
-
-    @EnvironmentObject var appSelection: AppSelection
-    @EnvironmentObject var leagueManager: SleeperLeagueManager
-
-    var body: some View {
-        NavigationStack(path: $path) {
-            InitialSetupView(settings: settings, path: $path)
-                .navigationDestination(for: String.self) { destination in
-                    if destination == "percentages" {
-                        PercentagesView(settings: settings, path: $path)
-                    } else if destination == "calculator" {
-                        CalculatorView(settings: settings)
-                            .environmentObject(appSelection)
-                            .environmentObject(leagueManager)
-                    }
-                }
+    
+    struct FantasyPayoutCalculator_Previews: PreviewProvider {
+        static var previews: some View {
+            FantasyPayoutCalculator()
+                .environmentObject(AppSelection())
+                .environmentObject(SleeperLeagueManager())
         }
-    }
-}
-
-struct FantasyPayoutCalculator_Previews: PreviewProvider {
-    static var previews: some View {
-        FantasyPayoutCalculator()
-            .environmentObject(AppSelection())
-            .environmentObject(SleeperLeagueManager())
     }
 }
