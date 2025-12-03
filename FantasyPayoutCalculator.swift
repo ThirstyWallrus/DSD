@@ -5,14 +5,9 @@
 //  Created by Dynasty Stat Drop on 12/3/25.
 //
 
-
 import SwiftUI
 
-/// Fantasy Payout Calculator
-/// - Compatible with the app's environment:
-///   - Reads league/team counts from AppSelection (EnvironmentObject)
-///   - Designed to be presented from DSDDashboard settings menu
-/// - Non-destructive: only reads data, does not mutate leagues.
+// MARK: - League Settings Model
 
 @MainActor
 final class LeagueSettings: ObservableObject {
@@ -33,7 +28,7 @@ final class LeagueSettings: ObservableObject {
     @Published var weeklyOffensive: Bool = false
     @Published var weeklyDefensive: Bool = false
 
-    // Percentages (initialized to 0, will be set with recommendations)
+    // Percentages
     @Published var firstPlacePct: Double = 0.0
     @Published var secondPlacePct: Double = 0.0
     @Published var thirdPlacePct: Double = 0.0
@@ -43,15 +38,20 @@ final class LeagueSettings: ObservableObject {
     @Published var weeklyOffHSPct: Double = 0.0
     @Published var weeklyDefHSPct: Double = 0.0
 
-    // Calculate total percentage for validation
+    // Computed
     var totalPercentage: Double {
-        firstPlacePct + secondPlacePct + thirdPlacePct + seasonHSPct + seasonBRPct + weeklyTeamHSPct + weeklyOffHSPct + weeklyDefHSPct
+        firstPlacePct + secondPlacePct + thirdPlacePct +
+        seasonHSPct + seasonBRPct +
+        weeklyTeamHSPct + weeklyOffHSPct + weeklyDefHSPct
     }
 
-    // Set recommended percentages based on selections (simple heuristic)
+    // Provide recommended defaults based on selections
     func setRecommendedPercentages() {
-        // If everything is selected, set the recommended weighting
-        if dues >= 100 && hasPlacesPayout && hasMultiplePayouts && hasSeasonHighScore && hasSeasonBestRecord && hasWeeklyHighScore && weeklyFullTeam && weeklyOffensive && weeklyDefensive {
+        // If everything selected, use a full recommendation
+        if dues >= 100 && hasPlacesPayout && hasMultiplePayouts &&
+            hasSeasonHighScore && hasSeasonBestRecord && hasWeeklyHighScore &&
+            weeklyFullTeam && weeklyOffensive && weeklyDefensive
+        {
             firstPlacePct = 40.0
             secondPlacePct = 20.0
             thirdPlacePct = 10.0
@@ -60,60 +60,59 @@ final class LeagueSettings: ObservableObject {
             weeklyTeamHSPct = 7.0
             weeklyOffHSPct = 7.0
             weeklyDefHSPct = 7.0
-        } else {
-            // Fallback: distribute evenly among active targets but preserve some weighting to places if enabled.
-            // Count active buckets (approximation)
-            var bucketCount = 0.0
-            if hasPlacesPayout { bucketCount += 3 } // 1st/2nd/3rd as three buckets
-            if hasSeasonHighScore { bucketCount += 1 }
-            if hasSeasonBestRecord { bucketCount += 1 }
-            if hasWeeklyHighScore {
-                if weeklyFullTeam { bucketCount += 1 }
-                if weeklyOffensive { bucketCount += 1 }
-                if weeklyDefensive { bucketCount += 1 }
-            }
-            if bucketCount == 0 {
-                // Default to places only
-                firstPlacePct = 40.0
-                secondPlacePct = 30.0
-                thirdPlacePct = 30.0
-                return
-            }
-            // If places included, give them moderate distribution
-            if hasPlacesPayout {
-                let remaining = 100.0 - 20.0 // reserve 20 for places weighting baseline
-                firstPlacePct = min(50, 40) // small reasonable defaults
-                secondPlacePct = min(30, 30)
-                thirdPlacePct = min(20, 20)
-                // distribute leftover among other buckets evenly
-                let otherBuckets = bucketCount - 3
-                if otherBuckets > 0 {
-                    let evenOther = remaining / otherBuckets
-                    if hasSeasonHighScore { seasonHSPct = evenOther }
-                    if hasSeasonBestRecord { seasonBRPct = evenOther }
-                    if hasWeeklyHighScore {
-                        if weeklyFullTeam { weeklyTeamHSPct = evenOther }
-                        if weeklyOffensive { weeklyOffHSPct = evenOther }
-                        if weeklyDefensive { weeklyDefHSPct = evenOther }
-                    }
-                }
-            } else {
-                // No places: even split
-                let even = 100.0 / bucketCount
-                if hasSeasonHighScore { seasonHSPct = even }
-                if hasSeasonBestRecord { seasonBRPct = even }
+            return
+        }
+
+        // Fallback logic: distribute across active buckets with modest place weighting
+        var bucketCount = 0.0
+        if hasPlacesPayout { bucketCount += 3 } // 1st/2nd/3rd
+        if hasSeasonHighScore { bucketCount += 1 }
+        if hasSeasonBestRecord { bucketCount += 1 }
+        if hasWeeklyHighScore {
+            if weeklyFullTeam { bucketCount += 1 }
+            if weeklyOffensive { bucketCount += 1 }
+            if weeklyDefensive { bucketCount += 1 }
+        }
+
+        if bucketCount == 0 {
+            // Default: basic places
+            firstPlacePct = 40.0
+            secondPlacePct = 30.0
+            thirdPlacePct = 30.0
+            return
+        }
+
+        if hasPlacesPayout {
+            // Give places a baseline, distribute remaining evenly to the rest
+            firstPlacePct = 40.0
+            secondPlacePct = 30.0
+            thirdPlacePct = 20.0
+            let otherBuckets = max(0.0, bucketCount - 3.0)
+            if otherBuckets > 0 {
+                let remaining = max(0.0, 100.0 - (firstPlacePct + secondPlacePct + thirdPlacePct))
+                let evenOther = remaining / otherBuckets
+                if hasSeasonHighScore { seasonHSPct = evenOther }
+                if hasSeasonBestRecord { seasonBRPct = evenOther }
                 if hasWeeklyHighScore {
-                    if weeklyFullTeam { weeklyTeamHSPct = even }
-                    if weeklyOffensive { weeklyOffHSPct = even }
-                    if weeklyDefensive { weeklyDefHSPct = even }
+                    if weeklyFullTeam { weeklyTeamHSPct = evenOther }
+                    if weeklyOffensive { weeklyOffHSPct = evenOther }
+                    if weeklyDefensive { weeklyDefHSPct = evenOther }
                 }
+            }
+        } else {
+            // Even split between all active buckets
+            let even = 100.0 / bucketCount
+            if hasSeasonHighScore { seasonHSPct = even }
+            if hasSeasonBestRecord { seasonBRPct = even }
+            if hasWeeklyHighScore {
+                if weeklyFullTeam { weeklyTeamHSPct = even }
+                if weeklyOffensive { weeklyOffHSPct = even }
+                if weeklyDefensive { weeklyDefHSPct = even }
             }
         }
     }
 
-    // Calculate payouts based on current settings and passed-in league info.
-    // The function here is kept purely local (does not query leagues); the CalculatorView will
-    // call it with the number of teams and weeks as inputs.
+    // Payout calculation (purely local)
     func calculatePayouts(numberOfTeams: Int) -> (breakdown: [String: Double], notes: [String]) {
         var notes: [String] = []
         let teams = max(1, numberOfTeams)
@@ -123,8 +122,9 @@ final class LeagueSettings: ObservableObject {
             notes.append("No teams found in league; using 0 teams assumed.")
         }
 
-        // Collect buckets and compute amounts. Percentages are treated as percentage of total pot.
-        func pctAmount(_ pct: Double) -> Double { (pct / 100.0) * totalPot }
+        func pctAmount(_ pct: Double) -> Double {
+            (pct / 100.0) * totalPot
+        }
 
         var result: [String: Double] = [:]
 
@@ -133,7 +133,6 @@ final class LeagueSettings: ObservableObject {
             result["2nd Place"] = pctAmount(secondPlacePct)
             result["3rd Place"] = pctAmount(thirdPlacePct)
         } else if isWinnerTakeAll {
-            // winner take all if configured (put everything into 1st)
             result["Winner (WTA)"] = totalPot
         }
 
@@ -145,8 +144,6 @@ final class LeagueSettings: ObservableObject {
                 result["Season Best Record"] = pctAmount(seasonBRPct)
             }
             if hasWeeklyHighScore {
-                // weekly*Pct fields represent totals across the season in this UI.
-                // We'll break them into per-week amounts when regularSeasonWeeks > 0
                 let weeks = max(1, regularSeasonWeeks)
                 if weeklyFullTeam, weeklyTeamHSPct > 0 {
                     let totalWeeklyTeam = pctAmount(weeklyTeamHSPct)
@@ -166,13 +163,14 @@ final class LeagueSettings: ObservableObject {
             }
         }
 
-        // Add note if configured percentages do not sum to 100
+        // Add a concise diagnostic if totals don't sum to 100%
         let totalPct = totalPercentage
         if abs(totalPct - 100.0) > 0.01 {
-            notes.append("Configured payouts total \(totalPct, specifier: \"%.2f\")% of pot; this may leave an unallocated amount of $\(totalPot * max(0, (100.0 - totalPct) / 100.0), specifier: \"%.2f\").")
+            let msg = String(format: "Configured payouts total %.2f%% of pot; this may leave an unallocated amount of $%.2f.",
+                             totalPct, totalPot * max(0.0, (100.0 - totalPct) / 100.0))
+            notes.append(msg)
         }
 
-        // If no explicit buckets were chosen, return a simple winner split placeholder.
         if result.isEmpty {
             result["Unallocated Pot"] = totalPot
             notes.append("No payout buckets selected — the full pot is currently unallocated.")
@@ -226,7 +224,7 @@ struct InitialSetupView: View {
         .toolbar {
             ToolbarItem(placement: .bottomBar) {
                 Button("Accept Settings") {
-                    settings.setRecommendedPercentages()  // set recommendations before navigating
+                    settings.setRecommendedPercentages()
                     path.append("percentages")
                 }
                 .buttonStyle(.borderedProminent)
@@ -242,7 +240,7 @@ struct PercentagesView: View {
 
     var body: some View {
         Form {
-            Section(header: Text("Set Percentages (Total: \(settings.totalPercentage, specifier: \"%.2f\")%)")) {
+            Section<Text, Any, EmptyView>(header: Text("Set Percentages (Total: \(settings.totalPercentage, specifier: \"%.2f\")%)")) {
                 if settings.totalPercentage > 100 {
                     Text("Warning: Total exceeds 100%!").foregroundColor(.red)
                 }
@@ -309,12 +307,11 @@ struct PercentagesView: View {
             }
         }
     }
-}
+
 
 struct CalculatorView: View {
     @ObservedObject var settings: LeagueSettings
 
-    // Use AppSelection to determine number of teams / season info
     @EnvironmentObject var appSelection: AppSelection
     @EnvironmentObject var leagueManager: SleeperLeagueManager
 
@@ -333,7 +330,7 @@ struct CalculatorView: View {
                 HStack {
                     Text("League Dues")
                     Spacer()
-                    Text("$\(settings.dues, specifier: \"%.2f\")")
+                    Text(verbatim: <#String#>"$\(settings.dues, specifier: \"%.2f\")")
                 }
                 HStack {
                     Text("Total Pot")
@@ -374,10 +371,9 @@ struct CalculatorView: View {
         .navigationTitle("Payout Calculator")
     }
 
+    // Determine number of teams using AppSelection & league data
     private func numberOfTeams() -> Int {
-        // Prefer selected league's current/latest season teams.
         if let league = appSelection.selectedLeague {
-            // If All Time mode or selectedSeason empty, use latest season
             if appSelection.selectedSeason == "All Time" || appSelection.selectedSeason.isEmpty {
                 return league.seasons.sorted { $0.id < $1.id }.last?.teams.count ?? max(0, league.teams.count)
             } else {
@@ -386,20 +382,19 @@ struct CalculatorView: View {
                     ?? league.teams.count
             }
         }
-        // fallback: attempt to find a league in AppSelection
         if let first = appSelection.leagues.first {
             return first.seasons.sorted { $0.id < $1.id }.last?.teams.count ?? first.teams.count
         }
-        // fallback default: 10 teams
         return 10
     }
 }
+
+// MARK: - Container View
 
 struct FantasyPayoutCalculator: View {
     @StateObject var settings = LeagueSettings()
     @State var path: [String] = []
 
-    // Expose environment objects so CalculatorView can obtain league info
     @EnvironmentObject var appSelection: AppSelection
     @EnvironmentObject var leagueManager: SleeperLeagueManager
 
