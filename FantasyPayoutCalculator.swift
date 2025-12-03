@@ -145,17 +145,17 @@ final class LeagueSettings: ObservableObject {
             }
             if hasWeeklyHighScore {
                 let weeks = max(1, regularSeasonWeeks)
-                if weeklyFullTeam, weeklyTeamHSPct > 0 {
+                if weeklyFullTeam && weeklyTeamHSPct > 0 {
                     let totalWeeklyTeam = pctAmount(weeklyTeamHSPct)
                     result["Weekly Team HS (Total)"] = totalWeeklyTeam
                     result["Weekly Team HS (Per Week)"] = totalWeeklyTeam / Double(weeks)
                 }
-                if weeklyOffensive, weeklyOffHSPct > 0 {
+                if weeklyOffensive && weeklyOffHSPct > 0 {
                     let totalWeeklyOff = pctAmount(weeklyOffHSPct)
                     result["Weekly Offensive HS (Total)"] = totalWeeklyOff
                     result["Weekly Offensive HS (Per Week)"] = totalWeeklyOff / Double(weeks)
                 }
-                if weeklyDefensive, weeklyDefHSPct > 0 {
+                if weeklyDefensive && weeklyDefHSPct > 0 {
                     let totalWeeklyDef = pctAmount(weeklyDefHSPct)
                     result["Weekly Defensive HS (Total)"] = totalWeeklyDef
                     result["Weekly Defensive HS (Per Week)"] = totalWeeklyDef / Double(weeks)
@@ -247,49 +247,49 @@ struct PercentagesView: View {
                 
                 if settings.hasPlacesPayout {
                     VStack(alignment: .leading) {
-                        Text("1st Place: \(settings.firstPlacePct, specifier: \"%.2f\")%")
-                             Slider(value: $settings.firstPlacePct, in: 0...100, step: 0.5)
+                        Text("1st Place: \(settings.firstPlacePct, specifier: "%.2f")%")
+                            Slider(value: $settings.firstPlacePct, in: 0...100, step: 0.5)
                     }
                     VStack(alignment: .leading) {
-                        Text("2nd Place: \(settings.secondPlacePct, specifier: \"%.2f\")%")
-                             Slider(value: $settings.secondPlacePct, in: 0...100, step: 0.5)
+                        Text("2nd Place: \(settings.secondPlacePct, specifier: "%.2f")%")
+                            Slider(value: $settings.secondPlacePct, in: 0...100, step: 0.5)
                     }
                     VStack(alignment: .leading) {
-                        Text("3rd Place: \(settings.thirdPlacePct, specifier: \"%.2f\")%")
-                             Slider(value: $settings.thirdPlacePct, in: 0...100, step: 0.5)
+                        Text("3rd Place: \(settings.thirdPlacePct, specifier: "%.2f")%")
+                            Slider(value: $settings.thirdPlacePct, in: 0...100, step: 0.5)
                     }
                 }
                 
                 if settings.hasMultiplePayouts {
                     if settings.hasSeasonHighScore {
                         VStack(alignment: .leading) {
-                            Text("Season High Score: \(settings.seasonHSPct, specifier: \"%.2f\")%")
-                                 Slider(value: $settings.seasonHSPct, in: 0...100, step: 0.5)
+                            Text("Season High Score: \(settings.seasonHSPct, specifier: "%.2f")%")
+                                Slider(value: $settings.seasonHSPct, in: 0...100, step: 0.5)
                         }
                     }
                     if settings.hasSeasonBestRecord {
                         VStack(alignment: .leading) {
-                            Text("Season Best Record: \(settings.seasonBRPct, specifier: \"%.2f\")%")
-                                 Slider(value: $settings.seasonBRPct, in: 0...100, step: 0.5)
+                            Text("Season Best Record: \(settings.seasonBRPct, specifier: "%.2f")%")
+                                Slider(value: $settings.seasonBRPct, in: 0...100, step: 0.5)
                         }
                     }
                     if settings.hasWeeklyHighScore {
                         if settings.weeklyFullTeam {
                             VStack(alignment: .leading) {
-                                Text("Weekly Team HS (Total for \(settings.regularSeasonWeeks) weeks): \(settings.weeklyTeamHSPct, specifier: \"%.2f\")%")
-                                     Slider(value: $settings.weeklyTeamHSPct, in: 0...100, step: 0.5)
+                                Text("Weekly Team HS (Total for \(settings.regularSeasonWeeks) weeks): \(settings.weeklyTeamHSPct, specifier: "%.2f")%")
+                                    Slider(value: $settings.weeklyTeamHSPct, in: 0...100, step: 0.5)
                             }
                         }
                         if settings.weeklyOffensive {
                             VStack(alignment: .leading) {
-                                Text("Weekly Offensive HS (Total): \(settings.weeklyOffHSPct, specifier: \"%.2f\")%")
-                                     Slider(value: $settings.weeklyOffHSPct, in: 0...100, step: 0.5)
+                                Text("Weekly Offensive HS (Total): \(settings.weeklyOffHSPct, specifier: "%.2f")%")
+                                    Slider(value: $settings.weeklyOffHSPct, in: 0...100, step: 0.5)
                             }
                         }
                         if settings.weeklyDefensive {
                             VStack(alignment: .leading) {
-                                Text("Weekly Defensive HS (Total): \(settings.weeklyDefHSPct, specifier: \"%.2f\")%")
-                                     Slider(value: $settings.weeklyDefHSPct, in: 0...100, step: 0.5)
+                                Text("Weekly Defensive HS (Total): \(settings.weeklyDefHSPct, specifier: "%.2f")%")
+                                    Slider(value: $settings.weeklyDefHSPct, in: 0...100, step: 0.5)
                             }
                         }
                     }
@@ -307,6 +307,7 @@ struct PercentagesView: View {
             }
         }
     }
+}
     
     
     struct CalculatorView: View {
@@ -331,17 +332,17 @@ struct PercentagesView: View {
                         Text("League Dues")
                         Spacer()
                         // Removed invalid Xcode placeholder and use a valid Text interpolation
-                        Text("$\(settings.dues, specifier: \"%.2f\")")
+                        Text("$\(settings.dues, specifier: "%.2f")")
                     }
                     HStack {
                         Text("Total Pot")
                         Spacer()
-                        Text("$\(totalPot, specifier: \"%.2f\")")
+                        Text("$\(totalPot, specifier: "%.2f")")
                     }
                     HStack {
                         Text("Configured Payout %")
                         Spacer()
-                        Text("\(settings.totalPercentage, specifier: \"%.2f\")%")
+                        Text("\(settings.totalPercentage, specifier: "%.2f")%")
                     }
                 }
                 
@@ -350,7 +351,7 @@ struct PercentagesView: View {
                         HStack {
                             Text(key)
                             Spacer()
-                            Text("$\(breakdown[key] ?? 0.0, specifier: \"%.2f\")")
+                            Text("$\(breakdown[key] ?? 0.0, specifier: "%.2f")")
                         }
                     }
                 }
@@ -422,4 +423,3 @@ struct PercentagesView: View {
                 .environmentObject(SleeperLeagueManager())
         }
     }
-}
