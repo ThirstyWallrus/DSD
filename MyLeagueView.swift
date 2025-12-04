@@ -3,7 +3,6 @@
 //  DynastyStatDrop
 //
 
-
 import SwiftUI
 
 enum LeagueContext: String, CaseIterable {
@@ -352,7 +351,7 @@ struct MyLeagueView: View {
         return dict
     }
 
-    // PATCH: Standings sorting logic — now sorts by Record, then PF, then Rank (when Full Season selected & context is .full)
+    // PATCH: Standings sorting logic — now sorts by Record, then PF, then Rank (when Full Season selected & context is .full)
     private var sortedTeams: [TeamStanding] {
         // Helper to parse record string into win/loss/tie
         func parseRecord(_ record: String?) -> (wins: Int, losses: Int, ties: Int) {
@@ -592,8 +591,9 @@ struct MyLeagueView: View {
     private var standingsSection: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Standings")
-                .font(.headline.bold())
+                .font(.system(size: 24, weight: .bold))
                 .foregroundColor(.orange)
+                .frame(maxWidth: .infinity, alignment: .center)
                 .padding(.bottom, 6)
 
             if sortedTeams.isEmpty {
@@ -616,24 +616,24 @@ struct MyLeagueView: View {
                         Text("PF")
                             .foregroundColor(.orange)
                             .font(.headline)
-                            .frame(width: 70, alignment: .trailing)
+                            .frame(width: 70, alignment: .center)
                         Text("Grade")
                             .foregroundColor(.orange)
                             .font(.headline)
-                            .frame(width: 50, alignment: .trailing)
+                            .frame(width: 50, alignment: .center)
                     } else {
                         Text("PF")
                             .foregroundColor(.orange)
                             .font(.headline)
-                            .frame(width: 70, alignment: .trailing)
+                            .frame(width: 70, alignment: .center)
                         Text("Mgmt%")
                             .foregroundColor(.orange)
                             .font(.headline)
-                            .frame(width: 70, alignment: .trailing)
+                            .frame(width: 70, alignment: .center)
                         Text("Grade")
                             .foregroundColor(.orange)
                             .font(.headline)
-                            .frame(width: 50, alignment: .trailing)
+                            .frame(width: 50, alignment: .center)
                     }
                 }
                 .padding(.vertical, 6)
@@ -653,6 +653,8 @@ struct MyLeagueView: View {
                                 .foregroundColor(.white)
                                 .bold()
                                 .frame(maxWidth: .infinity, alignment: .leading)
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.5)
 
                             Text(record)
                                 .foregroundColor(.yellow)
@@ -688,6 +690,8 @@ struct MyLeagueView: View {
                                 .foregroundColor(.white)
                                 .bold()
                                 .frame(maxWidth: .infinity, alignment: .leading)
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.5)
 
                             Text(String(format: "%.2f", pf))
                                 .foregroundColor(.cyan)
