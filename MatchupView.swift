@@ -681,6 +681,7 @@ struct MatchupView: View {
                     .progressViewStyle(CircularProgressViewStyle(tint: .orange))
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
+                // Outer ScrollView encompasses the whole view (including the entire Lineup + Bench area)
                 ScrollView {
                     VStack(alignment: .leading, spacing: 36) {
                         headerBlock
@@ -696,7 +697,7 @@ struct MatchupView: View {
                     .padding(.bottom, 120)
                 }
                 .safeAreaInset(edge: .bottom) {
-                    Color.clear.frame(height: 160)
+                    Color.clear.frame(height: 0)
                 }
             }
         }
@@ -907,6 +908,7 @@ struct MatchupView: View {
                         .frame(maxWidth: .infinity)
                         .multilineTextAlignment(.center)
 
+                    // Combined Lineup + Bench boxes (one per team), placed side-by-side.
                     GeometryReader { geo in
                         let spacing: CGFloat = 16
                         let total = geo.size.width
@@ -914,33 +916,19 @@ struct MatchupView: View {
                         let slotW = max(80, min(160, perTeam * 0.55))
                         let scoreW = max(44, min(80, perTeam * 0.18))
 
-                        VStack(spacing: 16) {
-                            HStack(spacing: spacing) {
-                                teamLineupBox(team: userTeam, accent: Color.cyan, title: "\(userDisplayName)'s Lineup", slotLabelWidth: slotW, scoreColumnWidth: scoreW)
-                                    .frame(width: perTeam, alignment: .leading)
-                                teamLineupBox(team: opponentTeam, accent: Color.yellow, title: "\(opponentDisplayName)'s Lineup", slotLabelWidth: slotW, scoreColumnWidth: scoreW)
-                                    .frame(width: perTeam, alignment: .leading)
-                            }
-                            .padding(16)
-                            .background(
-                                RoundedRectangle(cornerRadius: 16)
-                                    .fill(Color.white.opacity(0.04))
-                                    .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.white.opacity(0.06), lineWidth: 1))
-                            )
-
-                            HStack(spacing: spacing) {
-                                teamBenchBox(team: userTeam, accent: Color.cyan, title: "\(userDisplayName)'s Bench", slotLabelWidth: slotW, scoreColumnWidth: scoreW)
-                                    .frame(width: perTeam, alignment: .leading)
-                                teamBenchBox(team: opponentTeam, accent: Color.yellow, title: "\(opponentDisplayName)'s Bench", slotLabelWidth: slotW, scoreColumnWidth: scoreW)
-                                    .frame(width: perTeam, alignment: .leading)
-                            }
-                            .padding(16)
-                            .background(
-                                RoundedRectangle(cornerRadius: 16)
-                                    .fill(Color.white.opacity(0.04))
-                                    .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.white.opacity(0.06), lineWidth: 1))
-                            )
+                        // Single row containing combined boxes for user and opponent.
+                        HStack(spacing: spacing) {
+                            teamCombinedLineupBenchBox(team: userTeam, accent: Color.cyan, title: "\(userDisplayName)'s Lineup", slotLabelWidth: slotW, scoreColumnWidth: scoreW)
+                                .frame(width: perTeam, alignment: .leading)
+                            teamCombinedLineupBenchBox(team: opponentTeam, accent: Color.yellow, title: "\(opponentDisplayName)'s Lineup", slotLabelWidth: slotW, scoreColumnWidth: scoreW)
+                                .frame(width: perTeam, alignment: .leading)
                         }
+                        .padding(16)
+                        .background(
+                            RoundedRectangle(cornerRadius: 16)
+                                .fill(Color.white.opacity(0.04))
+                                .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.white.opacity(0.06), lineWidth: 1))
+                        )
                         .frame(width: geo.size.width)
                     }
                     .frame(minHeight: 240)
@@ -1019,8 +1007,88 @@ struct MatchupView: View {
         .frame(maxWidth: .infinity)
     }
 
-    // MARK: — Adaptive lineup & bench sections
+    // MARK: — Adaptive combined lineup & bench box
+    // This renders the starting lineup first, then a Black Knight "-----Bench-----" divider, then bench players.
+    private var blackKnightPostScriptName: String {
+        FontLoader.postScriptName(matching: "Black Knight") ?? "Black Knight"
+    }
 
+    private func teamCombinedLineupBenchBox(team: TeamDisplay?, accent: Color, title: String, slotLabelWidth: CGFloat = 160, scoreColumnWidth: CGFloat = 60) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            let (head, tail) = splitTitle(title)
+            VStack(spacing: 2) {
+                Text(head)
+                    .font(.headline.bold())
+                    .foregroundColor(.orange)
+                    .multilineTextAlignment(.center)
+                Text(tail)
+                    .font(.subheadline)
+                    .foregroundColor(.white.opacity(0.9))
+                    .multilineTextAlignment(.center)
+            }
+            .frame(maxWidth: .infinity)
+
+            if let lineup = team?.lineup, !lineup.isEmpty {
+                ForEach(lineup) { player in
+                    HStack {
+                        Group {
+                            if let slotColor = player.slotColor {
+                                Text(player.displaySlot)
+                                    .foregroundColor(slotColor)
+                                    .frame(width: slotLabelWidth, alignment: .leading)
+                                    .lineLimit(1)
+                                    .minimumScaleFactor(0.7)
+                            } else {
+                                Text(player.displaySlot)
+                                    .foregroundColor(positionColor(player.creditedPosition))
+                                    .frame(width: slotLabelWidth, alignment: .leading)
+                                    .lineLimit(1)
+                                    .minimumScaleFactor(0.7)
+                            }
+                        }
+                        Spacer()
+                        Text(String(format: "%.1f", player.points))
+                            .foregroundColor(.green)
+                            .frame(width: scoreColumnWidth, alignment: .trailing)
+                    }
+                    .font(.caption)
+                }
+            } else {
+                Text("No lineup data").foregroundColor(.gray)
+            }
+
+            // Bench divider using Black Knight font (centered)
+            Text("-----Bench-----")
+                .font(.custom(blackKnightPostScriptName, size: 14))
+                .foregroundColor(.white.opacity(0.9))
+                .frame(maxWidth: .infinity)
+                .multilineTextAlignment(.center)
+                .padding(.vertical, 6)
+
+            if let bench = team?.bench, !bench.isEmpty {
+                ForEach(bench) { player in
+                    HStack {
+                        Text(player.displaySlot)
+                            .foregroundColor(positionColor(player.creditedPosition))
+                            .frame(width: slotLabelWidth, alignment: .leading)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.7)
+                        Spacer()
+                        Text(String(format: "%.2f", player.points))
+                            .foregroundColor(.green.opacity(0.7))
+                            .frame(width: scoreColumnWidth, alignment: .trailing)
+                    }
+                    .font(.caption)
+                }
+            } else {
+                Text("No bench data").foregroundColor(.gray)
+            }
+        }
+        .foregroundColor(.white)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    // MARK: (Legacy) teamLineupBox and teamBenchBox remain for reference but are no longer used by the combined layout.
     private func teamLineupBox(team: TeamDisplay?, accent: Color, title: String, slotLabelWidth: CGFloat = 160, scoreColumnWidth: CGFloat = 60) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             let (head, tail) = splitTitle(title)
