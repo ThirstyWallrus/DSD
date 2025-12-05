@@ -361,7 +361,7 @@ struct MatchupView: View {
                 }
             }()
 
-            let displaySlot: String
+            var displaySlot: String
             var slotColor: Color? = nil
             if isOffensiveFlexSlot(slot) || isDefensiveFlexSlot(slot) {
                 displaySlot = "Flex " + eligiblePositions.joined(separator: "/")
@@ -383,6 +383,17 @@ struct MatchupView: View {
             )
 
             let points = playerScores[pid] ?? 0.0
+
+            // NEW: Detect whether the starter was present in the current team's roster.
+            // If not present but resolvable from player cache / matchup data, annotate displaySlot
+            // as " (Traded/Released)" to indicate a historical starter that is not on the current roster.
+            let wasInRoster = team.roster.contains(where: { $0.id == pid })
+            if !wasInRoster {
+                // Confirm resolvable via cache (we already looked up info; if info.position == "UNK" and not in cache it's less helpful)
+                // Annotate display slot and visually mute the slot color so it's not mistaken for current roster player.
+                displaySlot += " (Traded/Released)"
+                slotColor = slotColor ?? .gray
+            }
 
             lineup.append(LineupPlayer(
                 id: pid,
@@ -439,7 +450,21 @@ struct MatchupView: View {
         ordered.append(contentsOf: defensiveFlexSlotsArr)
 
         if lineupDebugEnabled {
-            debugLogTeamLineup(team: team, week: week, slots: slots, starters: starters, slotAssignments: slotAssignments.map { (slot: $0.slot, player: $0.playerId.flatMap { id in team.roster.first { $0.id == id } }) }, finalOrdered: ordered)
+            // Provide debug with resolved Player placeholders for starters that are not in team.roster
+            let slotAssignmentsForDebug = slotAssignments.map { pair -> (slot: String, player: Player?) in
+                if let pid = pair.playerId {
+                    if let p = team.roster.first(where: { $0.id == pid }) {
+                        return (slot: pair.slot, player: p)
+                    }
+                    if let raw = leagueManager.playerCache?[pid] {
+                        // Construct a lightweight Player placeholder for debugging output
+                        let p = Player(id: pid, position: raw.position ?? "UNK", altPositions: raw.fantasy_positions, weeklyScores: [])
+                        return (slot: pair.slot, player: p)
+                    }
+                }
+                return (slot: pair.slot, player: nil)
+            }
+            debugLogTeamLineup(team: team, week: week, slots: slots, starters: starters, slotAssignments: slotAssignmentsForDebug, finalOrdered: ordered)
         }
 
         return ordered
@@ -1397,9 +1422,10 @@ struct MatchupView: View {
         }
 
         let rosterIds = Set(team.roster.map { $0.id })
-        let missingInRoster = starters.filter { !rosterIds.contains($0) && $0 != "0" }
+        // Only consider starters truly missing if they aren't in the roster AND not resolvable from the player cache.
+        let missingInRoster = starters.filter { $0 != "0" && !rosterIds.contains($0) && leagueManager.playerCache?[$0] == nil }
         if !missingInRoster.isEmpty {
-            print("\(prefix) NOTE: starter IDs not found in team's roster (they may have been traded/released): \(missingInRoster)")
+            print("\(prefix) NOTE: starter IDs not found in team's roster (they may have been traded/released or otherwise not present locally): \(missingInRoster)")
         }
 
         print("\(prefix) Slot assignments (slot -> playerId/name or nil):")
