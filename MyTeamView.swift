@@ -169,8 +169,8 @@ struct MyTeamView: View {
                 .font(.title2.bold())
                 .foregroundColor(.orange)
             Text(authViewModel.isLoggedIn
-                 ? "Go to the Dashboard and import your Sleeper league."
-                 : "Sign in and import a Sleeper league to begin.")
+                ? "Go to the Dashboard and import your Sleeper league."
+                : "Sign in and import a Sleeper league to begin.")
                 .multilineTextAlignment(.center)
                 .foregroundColor(.white.opacity(0.7))
                 .padding(.horizontal, 40)
@@ -390,23 +390,33 @@ struct MyTeamView: View {
         sectionBox {
             Text("Management %")
                 .sectionTitleStyle()
-            HStack(alignment: .top, spacing: 28) {
-                VStack(alignment: .leading, spacing: 4) {
+                .frame(maxWidth: .infinity, alignment: .center)
+            let (f, o, d) = managementTriplet()
+            VStack(spacing: 12) {
+                HStack {
                     Text("Full Team")
-                    Text("Offense")
-                    Text("Defense")
-                }
-                .foregroundColor(.white.opacity(0.8)) // Just label color
-
-                VStack(alignment: .leading, spacing: 4) {
-                    let (f, o, d) = managementTriplet()
+                        .foregroundColor(.green.opacity(0.8))
+                    Spacer()
                     Text(String(format: "%.1f%%", f))
                         .foregroundColor(Color.mgmtPercentColor(f))
+                }
+                PillProgress(percent: f, color: Color.mgmtPercentColor(f))
+                HStack {
+                    Text("Offense")
+                        .foregroundColor(.red.opacity(0.8))
+                    Spacer()
                     Text(String(format: "%.1f%%", o))
                         .foregroundColor(Color.mgmtPercentColor(o))
+                }
+                PillProgress(percent: o, color: Color.mgmtPercentColor(o))
+                HStack {
+                    Text("Defense")
+                        .foregroundColor(.blue.opacity(0.8))
+                    Spacer()
                     Text(String(format: "%.1f%%", d))
                         .foregroundColor(Color.mgmtPercentColor(d))
                 }
+                PillProgress(percent: d, color: Color.mgmtPercentColor(d))
             }
         }
     }
@@ -568,12 +578,12 @@ struct MyTeamView: View {
                 .sectionTitleStyle()
             if let a = aggregated {
                 profileLines(record: a.recordString,
-                             seasons: a.seasonsIncluded.count,
-                             championships: a.championships)
+                            seasons: a.seasonsIncluded.count,
+                            championships: a.championships)
             } else if let t = selectedTeamSeason {
                 profileLines(record: t.winLossRecord ?? "--",
-                             seasons: nil,
-                             championships: t.championships ?? 0)
+                            seasons: nil,
+                            championships: t.championships ?? 0)
             } else {
                 Text("Select a team for details.")
                     .foregroundColor(.white.opacity(0.5))
@@ -705,11 +715,77 @@ struct MyTeamView: View {
         }
     }
     private func individualPPW(_ pos: String) -> Double {
+        // NOTE: Weekly calculation changed to use slot‑credited positions (SlotPositionAssigner)
+        // to match how season/all-time individual PPW is computed. This ensures numerator and denominator
+        // use the same credited position mapping rather than raw player.position.
         let normPos = PositionNormalizer.normalize(pos)
+        // All-time aggregated path (unchanged)
         if let a = aggregated { return a.individualPositionPPW[normPos] ?? 0 }
+        // Season path (unchanged)
         if selectedWeek == "SZN" {
             return selectedTeamSeason?.individualPositionAverages?[normPos] ?? 0
-        } else if let week = getSelectedWeekNumber(), let t = selectedTeamSeason {
+        }
+        // Weekly path: compute credited totals & counts using slot assignment
+        else if let week = getSelectedWeekNumber(), let t = selectedTeamSeason, let league = league {
+            guard let season = league.seasons.first(where: { $0.id == appSelection.selectedSeason }),
+                  let myEntry = season.matchupsByWeek?[week]?.first(where: { $0.roster_id == Int(t.id) }) else {
+                // Fallback to previous behavior if matchup entry missing
+                let posPoints = positionPPW(normPos)
+                let numStarters = numberOfStarters(in: t, week: week, pos: normPos)
+                return numStarters > 0 ? posPoints / Double(numStarters) : 0
+            }
+
+            // Use starting lineup / slots sanitized similarly to other places
+            let slots = league.startingLineup.filter { !["BN", "IR", "TAXI"].contains($0) }
+            let starters = myEntry.starters ?? []
+            // padded starters: ensure same length as slots
+            let paddedStarters: [String] = {
+                if starters.count < slots.count {
+                    return starters + Array(repeating: "0", count: slots.count - starters.count)
+                } else if starters.count > slots.count {
+                    return Array(starters.prefix(slots.count))
+                }
+                return starters
+            }()
+
+            let allPlayers = leagueManager.playerCache ?? [:]
+            var perPosTotals: [String: Double] = [:]
+            var perPosCounts: [String: Int] = [:]
+
+            // If players_points present, prefer to use it; otherwise fallback to 0 values for starts
+            let playersPoints = myEntry.players_points ?? [:]
+
+            for idx in 0..<slots.count {
+                let pid = paddedStarters[idx]
+                guard pid != "0" else { continue }
+                // Resolve base pos and candidate positions from player cache or team roster
+                var basePosRaw: String = ""
+                var fantasyPositions: [String] = []
+                if let raw = allPlayers[pid] {
+                    basePosRaw = raw.position ?? "UNK"
+                    fantasyPositions = raw.fantasy_positions ?? []
+                } else if let rosterPlayer = t.roster.first(where: { $0.id == pid }) {
+                    basePosRaw = rosterPlayer.position
+                    fantasyPositions = rosterPlayer.altPositions ?? []
+                } else {
+                    basePosRaw = "UNK"
+                    fantasyPositions = []
+                }
+                let candidatePositions = ([basePosRaw] + fantasyPositions).map { PositionNormalizer.normalize($0) }
+                let slotType = slots[idx]
+                // Determine credited position using the same SlotPositionAssigner used elsewhere
+                let credited = SlotPositionAssigner.countedPosition(for: slotType, candidatePositions: candidatePositions, base: PositionNormalizer.normalize(basePosRaw))
+                let creditedNorm = PositionNormalizer.normalize(credited)
+                let pts = playersPoints[pid] ?? 0.0
+                perPosTotals[creditedNorm, default: 0.0] += pts
+                perPosCounts[creditedNorm, default: 0] += 1
+            }
+
+            let total = perPosTotals[normPos] ?? 0.0
+            let starts = perPosCounts[normPos] ?? 0
+            if starts > 0 { return total / Double(starts) }
+
+            // Final fallback: preserve old logic if no credited starts matched
             let posPoints = positionPPW(normPos)
             let numStarters = numberOfStarters(in: t, week: week, pos: normPos)
             return numStarters > 0 ? posPoints / Double(numStarters) : 0
@@ -1039,5 +1115,23 @@ private extension Text {
     }
     func sectionSubtitleStyle() -> Text {
         self.font(.headline.bold()).foregroundColor(.orange)
+    }
+}
+
+struct PillProgress: View {
+    let percent: Double
+    let color: Color
+
+    var body: some View {
+        GeometryReader { geo in
+            Capsule()
+                .fill(Color.white.opacity(0.2))
+                .overlay(alignment: .leading) {
+                    Capsule()
+                        .fill(color)
+                        .frame(width: geo.size.width * (percent / 100))
+                }
+        }
+        .frame(height: 8)
     }
 }
