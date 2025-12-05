@@ -85,11 +85,14 @@ struct MatchupView: View {
     // Debug toggle for lineup diagnostics. Set to true to enable console logs.
     @State private var lineupDebugEnabled: Bool = true
 
+    // NEW: H2H mini-view toggle
+    @State private var isH2HActive: Bool = false
+
     // MARK: - Centralized Selection
 
     private var league: LeagueData? { appSelection.selectedLeague }
 
-    // Only show real seasons for the selected league
+    // Only show real seasons for the selected league (NO "All Time" here)
     private var allSeasonIds: [String] {
         guard let league else { return [] }
         let sorted = league.seasons.map { $0.id }.sorted(by: >)
@@ -712,6 +715,9 @@ struct MatchupView: View {
                         headerBlock
                         if isStatDropActive {
                             statDropContent
+                        } else if isH2HActive {
+                            // NEW: show head-to-head mini view
+                            headToHeadContent
                         } else {
                             matchupContent
                         }
@@ -782,15 +788,18 @@ struct MatchupView: View {
                 }
             }
             .frame(height: 50)
+
+            // Bottom row: Season | Week | H2H (Button) | DSD
             GeometryReader { geo in
-                let virtualSpacing: CGFloat = menuSpacing * 3
-                let virtualTotal = geo.size.width - virtualSpacing
-                let tabWidth = virtualTotal / 4
-                let actualSpacing = (geo.size.width - 3 * tabWidth) / 2
-                HStack(spacing: actualSpacing) {
+                let spacing: CGFloat = menuSpacing
+                let totalAvailable = geo.size.width - spacing * 3
+                let tabWidth = totalAvailable / 4
+                HStack(spacing: spacing) {
                     seasonMenu
                         .frame(width: tabWidth)
                     weekMenu
+                        .frame(width: tabWidth)
+                    h2hButton
                         .frame(width: tabWidth)
                     statDropMenu
                         .frame(width: tabWidth)
@@ -818,17 +827,25 @@ struct MatchupView: View {
         }
     }
 
+    // Season menu: when H2H mini-view active show a non-interactive "H2H" label
     private var seasonMenu: some View {
-        Menu {
-            ForEach(allSeasonIds, id: \.self) { sid in
-                Button(sid) {
-                    appSelection.selectedSeason = sid
-                    appSelection.syncSelectionAfterSeasonChange(username: nil, sleeperUserId: nil)
-                    setDefaultWeekSelection()
+        Group {
+            if isH2HActive {
+                // non-interactive label matching menu styling
+                menuLabel("H2H")
+            } else {
+                Menu {
+                    ForEach(allSeasonIds, id: \.self) { sid in
+                        Button(sid) {
+                            appSelection.selectedSeason = sid
+                            appSelection.syncSelectionAfterSeasonChange(username: nil, sleeperUserId: nil)
+                            setDefaultWeekSelection()
+                        }
+                    }
+                } label: {
+                    menuLabel(appSelection.selectedSeason.isEmpty ? "Year" : appSelection.selectedSeason)
                 }
             }
-        } label: {
-            menuLabel(appSelection.selectedSeason.isEmpty ? "Year" : appSelection.selectedSeason)
         }
     }
 
@@ -861,6 +878,31 @@ struct MatchupView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+
+    private var h2hButton: some View {
+        Button {
+            // Toggle H2H mini-view on/off
+            withAnimation {
+                isH2HActive.toggle()
+                // If entering H2H, ensure StatDrop isn't showing
+                if isH2HActive { isStatDropActive = false }
+            }
+        } label: {
+            Text(isH2HActive ? "Vs." : "H2H")
+                .bold()
+                .foregroundColor(.orange)
+                .font(.custom("Phatt", size: 16))
+                .frame(minHeight: 36)
+                .frame(maxWidth: .infinity)
+                .padding(.horizontal, 10)
+                .background(
+                    RoundedRectangle(cornerRadius: 30)
+                        .fill(Color.black)
+                        .shadow(color: .blue.opacity(0.7), radius: 8, y: 2)
+                )
+        }
+        .accessibilityLabel(isH2HActive ? "Return to Matchup view" : "Open Head to Head view")
     }
 
     private var statDropMenu: some View {
@@ -914,13 +956,8 @@ struct MatchupView: View {
     private var matchupContent: some View {
         VStack(alignment: .leading, spacing: 24) {
             if let user = userTeamStanding, let opp = opponentTeamStanding, let lg = league {
-                VStack(spacing: 8) {
-                    MyTeamView.phattGradientText(Text("Head-To-Head Stats"), size: 18)
-                        .frame(maxWidth: .infinity)
-                        .multilineTextAlignment(.center)
-                    headToHeadStatsSection(user: user, opp: opp, league: lg)
-                }
-
+                // NOTE: Head-to-head removed from main matchupContent per request.
+                // Matchup Stats (unchanged)
                 VStack(spacing: 8) {
                     MyTeamView.phattGradientText(Text("Matchup Stats"), size: 18)
                         .frame(maxWidth: .infinity)
@@ -928,6 +965,7 @@ struct MatchupView: View {
                     scoresSection
                 }
 
+                // Lineups (unchanged)
                 VStack(spacing: 8) {
                     MyTeamView.phattGradientText(Text("Lineups"), size: 18)
                         .frame(maxWidth: .infinity)
@@ -960,6 +998,23 @@ struct MatchupView: View {
                 }
             } else {
                 Text("No matchup data available.")
+                    .foregroundColor(.white.opacity(0.7))
+            }
+        }
+    }
+
+    // NEW: Head-to-head mini view content (shown when isH2HActive == true)
+    private var headToHeadContent: some View {
+        Group {
+            if let user = userTeamStanding, let opp = opponentTeamStanding, let lg = league {
+                VStack(spacing: 8) {
+                    MyTeamView.phattGradientText(Text("Head-To-Head"), size: 18)
+                        .frame(maxWidth: .infinity)
+                        .multilineTextAlignment(.center)
+                    HeadToHeadStatsSection(user: user, opp: opp, league: lg)
+                }
+            } else {
+                Text("No head-to-head data available.")
                     .foregroundColor(.white.opacity(0.7))
             }
         }
