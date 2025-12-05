@@ -895,13 +895,42 @@ struct MatchupView: View {
 
     private var headerBlock: some View {
         VStack(spacing: 18) {
-            Text("Matchup")
-                .font(.system(size: 36, weight: .heavy))
-                .foregroundColor(.orange)
-                .frame(maxWidth: .infinity)
-                .multilineTextAlignment(.center)
-                .lineLimit(1)
-                .minimumScaleFactor(0.5)
+            // New stacked title:
+            // Top: user's team name, Middle: "Vs.", Bottom: opponent's team name
+            Group {
+                if let _ = userTeamStanding, let _ = opponentTeamStanding {
+                    VStack(spacing: 6) {
+                        // Top team name (large; match MyTeamView/MyLeagueView 36pt)
+                        MyTeamView.phattGradientText(Text(userTeamName), size: 36)
+                            .frame(maxWidth: .infinity)
+                            .multilineTextAlignment(.center)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.5)
+
+                        // "Vs." smaller
+                        MyTeamView.phattGradientText(Text("Vs."), size: 18)
+                            .frame(maxWidth: .infinity)
+                            .multilineTextAlignment(.center)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.6)
+
+                        // Opponent name (large)
+                        MyTeamView.phattGradientText(Text(opponentTeamName), size: 36)
+                            .frame(maxWidth: .infinity)
+                            .multilineTextAlignment(.center)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.5)
+                    }
+                } else {
+                    // Fallback: single title (keeps Phatt + fiery gradient)
+                    MyTeamView.phattGradientText(Text("Matchup"), size: 36)
+                        .frame(maxWidth: .infinity)
+                        .multilineTextAlignment(.center)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.5)
+                }
+            }
+            .accessibilityHidden(false)
             selectionMenus
         }
     }
@@ -1053,61 +1082,84 @@ struct MatchupView: View {
         VStack(alignment: .leading, spacing: 24) {
             // Head-to-Head first, then team scores, then lineup then bench (as requested)
             if let user = userTeamStanding, let opp = opponentTeamStanding, let lg = league {
-                headToHeadStatsSection(user: user, opp: opp, league: lg)
-            }
-            scoresSection
-
-            // Use a single GeometryReader so widths are calculated once and the Lineup and Bench
-            // sections are stacked vertically without overlapping. This replaces the previous
-            // separate GeometryReader calls that could expand and overlap.
-            GeometryReader { geo in
-                // Compute per-team widths and derived column widths (same math as previous sections).
-                let spacing: CGFloat = 16
-                let total = geo.size.width
-                let perTeam = max(140, (total - spacing) / 2.0)
-                let slotW = max(80, min(160, perTeam * 0.55))
-                let scoreW = max(44, min(80, perTeam * 0.18))
-
-                VStack(spacing: 16) {
-                    // Lineup row (two columns)
-                    HStack(spacing: spacing) {
-                        teamLineupBox(team: userTeam, accent: Color.cyan, title: "\(userDisplayName)'s Lineup", slotLabelWidth: slotW, scoreColumnWidth: scoreW)
-                            .frame(width: perTeam, alignment: .leading)
-                        teamLineupBox(team: opponentTeam, accent: Color.yellow, title: "\(opponentDisplayName)'s Lineup", slotLabelWidth: slotW, scoreColumnWidth: scoreW)
-                            .frame(width: perTeam, alignment: .leading)
-                    }
-                    .padding(16)
-                    .background(
-                        RoundedRectangle(cornerRadius: 16)
-                            .fill(Color.white.opacity(0.04))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 16)
-                                    .stroke(Color.white.opacity(0.06), lineWidth: 1)
-                            )
-                    )
-
-                    // Bench row (two columns)
-                    HStack(spacing: spacing) {
-                        teamBenchBox(team: userTeam, accent: Color.cyan, title: "\(userDisplayName)'s Bench", slotLabelWidth: slotW, scoreColumnWidth: scoreW)
-                            .frame(width: perTeam, alignment: .leading)
-                        teamBenchBox(team: opponentTeam, accent: Color.yellow, title: "\(opponentDisplayName)'s Bench", slotLabelWidth: slotW, scoreColumnWidth: scoreW)
-                            .frame(width: perTeam, alignment: .leading)
-                    }
-                    .padding(16)
-                    .background(
-                        RoundedRectangle(cornerRadius: 16)
-                            .fill(Color.white.opacity(0.04))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 16)
-                                    .stroke(Color.white.opacity(0.06), lineWidth: 1)
-                            )
-                    )
+                // Section title: Head-To-Head Stats (centered, Phatt + fiery gradient)
+                VStack(spacing: 8) {
+                    MyTeamView.phattGradientText(Text("Head-To-Head Stats"), size: 18)
+                        .frame(maxWidth: .infinity)
+                        .multilineTextAlignment(.center)
+                    headToHeadStatsSection(user: user, opp: opp, league: lg)
                 }
-                // Ensure the GeometryReader area sizes itself to content; give it a minimum height.
-                .frame(width: geo.size.width)
+
+                // Matchup Stats section with its own centered title
+                VStack(spacing: 8) {
+                    MyTeamView.phattGradientText(Text("Matchup Stats"), size: 18)
+                        .frame(maxWidth: .infinity)
+                        .multilineTextAlignment(.center)
+                    scoresSection
+                }
+
+                // Lineups subtitle and content
+                VStack(spacing: 8) {
+                    MyTeamView.phattGradientText(Text("Lineups"), size: 18)
+                        .frame(maxWidth: .infinity)
+                        .multilineTextAlignment(.center)
+
+                    // Use a single GeometryReader so widths are calculated once and the Lineup and Bench
+                    // sections are stacked vertically without overlapping. This replaces the previous
+                    // separate GeometryReader calls that could expand and overlap.
+                    GeometryReader { geo in
+                        // Compute per-team widths and derived column widths (same math as previous sections).
+                        let spacing: CGFloat = 16
+                        let total = geo.size.width
+                        let perTeam = max(140, (total - spacing) / 2.0)
+                        let slotW = max(80, min(160, perTeam * 0.55))
+                        let scoreW = max(44, min(80, perTeam * 0.18))
+
+                        VStack(spacing: 16) {
+                            // Lineup row (two columns)
+                            HStack(spacing: spacing) {
+                                teamLineupBox(team: userTeam, accent: Color.cyan, title: "\(userDisplayName)'s Lineup", slotLabelWidth: slotW, scoreColumnWidth: scoreW)
+                                    .frame(width: perTeam, alignment: .leading)
+                                teamLineupBox(team: opponentTeam, accent: Color.yellow, title: "\(opponentDisplayName)'s Lineup", slotLabelWidth: slotW, scoreColumnWidth: scoreW)
+                                    .frame(width: perTeam, alignment: .leading)
+                            }
+                            .padding(16)
+                            .background(
+                                RoundedRectangle(cornerRadius: 16)
+                                    .fill(Color.white.opacity(0.04))
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 16)
+                                            .stroke(Color.white.opacity(0.06), lineWidth: 1)
+                                    )
+                            )
+
+                            // Bench row (two columns)
+                            HStack(spacing: spacing) {
+                                teamBenchBox(team: userTeam, accent: Color.cyan, title: "\(userDisplayName)'s Bench", slotLabelWidth: slotW, scoreColumnWidth: scoreW)
+                                    .frame(width: perTeam, alignment: .leading)
+                                teamBenchBox(team: opponentTeam, accent: Color.yellow, title: "\(opponentDisplayName)'s Bench", slotLabelWidth: slotW, scoreColumnWidth: scoreW)
+                                    .frame(width: perTeam, alignment: .leading)
+                            }
+                            .padding(16)
+                            .background(
+                                RoundedRectangle(cornerRadius: 16)
+                                    .fill(Color.white.opacity(0.04))
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 16)
+                                            .stroke(Color.white.opacity(0.06), lineWidth: 1)
+                                    )
+                            )
+                        }
+                        // Ensure the GeometryReader area sizes itself to content; give it a minimum height.
+                        .frame(width: geo.size.width)
+                    }
+                    // Constrain the GeometryReader's vertical behavior so it does not try to fill entire remaining parent space.
+                    .frame(minHeight: 240)
+                }
+            } else {
+                Text("No matchup data available.")
+                    .foregroundColor(.white.opacity(0.7))
             }
-            // Constrain the GeometryReader's vertical behavior so it does not try to fill entire remaining parent space.
-            .frame(minHeight: 240)
         }
     }
 

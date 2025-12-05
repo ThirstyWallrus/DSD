@@ -61,12 +61,8 @@ struct HeadToHeadStatsSection: View {
     // MARK: - Subviews
 
     private var titleBarView: some View {
-        HStack {
-            Text("Head-to-Head Stats")
-                .font(.headline.bold())
-                .foregroundColor(.orange)
-            Spacer()
-        }
+        // Title removed per request — intentionally empty
+        EmptyView()
     }
 
     private var statsColumnsView: some View {
