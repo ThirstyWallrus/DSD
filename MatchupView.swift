@@ -416,7 +416,8 @@ struct MatchupView: View {
                 usedPlayers.insert(pid)
                 availableStarters.removeAll { $0 == pid }
             } else {
-                slotAssignments.append((slot: slot, playerId: nil))
+                slotAssignments.append((slot: slot, playerId: nil)
+)
             }
         }
 
@@ -836,15 +837,13 @@ struct MatchupView: View {
     // MARK: - UI
 
     var body: some View {
-        ZStack(alignment: .bottom) {
+        ZStack {
             Color.black.ignoresSafeArea()
             if isLoading {
                 ProgressView("Loading matchup data...")
                     .progressViewStyle(CircularProgressViewStyle(tint: .orange))
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                // NOTE: added safeAreaInset to ensure the ScrollView content can be scrolled fully into view,
-                // even when the ZStack ignores bottom safe area or there is a bottom tab/overlay.
                 ScrollView {
                     VStack(alignment: .leading, spacing: 36) {
                         headerBlock
@@ -853,17 +852,14 @@ struct MatchupView: View {
                         } else {
                             matchupContent
                         }
-                        Spacer(minLength: 120)
                     }
                     .frame(maxWidth: maxContentWidth)
                     .padding(.horizontal, horizontalEdgePadding)
                     .padding(.top, 32)
                     .padding(.bottom, 120)
                 }
-                // Provide extra bottom inset so the last content can scroll above bottom safe area/overlays.
-                // Adjust this height if your bottom toolbar/tab bar is taller.
                 .safeAreaInset(edge: .bottom) {
-                    Color.clear.frame(height: 160)
+                    Color.clear.frame(height: 160) // Adjust height to match your bottom overlay/tab bar + buffer
                 }
             }
         }
@@ -1322,7 +1318,7 @@ struct MatchupView: View {
                             .lineLimit(1)
                             .minimumScaleFactor(0.7)
                         Spacer()
-                        Text(String(format: "%.1f", player.points))
+                        Text(String(format: "%.2f", player.points))
                             .foregroundColor(.green.opacity(0.7))
                             .frame(width: scoreColumnWidth, alignment: .trailing)
                     }
