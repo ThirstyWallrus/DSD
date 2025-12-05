@@ -74,10 +74,10 @@ struct HeadToHeadStatsSection: View {
                 Text(user.name)
                     .foregroundColor(.cyan)
                     .bold()
-                statRow("Record vs Opponent", summary.record)
+                statRow("Record vs Opp", summary.record)
                 // Use centralized mgmt color for the mgmt percent value
                 HStack {
-                    Text("Mgmt % vs Opponent")
+                    Text("Mgmt % vs Opp")
                         .foregroundColor(.white.opacity(0.8))
                     Spacer()
                     Text(String(format: "%.2f%%", summary.avgMgmtFor))
@@ -85,7 +85,7 @@ struct HeadToHeadStatsSection: View {
                         .bold()
                 }
                 .font(.caption)
-                statRow("Avg Points/Game vs Opponent", String(format: "%.1f", summary.avgPF))
+                statRow("Avg PPG vs Opp", String(format: "%.2f", summary.avgPF))
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -105,7 +105,7 @@ struct HeadToHeadStatsSection: View {
                         .bold()
                 }
                 .font(.caption)
-                statRow("Avg Points/Game vs You", String(format: "%.1f", summary.avgPA))
+                statRow("Avg PPG vs You", String(format: "%.2f", summary.avgPA))
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -130,10 +130,10 @@ struct HeadToHeadStatsSection: View {
                                 VStack(alignment: .leading) {
                                     Text("Season \(match.seasonId) • Week \(match.week)")
                                         .font(.caption.bold())
-                                        .foregroundColor(.white.opacity(0.8))
-                                    Text("Score: \(String(format: "%.1f", match.userPoints)) — \(String(format: "%.1f", match.oppPoints))")
+                                        .foregroundColor(.blue.opacity(0.8))
+                                    Text("Score: \(String(format: "%.2f", match.userPoints)) — \(String(format: "%.2f", match.oppPoints))")
                                         .font(.caption2)
-                                        .foregroundColor(.white.opacity(0.7))
+                                        .foregroundColor(.blue.opacity(0.7))
                                 }
                                 Spacer()
                                 VStack(alignment: .trailing) {
@@ -141,10 +141,10 @@ struct HeadToHeadStatsSection: View {
                                         .font(.caption.bold())
                                         .foregroundColor(match.result == "W" ? .green : (match.result == "L" ? .red : .yellow))
                                     HStack {
-                                        Text(String(format: "Mgmt: %.1f%%", match.userMgmtPct))
+                                        Text(String(format: "Mgmt: %.2f%%", match.userMgmtPct))
                                             .font(.caption2)
                                             .foregroundColor(Color.mgmtPercentColor(match.userMgmtPct))
-                                        Text(String(format: "Opp: %.1f%%", match.oppMgmtPct))
+                                        Text(String(format: "Opp: %.2f%%", match.oppMgmtPct))
                                             .font(.caption2)
                                             .foregroundColor(Color.mgmtPercentColor(match.oppMgmtPct))
                                     }
