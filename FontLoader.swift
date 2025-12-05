@@ -2,14 +2,6 @@
 //  FontLoader.swift
 //  DynastyStatDrop
 //
-//  Created by Dynasty Stat Drop on 12/4/25.
-//
-
-
-//
-//  FontLoader.swift
-//  DynastyStatDrop
-//
 //  Purpose:
 //   - Programmatically register bundled .ttf/.otf fonts at app startup using CoreText.
 //   - Provide diagnostics (family names, font names, PostScript names) to help find the
@@ -33,6 +25,11 @@ enum FontLoader {
         let candidateExtensions = ["ttf", "otf"]
         var registeredFiles: [String] = []
         var failedFiles: [(String, String)] = []
+
+        // --- Preferred fonts: try to locate & register these first if present in the bundle.
+        // Add any new friendly font names you want the loader to prefer here.
+        let preferredFriendlyNames = ["Pick Six", "Black Night"]
+        registerPreferredFonts(preferredFriendlyNames)
 
         for ext in candidateExtensions {
             if let urls = bundle.urls(forResourcesWithExtension: ext, subdirectory: nil) {
@@ -82,6 +79,57 @@ enum FontLoader {
             print("[FontLoader] FAILED to register \(filename): \(msg)")
         }
         logAvailableFonts(prefix: "[FontLoader]")
+    }
+
+    /// Try to find and register font files whose filenames or filepaths look like the friendly names provided.
+    /// This helps when fonts were added with spaces, punctuation, or slightly different filenames.
+    /// It will search bundle top-level .ttf/.otf files and register any matches.
+    static func registerPreferredFonts(_ friendlyNames: [String]) {
+        let bundle = Bundle.main
+        let candidateExtensions = ["ttf", "otf"]
+        var foundURLs = Set<URL>()
+
+        func normalized(_ s: String) -> String {
+            return s.lowercased().replacingOccurrences(of: " ", with: "")
+                .replacingOccurrences(of: "-", with: "")
+                .replacingOccurrences(of: "_", with: "")
+        }
+
+        for ext in candidateExtensions {
+            guard let urls = bundle.urls(forResourcesWithExtension: ext, subdirectory: nil) else { continue }
+            for name in friendlyNames {
+                let targetNorm = normalized(name)
+                for url in urls {
+                    let file = url.lastPathComponent.lowercased()
+                    // Try several matching heuristics: contains full friendly, contains normalized form, file starts with friendly
+                    if file.contains(name.lowercased())
+                        || file.contains(targetNorm)
+                        || file.replacingOccurrences(of: ext, with: "").contains(targetNorm) {
+                        foundURLs.insert(url)
+                    }
+                }
+            }
+        }
+
+        if foundURLs.isEmpty {
+            print("[FontLoader] No preferred font files found for \(friendlyNames). Will still scan bundle normally.")
+            return
+        }
+
+        for url in foundURLs {
+            let filename = url.lastPathComponent
+            var error: Unmanaged<CFError>?
+            let success = CTFontManagerRegisterFontsForURL(url as CFURL, .process, &error)
+            if success {
+                print("[FontLoader] Registered preferred font file: \(filename)")
+            } else {
+                let msg = error?.takeRetainedValue().localizedDescription ?? "unknown error"
+                print("[FontLoader] FAILED to register preferred font \(filename): \(msg)")
+            }
+        }
+
+        // After registering preferred fonts, log available fonts so developer can see PostScript names.
+        logAvailableFonts(prefix: "[FontLoader] After preferred registration")
     }
 
     /// Logs available UIFont families and their font names (POSTSCRIPT names) to console.
