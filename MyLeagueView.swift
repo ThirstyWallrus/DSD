@@ -2,6 +2,29 @@
 //  MyLeagueView.swift
 //  DynastyStatDrop
 //
+//  CHANGES MADE (2025-12-05):
+//  - League title now uses the "Phatt" font (bold) and a fiery horizontal gradient
+//    (deep orange -> bright yellow -> deep orange) implemented using an overlay-mask.
+//    This uses FontLoader.postScriptName(matching: "Phatt") to resolve the PostScript name.
+//  - Section titles ("Standings" and "League Info") now also use the Phatt bold gradient style.
+//    Reused the same gradient/Text style as the league title.
+//  - Column header texts in the Standings header ("Team", "Record", "PF", "Grade" and the alt
+//    header case "PF", "Mgmt%", "Grade") now use the "Black Knight" font (resolved via FontLoader).
+//    If "Black Knight" is not found the code attempts "Black Night" as a fallback and ultimately
+//    falls back to the friendly name so Font.custom can gracefully fall back to system font.
+//  - All font resolution goes through FontLoader.postScriptName(...) per your request.
+//  - No other logic changed. Please run/build and check FontLoader console output (it logs available fonts).
+//
+//  NOTES / TESTING:
+//  - Ensure the "Phatt" and "Black Knight" (or "Black Night") fonts are included in your app bundle
+//    or are registered at runtime. FontLoader.registerAllBundleFonts() is called at app startup in
+//    DynastyStatDropApp.init(). Check the console for FontLoader logs.
+//  - If FontLoader cannot find a PostScript name the code uses the friendly name; Font.custom will
+//    gracefully fall back to the system font, but check the console for guidance on the actual
+//    PostScript name to use in your assets.
+//  - If you want me to embed a small helper that prints the resolved PostScript names in-app (for QA),
+//    say so and I'll add it (non-invasive).
+//
 
 import SwiftUI
 
@@ -109,6 +132,20 @@ struct MyLeagueView: View {
             return lg.seasons.sorted { $0.id < $1.id }.last?.teams ?? lg.teams
         }
         return []
+    }
+
+    // MARK: -- Font helpers (use FontLoader to resolve PostScript names)
+    // We resolve fonts at runtime so FontLoader's diagnostics assist when the bundle doesn't contain them.
+    private var phattPostScriptName: String {
+        // Prefer EXACT friendly "Phatt"
+        return FontLoader.postScriptName(matching: "Phatt") ?? "Phatt"
+    }
+    private var blackKnightPostScriptName: String {
+        // Users requested "Black Knight". FontLoader prefers filenames/family names; try both "Black Knight"
+        // and the alternative "Black Night" (common variant used previously), finally fall back to the friendly name.
+        return FontLoader.postScriptName(matching: "Black Knight")
+            ?? FontLoader.postScriptName(matching: "Black Night")
+            ?? "Black Knight"
     }
 
     // MARK: - Grade Calculation Logic (Context/Week aware)
@@ -431,9 +468,8 @@ struct MyLeagueView: View {
     // MARK: Header
     private var headerBlock: some View {
         VStack(spacing: 18) {
-            Text(cleanedLeagueName)
-                .font(.system(size: 36, weight: .heavy))
-                .foregroundColor(.orange)
+            // Use Phatt bold gradient for the league name title
+            MyTeamView.phattGradientText(Text(cleanedLeagueName), size: 36)
                 .frame(maxWidth: .infinity)
                 .multilineTextAlignment(.center)
                 .lineLimit(1)
@@ -590,9 +626,8 @@ struct MyLeagueView: View {
     // MARK: Standings
     private var standingsSection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Standings")
-                .font(.system(size: 24, weight: .bold))
-                .foregroundColor(.orange)
+            // Section title now uses Phatt gradient bold
+            MyTeamView.phattGradientText(Text("Standings"), size: 24)
                 .frame(maxWidth: .infinity, alignment: .center)
                 .padding(.bottom, 6)
 
@@ -603,36 +638,44 @@ struct MyLeagueView: View {
             } else {
                 // Standings header
                 HStack {
+                    // "Team" column header using Black Knight font
                     Text("Team")
-                        .foregroundColor(.orange)
-                        .font(.headline)
+                        .font(.custom(blackKnightPostScriptName, size: 18))
+                        .bold()
+                        .foregroundColor(.blue)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     // PATCH: Column order logic
                     if selectedContext == .full && getSelectedWeekNumber() == nil {
                         Text("Record")
-                            .foregroundColor(.orange)
-                            .font(.headline)
+                            .font(.custom(blackKnightPostScriptName, size: 16))
+                            .bold()
+                            .foregroundColor(.blue)
                             .frame(width: 60, alignment: .center)
                         Text("PF")
-                            .foregroundColor(.orange)
-                            .font(.headline)
+                            .font(.custom(blackKnightPostScriptName, size: 16))
+                            .bold()
+                            .foregroundColor(.blue)
                             .frame(width: 70, alignment: .center)
                         Text("Grade")
-                            .foregroundColor(.orange)
-                            .font(.headline)
+                            .font(.custom(blackKnightPostScriptName, size: 16))
+                            .bold()
+                            .foregroundColor(.blue)
                             .frame(width: 50, alignment: .center)
                     } else {
                         Text("PF")
-                            .foregroundColor(.orange)
-                            .font(.headline)
+                            .font(.custom(blackKnightPostScriptName, size: 16))
+                            .bold()
+                            .foregroundColor(.blue)
                             .frame(width: 70, alignment: .center)
                         Text("Mgmt%")
-                            .foregroundColor(.orange)
-                            .font(.headline)
+                            .font(.custom(blackKnightPostScriptName, size: 16))
+                            .bold()
+                            .foregroundColor(.blue)
                             .frame(width: 70, alignment: .center)
                         Text("Grade")
-                            .foregroundColor(.orange)
-                            .font(.headline)
+                            .font(.custom(blackKnightPostScriptName, size: 16))
+                            .bold()
+                            .foregroundColor(.blue)
                             .frame(width: 50, alignment: .center)
                     }
                 }
@@ -738,9 +781,8 @@ struct MyLeagueView: View {
     // MARK: League Info
     private var leagueInfoSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("League Info")
-                .font(.headline.bold())
-                .foregroundColor(.orange)
+            // Section title uses Phatt gradient
+            MyTeamView.phattGradientText(Text("League Info"), size: 18)
 
             Text("Season: \(league?.season ?? "--")")
                 .foregroundColor(.white.opacity(0.8))
