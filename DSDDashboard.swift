@@ -43,6 +43,7 @@ struct DSDDashboard: View {
     // UI / selection state
     @State private var showImportLeague = false
     @State private var showSettingsMenu = false
+    @State private var showPayoutCalculator = false   // NEW: present the payout calculator sheet
    
     // Customization (3 stats per card)
     @State private var selectedStandings: Set<Category> = []
@@ -264,6 +265,13 @@ struct DSDDashboard: View {
         .onReceive(NotificationCenter.default.publisher(for: UIAccessibility.reduceMotionStatusDidChangeNotification)) { _ in
             flipModel.reducedMotion = UIAccessibility.isReduceMotionEnabled
         }
+        // NEW: Present payout calculator sheet when requested
+        .sheet(isPresented: $showPayoutCalculator) {
+            FantasyPayoutCalculator()
+                .environmentObject(appSelection)
+                .environmentObject(leagueManager)
+                .environmentObject(authViewModel)
+        }
     }
    
     // MARK: Header UI
@@ -427,6 +435,10 @@ struct DSDDashboard: View {
             Button("Reset Leagues", action: resetLeagues)
             Divider()
             Button("Settings") { showSettingsMenu = true }
+            // NEW: Payout Calculator entry
+            Button("Payout Calculator") {
+                showPayoutCalculator = true
+            }
             Button("Sign Out", action: signOut)
         } label: {
             Image(systemName: "gearshape.fill")

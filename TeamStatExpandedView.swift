@@ -862,7 +862,7 @@ struct TeamStatExpandedView: View {
                 ratio: max(0.0, min(1.0, managementPercent / 100.0)),
                 mgmtPercent: managementPercent,
                 delta: managementDelta,
-                mgmtColor: mgmtColor(for: managementPercent)
+                mgmtColor: Color.mgmtPercentColor(managementPercent)
             )
             .padding(.vertical, 2)
             
@@ -1092,14 +1092,9 @@ struct TeamStatExpandedView: View {
         }
     }
     
-    // Helper to determine mgmt color (attempt to match existing MgmtColor semantics)
+    // Helper to determine mgmt color (delegates to centralized MgmtColor)
     private func mgmtColor(for pct: Double) -> Color {
-        // Reasonable mapping: >75 green, 60-75 yellow, <60 red
-        switch pct {
-        case let x where x >= 75: return .green
-        case let x where x >= 60: return .yellow
-        default: return .red
-        }
+        return Color.mgmtPercentColor(pct)
     }
     
     // MARK: - Recent Form + Consistency Row (these were reported missing by compiler)

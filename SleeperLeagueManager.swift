@@ -1637,4 +1637,25 @@ class SleeperLeagueManager: ObservableObject {
         // Sort result by matchupId for deterministic ordering
         return result.sorted { $0.matchupId < $1.matchupId }
     }
+
+    // NEW: Small helper to refresh the manager's globalCurrentWeek from the Sleeper API for a specific league.
+    // Non-destructive: only updates published properties (globalCurrentWeek and leaguePlayoffStartWeeks[leagueId]).
+    // Safe to call from UI .onChange handlers; failure is logged but does not throw.
+    func refreshGlobalCurrentWeek(for leagueId: String) async {
+        do {
+            let leagueMeta = try await fetchLeague(leagueId: leagueId)
+            let current = leagueMeta.currentWeek
+            // detectPlayoffStartWeek(from:) is non-mutating; store a per-league fallback for downstream use.
+            let detectedPlayoffStart = detectPlayoffStartWeek(from: leagueMeta)
+            await MainActor.run {
+                // Keep globalCurrentWeek monotonic upwards to avoid regressions if older data is fetched.
+                self.globalCurrentWeek = max(self.globalCurrentWeek, current)
+                // Record the detected playoff start week for the league (non-destructive)
+                self.leaguePlayoffStartWeeks[leagueId] = detectedPlayoffStart
+            }
+            print("[GlobalWeekRefresh] league=\(leagueId) currentWeek=\(current) detectedPlayoffStart=\(detectedPlayoffStart)")
+        } catch {
+            print("[GlobalWeekRefresh] league=\(leagueId) failed to refresh global week: \(error)")
+        }
+    }
 }
