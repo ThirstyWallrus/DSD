@@ -115,6 +115,39 @@ struct MyTeamView: View {
         leagueManager.leagues.isEmpty || !authViewModel.isLoggedIn
     }
 
+    // MARK: - PHATT FONT + Gradient Styling Helpers
+    // Use FontLoader to resolve the PostScript name for "Phatt" (falls back to "Phatt" string).
+    private static var phattPostScriptName: String {
+        // FontLoader.postScriptName will print helpful diagnostics; if nil, fall back to friendly name
+        return FontLoader.postScriptName(matching: "Phatt") ?? "Phatt"
+    }
+
+    // Fiery gradient colors
+    private static var fieryGradient: LinearGradient {
+        LinearGradient(
+            gradient: Gradient(colors: [Color(hex: "#C24100"), Color(hex: "#F5C200"), Color(hex: "#C24100")]),
+            startPoint: .leading,
+            endPoint: .trailing
+        )
+    }
+
+    // Text style helper: bold Phatt + fiery gradient clipped to text (CSS-like background-clip:text)
+    // Made static so it can be used without instantiating MyTeamView (avoids binding initializer).
+    static func phattGradientText(_ text: Text, size: CGFloat) -> some View {
+        // Create a consistently styled Text used for both mask and overlay reference.
+        let styled = text
+            .font(.custom(phattPostScriptName, size: size))
+            .fontWeight(.bold)
+
+        return styled
+            .foregroundColor(.clear)
+            .overlay(
+                fieryGradient
+                    .mask(styled)
+            )
+    }
+
+    // MARK: - Body
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
@@ -204,9 +237,8 @@ struct MyTeamView: View {
     // --- NEW MENU LAYOUT HERE ---
     private var headerBlock: some View {
         VStack(spacing: 18) {
-            Text(displayTeamName())
-                .font(.system(size: 36, weight: .heavy))
-                .foregroundColor(.orange)
+            // Use bold Phatt + fiery gradient for the team name title
+            MyTeamView.phattGradientText(Text(displayTeamName()), size: 36)
                 .frame(maxWidth: .infinity)
                 .multilineTextAlignment(.center)
                 .lineLimit(1)
@@ -371,9 +403,8 @@ struct MyTeamView: View {
 
     private var topHeader: some View {
         HStack(alignment: .lastTextBaseline, spacing: 12) {
-            Text(displayTeamName())
-                .font(.system(size: 30, weight: .bold))
-                .foregroundColor(.orange)
+            // Title uses Phatt + gradient as well
+            MyTeamView.phattGradientText(Text(displayTeamName()), size: 30)
                 .lineLimit(1)
                 .minimumScaleFactor(0.6)
             Spacer(minLength: 12)
@@ -388,8 +419,8 @@ struct MyTeamView: View {
     // MARK: Sections (same logic as prior version but referencing appSelection)
     private var managementSection: some View {
         sectionBox {
-            Text("Management %")
-                .sectionTitleStyle()
+            // Section title uses Phatt + gradient
+            MyTeamView.phattGradientText(Text("Management %"), size: 20)
                 .frame(maxWidth: .infinity, alignment: .center)
             let (f, o, d) = managementTriplet()
             VStack(spacing: 12) {
@@ -429,22 +460,29 @@ struct MyTeamView: View {
 
     private var positionPPWSection: some View {
         sectionBox {
-            Text(selectedWeek == "SZN" ? "Position Avg Points / Week" : "Position Points (Week \(selectedWeek.replacingOccurrences(of: "Wk ", with: "")))")
-                .sectionTitleStyle()
+            // Section title uses Phatt + gradient
+            MyTeamView.phattGradientText(
+                Text(selectedWeek == "SZN" ? "Position Avg Points / Week" : "Position Points (Week \(selectedWeek.replacingOccurrences(of: "Wk ", with: "")))"),
+                size: 18
+            )
+                .frame(maxWidth: .infinity, alignment: .leading)
             gridForPositions(valueProvider: positionPPW, leagueAvgProvider: leaguePosPPW)
         }
     }
     private var perStartPPWSection: some View {
         sectionBox {
-            Text(selectedWeek == "SZN" ? "Per Starter Slot Avg (Individual PPW)" : "Per Starter Slot Points (Individual Points in Week \(selectedWeek.replacingOccurrences(of: "Wk ", with: "")))")
-                .sectionSubtitleStyle()
+            MyTeamView.phattGradientText(
+                Text(selectedWeek == "SZN" ? "Per Starter Slot Avg (Individual PPW)" : "Per Starter Slot Points (Individual Points in Week \(selectedWeek.replacingOccurrences(of: "Wk ", with: "")))"),
+                size: 16
+            )
+                .frame(maxWidth: .infinity, alignment: .leading)
             gridForPositions(valueProvider: individualPPW, leagueAvgProvider: leagueIndividualPPW)
         }
     }
     private var averageStartersSection: some View {
         sectionBox {
-            Text("Average Starters / Week")
-                .sectionTitleStyle()
+            MyTeamView.phattGradientText(Text("Average Starters / Week"), size: 18)
+                .frame(maxWidth: .infinity, alignment: .leading)
             HStack {
                 Text("Pos").frame(width: 34, alignment: .leading)
                 Text("Avg").frame(width: 60, alignment: .trailing)
@@ -474,8 +512,8 @@ struct MyTeamView: View {
     }
     private var lineupSection: some View {
         sectionBox {
-            Text("Lineup (Week \(selectedWeek.replacingOccurrences(of: "Wk ", with: "")))")
-                .sectionTitleStyle()
+            MyTeamView.phattGradientText(Text("Lineup (Week \(selectedWeek.replacingOccurrences(of: "Wk ", with: "")))"), size: 18)
+                .frame(maxWidth: .infinity, alignment: .leading)
             HStack {
                 Text("Slot")
                     .bold()
@@ -525,8 +563,7 @@ struct MyTeamView: View {
     }
     private var transactionSection: some View {
         sectionBox {
-            Text("Transactions")
-                .sectionTitleStyle()
+            MyTeamView.phattGradientText(Text("Transactions"), size: 18)
             VStack(alignment: .leading, spacing: 4) {
                 if appSelection.selectedSeason == "All Time", let agg = aggregated {
                     let waiverAll = agg.totalWaiverMoves
@@ -564,8 +601,7 @@ struct MyTeamView: View {
     }
     private var totalsSection: some View {
         sectionBox {
-            Text("Totals")
-                .sectionTitleStyle()
+            MyTeamView.phattGradientText(Text("Totals"), size: 18)
             Text(pointsSummary())
                 .foregroundColor(.white)
                 .font(.caption)
@@ -574,8 +610,7 @@ struct MyTeamView: View {
     }
     private var strengthsWeaknessesSection: some View {
         sectionBox {
-            Text("Profile")
-                .sectionTitleStyle()
+            MyTeamView.phattGradientText(Text("Profile"), size: 18)
             if let a = aggregated {
                 profileLines(record: a.recordString,
                             seasons: a.seasonsIncluded.count,
@@ -1110,11 +1145,14 @@ struct MyTeamView: View {
 
 // MARK: Text Style Helpers
 private extension Text {
-    func sectionTitleStyle() -> Text {
-        self.font(.title2.bold()).foregroundColor(.orange)
+    // Keep original convenience names, but route to the MyTeamView phattGradientText helper (static).
+    @MainActor func sectionTitleStyle() -> some View {
+        // Use a slightly larger size for section titles
+        MyTeamView.phattGradientText(self, size: 18)
     }
-    func sectionSubtitleStyle() -> Text {
-        self.font(.headline.bold()).foregroundColor(.orange)
+    @MainActor func sectionSubtitleStyle() -> some View {
+        // Slightly smaller nuance for subtitles
+        MyTeamView.phattGradientText(self, size: 16)
     }
 }
 
@@ -1133,5 +1171,32 @@ struct PillProgress: View {
                 }
         }
         .frame(height: 8)
+    }
+}
+
+// MARK: - Color hex init helper (small utility added locally)
+private extension Color {
+    init(hex: String) {
+        let trimmed = hex.trimmingCharacters(in: CharacterSet.alphanumerics.inverted)
+        var int: UInt64 = 0
+        Scanner(string: trimmed).scanHexInt64(&int)
+        let a, r, g, b: UInt64
+        switch trimmed.count {
+        case 3: // RGB (12-bit)
+            (a, r, g, b) = (255, (int >> 8) * 17, (int >> 4 & 0xF) * 17, (int & 0xF) * 17)
+        case 6: // RRGGBB (24-bit)
+            (a, r, g, b) = (255, int >> 16, int >> 8 & 0xFF, int & 0xFF)
+        case 8: // AARRGGBB (32-bit)
+            (a, r, g, b) = (int >> 24, int >> 16 & 0xFF, int >> 8 & 0xFF, int & 0xFF)
+        default:
+            (a, r, g, b) = (255, 0, 0, 0)
+        }
+        self.init(
+            .sRGB,
+            red: Double(r) / 255,
+            green: Double(g) / 255,
+            blue: Double(b) / 255,
+            opacity: Double(a) / 255
+        )
     }
 }
