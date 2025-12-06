@@ -2,21 +2,16 @@
 //  HeadToHeadStatsSection.swift
 //  DynastyStatDrop
 //
-//  Updated to prefer stored H2H values when trustworthy; otherwise uses ManagementCalculator
-//  to compute mgmt% so numbers match MatchupView exactly (Option C).
-//
-//  CHANGE: Accept optional precomputed per-team snapshot (H2HTeamSnapshot) and current season/week.
-//  If a historical H2H match detail corresponds to the currently-displayed matchup, prefer the
-//  precomputed values from MatchupView (avoids redundant recomputation).
+//  Updated to accept precomputed H2H snapshots passed from MatchupView (Option A).
+//  HeadToHeadStatsSection will prefer the passed snapshots for Match History and
+//  summary aggregates, avoiding independent per-match recomputation and ensuring
+//  parity with the values shown in MatchupView.
 //
 
 import SwiftUI
 
-/// Lightweight snapshot type used to pass precomputed matchup values (from MatchupView)
-/// into HeadToHeadStatsSection to avoid redundant recomputation.
-///
-/// This struct is intentionally small and decoupled from MatchupView internal types so it can
-/// be constructed by MatchupView and consumed here without depending on nested types.
+/// Lightweight per-team snapshot constructed by MatchupView (or other callers)
+/// containing the exact numbers MatchupView displays for a given week.
 struct H2HTeamSnapshot {
     let rosterId: String         // TeamStanding.id (roster id as string)
     let ownerId: String?         // optional owner id
@@ -29,9 +24,44 @@ struct H2HTeamSnapshot {
     var rosterIdInt: Int? { Int(rosterId) }
 }
 
+/// Lightweight per-match snapshot built by MatchupView that contains the
+/// authoritative per-match values (scores, mgmt% etc) — MatchupView is
+/// responsible for constructing these so HeadToHeadStatsSection does not
+/// need to recompute anything.
+struct H2HMatchSnapshot: Identifiable, Codable, Equatable {
+    let id: String // unique id, e.g. "\(seasonId)-\(week)-\(matchupId)"
+    let seasonId: String
+    let week: Int
+    let matchupId: Int?
+    let userRosterId: Int
+    let oppRosterId: Int
+    let userPoints: Double
+    let oppPoints: Double
+    let userMgmtPct: Double?
+    let oppMgmtPct: Double?
+    let result: String // "W","L","T" from user's perspective
+    let missingPlayerIds: [String]?
+
+    init(seasonId: String, week: Int, matchupId: Int?, userRosterId: Int, oppRosterId: Int, userPoints: Double, oppPoints: Double, userMgmtPct: Double?, oppMgmtPct: Double?, missingPlayerIds: [String]? = nil) {
+        self.seasonId = seasonId
+        self.week = week
+        self.matchupId = matchupId
+        self.userRosterId = userRosterId
+        self.oppRosterId = oppRosterId
+        self.userPoints = userPoints
+        self.oppPoints = oppPoints
+        self.userMgmtPct = userMgmtPct
+        self.oppMgmtPct = oppMgmtPct
+        if userPoints > oppPoints { self.result = "W" }
+        else if userPoints < oppPoints { self.result = "L" }
+        else { self.result = "T" }
+        self.missingPlayerIds = missingPlayerIds ?? []
+        self.id = "\(seasonId)-\(week)-\(matchupId ?? -9999)-u:\(userRosterId)-o:\(oppRosterId)"
+    }
+}
+
 struct HeadToHeadStatsSection: View {
     // Backwards-compatible: we still accept TeamStanding objects for callers that prefer them.
-    // Prefer using the optional precomputed snapshots (userSnapshot / oppSnapshot) for the currently-displayed matchup.
     let user: TeamStanding?
     let opp: TeamStanding?
     let league: LeagueData
@@ -40,43 +70,72 @@ struct HeadToHeadStatsSection: View {
     let userSnapshot: H2HTeamSnapshot?
     let oppSnapshot: H2HTeamSnapshot?
 
+    // Optional full array of precomputed per-match snapshots (Option A)
+    // When provided, HeadToHeadStatsSection will use these exclusively to render Match History
+    // and to compute summary aggregates (Record, Avg Mgmt%, Avg PPG).
+    let matchSnapshots: [H2HMatchSnapshot]?
+
     // Optional context identifying the current season & week displayed by MatchupView.
-    // When a historical H2H detail matches these, we will use the snapshots instead of recomputing.
+    // When a historical H2H detail matches these, we will prefer snapshot values if they are supplied.
     let currentSeasonId: String?
     let currentWeekNumber: Int?
 
     @EnvironmentObject private var leagueManager: SleeperLeagueManager
 
-    // Legacy accessors
-    private var h2hSummary: (record: String, avgMgmtFor: Double, avgPF: Double, avgMgmtAgainst: Double, avgPA: Double) {
-        // If we have owner IDs use them; otherwise fall back to stored aggregation retrieval using league
+    // MARK: - Aggregates computed from snapshots (when provided)
+    private var aggregatesFromSnapshots: (record: String, avgMgmtFor: Double, avgPF: Double, avgMgmtAgainst: Double, avgPA: Double) {
+        guard let snaps = matchSnapshots, !snaps.isEmpty else {
+            return ("0-0", 0.0, 0.0, 0.0, 0.0)
+        }
+
+        var wins = 0, losses = 0, ties = 0
+        var sumMgmtFor = 0.0, countMgmtFor = 0
+        var sumMgmtAgainst = 0.0, countMgmtAgainst = 0
+        var sumPF = 0.0, sumPA = 0.0
+
+        for s in snaps {
+            switch s.result {
+            case "W": wins += 1
+            case "L": losses += 1
+            default: ties += 1
+            }
+            sumPF += s.userPoints
+            sumPA += s.oppPoints
+
+            if let mg = s.userMgmtPct {
+                sumMgmtFor += mg
+                countMgmtFor += 1
+            }
+            if let mg = s.oppMgmtPct {
+                sumMgmtAgainst += mg
+                countMgmtAgainst += 1
+            }
+        }
+
+        let games = snaps.count
+        let avgPF = games > 0 ? sumPF / Double(games) : 0.0
+        let avgPA = games > 0 ? sumPA / Double(games) : 0.0
+        let avgMgmtFor = countMgmtFor > 0 ? sumMgmtFor / Double(countMgmtFor) : 0.0
+        let avgMgmtAgainst = countMgmtAgainst > 0 ? sumMgmtAgainst / Double(countMgmtAgainst) : 0.0
+        let record = "\(wins)-\(losses)\(ties > 0 ? "-\(ties)" : "")"
+        return (record, avgMgmtFor, avgPF, avgMgmtAgainst, avgPA)
+    }
+
+    // Backwards-compatible legacy fallback: uses cached aggregated all-time H2H if snapshots are not present
+    private var h2hSummaryFallback: (record: String, avgMgmtFor: Double, avgPF: Double, avgMgmtAgainst: Double, avgPA: Double) {
         if let uid = user?.ownerId, let oid = opp?.ownerId {
             return Self.getHeadToHeadAllTime(userOwnerId: uid, oppOwnerId: oid, league: league)
         }
-        // Fallback: attempt to find owner IDs via snapshots
         if let uo = userSnapshot?.ownerId, let oo = oppSnapshot?.ownerId {
             return Self.getHeadToHeadAllTime(userOwnerId: uo, oppOwnerId: oo, league: league)
         }
-        // As a last resort return zeros
         return ("0-0", 0.0, 0.0, 0.0, 0.0)
     }
 
-    private var h2hDetails: [H2HMatchDetail]? {
-        if let uid = user?.ownerId, let oid = opp?.ownerId {
-            return Self.getHeadToHeadDetails(userOwnerId: uid, oppOwnerId: oid, league: league)
-        }
-        if let uo = userSnapshot?.ownerId, let oo = oppSnapshot?.ownerId {
-            return Self.getHeadToHeadDetails(userOwnerId: uo, oppOwnerId: oo, league: league)
-        }
-        return nil
-    }
-
-    private func sortedDetails(_ list: [H2HMatchDetail]) -> [H2HMatchDetail] {
-        list.sorted { lhs, rhs in
-            if lhs.seasonId != rhs.seasonId { return lhs.seasonId > rhs.seasonId }
-            if lhs.week != rhs.week { return lhs.week > rhs.week }
-            return lhs.matchupId > rhs.matchupId
-        }
+    // Prefer snapshot aggregates when available
+    private var h2hSummary: (record: String, avgMgmtFor: Double, avgPF: Double, avgMgmtAgainst: Double, avgPA: Double) {
+        if let _ = matchSnapshots { return aggregatesFromSnapshots }
+        return h2hSummaryFallback
     }
 
     var body: some View {
@@ -130,18 +189,21 @@ struct HeadToHeadStatsSection: View {
 
     private var matchHistoryView: some View {
         Group {
-            if let list = h2hDetails, !list.isEmpty {
+            if let snaps = matchSnapshots, !snaps.isEmpty {
                 Divider().background(Color.white.opacity(0.06))
                 Text("Match History")
                     .font(.subheadline.bold())
                     .foregroundColor(.white.opacity(0.9))
 
-                let sorted = sortedDetails(list)
+                // Sort snapshots descending by season, week, matchupId for display
+                let sorted = snaps.sorted { lhs, rhs in
+                    if lhs.seasonId != rhs.seasonId { return lhs.seasonId > rhs.seasonId }
+                    if lhs.week != rhs.week { return lhs.week > rhs.week }
+                    return (lhs.matchupId ?? 0) > (rhs.matchupId ?? 0)
+                }
 
                 VStack(spacing: 8) {
-                    ForEach(sorted.indices, id: \.self) { idx in
-                        let match = sorted[idx]
-                        let verification = verifyMatch(match)
+                    ForEach(sorted) { match in
                         HStack(spacing: 12) {
                             VStack(alignment: .leading) {
                                 Text("Season \(match.seasonId) • Week \(match.week)")
@@ -156,8 +218,7 @@ struct HeadToHeadStatsSection: View {
                                     .font(.caption.bold())
                                     .foregroundColor(match.result == "W" ? .green : (match.result == "L" ? .red : .yellow))
 
-                                // Prefer verification values; fallback to stored values
-                                if let userMgmt = verification.userMgmt, let oppMgmt = verification.oppMgmt {
+                                if let userMgmt = match.userMgmtPct, let oppMgmt = match.oppMgmtPct {
                                     HStack(spacing: 6) {
                                         Text(String(format: "Mgmt: %.2f%%", userMgmt))
                                             .font(.caption2)
@@ -167,29 +228,18 @@ struct HeadToHeadStatsSection: View {
                                             .font(.caption2)
                                             .foregroundColor(Color.mgmtPercentColor(oppMgmt))
                                     }
-                                } else if verification.matchupMissing {
-                                    Text("Matchup data unavailable")
-                                        .font(.caption2)
-                                        .foregroundColor(.red.opacity(0.8))
                                 } else {
-                                    // Final fallback: show stored numbers
-                                    HStack(spacing: 6) {
-                                        Text(String(format: "Mgmt: %.2f%%", match.userMgmtPct))
-                                            .font(.caption2)
-                                            .foregroundColor(Color.mgmtPercentColor(match.userMgmtPct))
-                                        Text("·").font(.caption2).foregroundColor(.white.opacity(0.5))
-                                        Text(String(format: "%.2f%%", match.oppMgmtPct))
-                                            .font(.caption2)
-                                            .foregroundColor(Color.mgmtPercentColor(match.oppMgmtPct))
-                                    }
+                                    Text("Mgmt: —")
+                                        .font(.caption2)
+                                        .foregroundColor(.white.opacity(0.6))
                                 }
 
-                                if !verification.missingPlayerIds.isEmpty {
+                                if let missing = match.missingPlayerIds, !missing.isEmpty {
                                     HStack(spacing: 6) {
                                         Image(systemName: "exclamationmark.triangle.fill")
                                             .foregroundColor(.red)
                                             .font(.caption2)
-                                        Text("\(verification.missingPlayerIds.count) missing players")
+                                        Text("\(missing.count) missing players")
                                             .font(.caption2)
                                             .foregroundColor(.red)
                                     }
@@ -201,14 +251,85 @@ struct HeadToHeadStatsSection: View {
                     }
                 }
             } else {
-                Text("No head-to-head matches on record.")
-                    .font(.caption)
-                    .foregroundColor(.white.opacity(0.6))
+                // Fallback: legacy behavior — use aggregated H2HDetails if available and snapshots not provided
+                if let list = h2hDetails, !list.isEmpty {
+                    Divider().background(Color.white.opacity(0.06))
+                    Text("Match History")
+                        .font(.subheadline.bold())
+                        .foregroundColor(.white.opacity(0.9))
+
+                    let sorted = sortedDetails(list)
+                    VStack(spacing: 8) {
+                        ForEach(sorted.indices, id: \.self) { idx in
+                            let match = sorted[idx]
+                            let verification = verifyMatch(match)
+                            HStack(spacing: 12) {
+                                VStack(alignment: .leading) {
+                                    Text("Season \(match.seasonId) • Week \(match.week)")
+                                        .font(.caption.bold())
+                                        .foregroundColor(match.result == "W" ? .green : (match.result == "L" ? .red : .yellow))
+                                    Text("Score: \(String(format: "%.2f", match.userPoints)) — \(String(format: "%.2f", match.oppPoints))")
+                                        .font(.caption2).foregroundColor(.white)
+                                }
+                                Spacer()
+                                VStack(alignment: .trailing) {
+                                    Text(match.result)
+                                        .font(.caption.bold())
+                                        .foregroundColor(match.result == "W" ? .green : (match.result == "L" ? .red : .yellow))
+
+                                    // Prefer verification values; fallback to stored values
+                                    if let userMgmt = verification.userMgmt, let oppMgmt = verification.oppMgmt {
+                                        HStack(spacing: 6) {
+                                            Text(String(format: "Mgmt: %.2f%%", userMgmt))
+                                                .font(.caption2)
+                                                .foregroundColor(Color.mgmtPercentColor(userMgmt))
+                                            Text("·").font(.caption2).foregroundColor(.white.opacity(0.5))
+                                            Text(String(format: "%.2f%%", oppMgmt))
+                                                .font(.caption2)
+                                                .foregroundColor(Color.mgmtPercentColor(oppMgmt))
+                                        }
+                                    } else if verification.matchupMissing {
+                                        Text("Matchup data unavailable")
+                                            .font(.caption2)
+                                            .foregroundColor(.red.opacity(0.8))
+                                    } else {
+                                        HStack(spacing: 6) {
+                                            Text(String(format: "Mgmt: %.2f%%", match.userMgmtPct))
+                                                .font(.caption2)
+                                                .foregroundColor(Color.mgmtPercentColor(match.userMgmtPct))
+                                            Text("·").font(.caption2).foregroundColor(.white.opacity(0.5))
+                                            Text(String(format: "%.2f%%", match.oppMgmtPct))
+                                                .font(.caption2)
+                                                .foregroundColor(Color.mgmtPercentColor(match.oppMgmtPct))
+                                        }
+                                    }
+
+                                    if !verification.missingPlayerIds.isEmpty {
+                                        HStack(spacing: 6) {
+                                            Image(systemName: "exclamationmark.triangle.fill")
+                                                .foregroundColor(.red)
+                                                .font(.caption2)
+                                            Text("\(verification.missingPlayerIds.count) missing players")
+                                                .font(.caption2)
+                                                .foregroundColor(.red)
+                                        }
+                                    }
+                                }
+                            }
+                            .padding(8)
+                            .background(RoundedRectangle(cornerRadius: 8).fill(Color.white.opacity(0.02)))
+                        }
+                    }
+                } else {
+                    Text("No head-to-head matches on record.")
+                        .font(.caption)
+                        .foregroundColor(.white.opacity(0.6))
+                }
             }
         }
     }
 
-    // MARK: - Verification Helpers
+    // MARK: - Legacy verification & helpers (left in place as a fallback)
 
     private struct MatchVerification {
         let userMgmt: Double?
@@ -227,7 +348,6 @@ struct HeadToHeadStatsSection: View {
             if match.userRosterId == uRid && match.oppRosterId == oRid {
                 return MatchVerification(userMgmt: usnap.managementPercent, oppMgmt: osnap.managementPercent, missingPlayerIds: [], matchupMissing: false)
             }
-            // If the snapshot roster ids are reversed in the match detail, swap appropriately
             if match.userRosterId == oRid && match.oppRosterId == uRid {
                 return MatchVerification(userMgmt: osnap.managementPercent, oppMgmt: usnap.managementPercent, missingPlayerIds: [], matchupMissing: false)
             }
@@ -237,33 +357,26 @@ struct HeadToHeadStatsSection: View {
         let myEntry = findUserMatchupEntry(for: match)
         let oppEntry = findOppMatchupEntry(for: match)
 
-        // If either entry is missing, mark matchupMissing
         guard let myE = myEntry else {
             return MatchVerification(userMgmt: nil, oppMgmt: nil, missingPlayerIds: [], matchupMissing: true)
         }
         guard let oppE = oppEntry else {
-            // still attempt to list unresolved players for debugging
             let unresolved = unresolvedPlayersIn(entry: myE, matchWeek: match.week)
             return MatchVerification(userMgmt: nil, oppMgmt: nil, missingPlayerIds: unresolved, matchupMissing: false)
         }
 
-        // If stored details exist AND both entries contain players_points (non-empty), prefer stored values.
-        // This avoids recomputation when AllTimeAggregator already computed mgmt% from authoritative matchup data.
         let storedTrustworthy: Bool = {
             let bothHavePP = (myE.players_points?.isEmpty == false) && (oppE.players_points?.isEmpty == false)
             let storedNonZero = match.userMgmtPct > 0 || match.oppMgmtPct > 0
             return bothHavePP && storedNonZero
         }()
 
-        // collect unresolved players for display (best-effort)
         let unresolved = unresolvedPlayersIn(entry: myE, matchWeek: match.week)
 
         if storedTrustworthy {
-            // Use stored H2H values directly
             return MatchVerification(userMgmt: match.userMgmtPct, oppMgmt: match.oppMgmtPct, missingPlayerIds: unresolved, matchupMissing: false)
         }
 
-        // Otherwise, recompute both sides using the canonical ManagementCalculator
         let seasonTeamUser = findSeasonTeam(forEntry: myE)
         let seasonTeamOpp = findSeasonTeam(forEntry: oppE)
 
@@ -357,6 +470,7 @@ struct HeadToHeadStatsSection: View {
         return str
     }
 
+    // MARK: - Legacy aggregated helpers (unchanged)
     static func getHeadToHeadAllTime(userOwnerId: String, oppOwnerId: String, league: LeagueData) -> (record: String, avgMgmtFor: Double, avgPF: Double, avgMgmtAgainst: Double, avgPA: Double) {
         guard let userAgg = league.allTimeOwnerStats?[userOwnerId],
               let h2h = userAgg.headToHeadVs[oppOwnerId] else {
@@ -368,5 +482,23 @@ struct HeadToHeadStatsSection: View {
     static func getHeadToHeadDetails(userOwnerId: String, oppOwnerId: String, league: LeagueData) -> [H2HMatchDetail]? {
         guard let userAgg = league.allTimeOwnerStats?[userOwnerId] else { return nil }
         return userAgg.headToHeadDetails?[oppOwnerId]
+    }
+
+    private var h2hDetails: [H2HMatchDetail]? {
+        if let uid = user?.ownerId, let oid = opp?.ownerId {
+            return Self.getHeadToHeadDetails(userOwnerId: uid, oppOwnerId: oid, league: league)
+        }
+        if let uo = userSnapshot?.ownerId, let oo = oppSnapshot?.ownerId {
+            return Self.getHeadToHeadDetails(userOwnerId: uo, oppOwnerId: oo, league: league)
+        }
+        return nil
+    }
+
+    private func sortedDetails(_ list: [H2HMatchDetail]) -> [H2HMatchDetail] {
+        list.sorted { lhs, rhs in
+            if lhs.seasonId != rhs.seasonId { return lhs.seasonId > rhs.seasonId }
+            if lhs.week != rhs.week { return lhs.week > rhs.week }
+            return lhs.matchupId > rhs.matchupId
+        }
     }
 }
