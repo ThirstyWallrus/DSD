@@ -422,6 +422,14 @@ struct HeadToHeadStatsSection: View {
                 if team.roster.contains(where: { $0.id == pid }) { found = true }
             }
             if !found {
+                // Check per-league compact ownedPlayers
+                if league.ownedPlayers?[pid] != nil { found = true }
+            }
+            if !found {
+                // Check per-team historical map
+                if let sid = seasonTeam?.id, league.teamHistoricalPlayers?[sid]?[pid] != nil { found = true }
+            }
+            if !found {
                 if playerCache[pid] != nil { found = true }
             }
             if !found { unresolved.append(pid) }

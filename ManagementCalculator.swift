@@ -87,20 +87,36 @@ struct ManagementCalculator {
 
         let playerCache = leagueManager.playerCache ?? [:]
 
-        var idSet = Set<String>()
-        if let players = entry.players { idSet.formUnion(players) }
-        if let starters = entry.starters { idSet.formUnion(starters) }
-        idSet.formUnion(playersPoints.keys)
-        if let team = seasonTeam { idSet.formUnion(team.roster.map { $0.id }) }
-
-        let candidates: [(id: String, basePos: String, altPos: [String], score: Double)] = idSet.map { pid in
+        // Build candidate pool using a safe lookup order:
+        // 1) seasonTeam.roster
+        // 2) league.ownedPlayers (CompactPlayer)
+        // 3) league.teamHistoricalPlayers for this roster/team
+        // 4) global playerCache (full RawSleeperPlayer)
+        // 5) fallback "UNK"
+        var candidates: [(id: String, basePos: String, altPos: [String], score: Double)] = []
+        for pid in Set(Array(playersPoints.keys) + (seasonTeam?.roster.map { $0.id } ?? [])) {
             if let p = seasonTeam?.roster.first(where: { $0.id == pid }) {
-                return (id: pid, basePos: PositionNormalizer.normalize(p.position), altPos: (p.altPositions ?? []).map { PositionNormalizer.normalize($0) }, score: playersPoints[pid] ?? 0.0)
+                candidates.append((id: pid, basePos: PositionNormalizer.normalize(p.position), altPos: (p.altPositions ?? []).map { PositionNormalizer.normalize($0) }, score: playersPoints[pid] ?? 0.0))
+                continue
+            }
+            if let compact = league?.ownedPlayers?[pid] {
+                let base = PositionNormalizer.normalize(compact.position ?? "UNK")
+                let alts = (compact.fantasyPositions ?? []).map { PositionNormalizer.normalize($0) }
+                candidates.append((id: pid, basePos: base, altPos: alts, score: playersPoints[pid] ?? 0.0))
+                continue
+            }
+            if let teamHist = league?.teamHistoricalPlayers?[seasonTeam?.id ?? ""]?[pid] {
+                let base = PositionNormalizer.normalize(teamHist.lastKnownPosition ?? "UNK")
+                candidates.append((id: pid, basePos: base, altPos: [], score: playersPoints[pid] ?? 0.0))
+                continue
             }
             if let raw = playerCache[pid] {
-                return (id: pid, basePos: PositionNormalizer.normalize(raw.position ?? "UNK"), altPos: (raw.fantasy_positions ?? []).map { PositionNormalizer.normalize($0) }, score: playersPoints[pid] ?? 0.0)
+                let base = PositionNormalizer.normalize(raw.position ?? "UNK")
+                let alts = (raw.fantasy_positions ?? []).map { PositionNormalizer.normalize($0) }
+                candidates.append((id: pid, basePos: base, altPos: alts, score: playersPoints[pid] ?? 0.0))
+                continue
             }
-            return (id: pid, basePos: PositionNormalizer.normalize("UNK"), altPos: [], score: playersPoints[pid] ?? 0.0)
+            candidates.append((id: pid, basePos: PositionNormalizer.normalize("UNK"), altPos: [], score: playersPoints[pid] ?? 0.0))
         }
 
         var strictSlots: [String] = []
@@ -149,9 +165,16 @@ struct ManagementCalculator {
         idSet.formUnion(playersPoints.keys)
         idSet.formUnion(team.roster.map { $0.id })
 
+        // Build candidates using new compact cache-aware lookup order
         let candidates: [(id: String, basePos: String, altPos: [String], score: Double)] = idSet.map { pid in
             if let p = team.roster.first(where: { $0.id == pid }) {
                 return (id: pid, basePos: PositionNormalizer.normalize(p.position), altPos: (p.altPositions ?? []).map { PositionNormalizer.normalize($0) }, score: playersPoints[pid] ?? 0.0)
+            }
+            if let compact = league?.ownedPlayers?[pid] {
+                return (id: pid, basePos: PositionNormalizer.normalize(compact.position ?? "UNK"), altPos: (compact.fantasyPositions ?? []).map { PositionNormalizer.normalize($0) }, score: playersPoints[pid] ?? 0.0)
+            }
+            if let teamHist = league?.teamHistoricalPlayers?[team.id]?[pid] {
+                return (id: pid, basePos: PositionNormalizer.normalize(teamHist.lastKnownPosition ?? "UNK"), altPos: [], score: playersPoints[pid] ?? 0.0)
             }
             if let raw = playerCache[pid] {
                 return (id: pid, basePos: PositionNormalizer.normalize(raw.position ?? "UNK"), altPos: (raw.fantasy_positions ?? []).map { PositionNormalizer.normalize($0) }, score: playersPoints[pid] ?? 0.0)
@@ -189,8 +212,14 @@ struct ManagementCalculator {
             for pid in starters where pid != "0" {
                 let score = playersPoints[pid] ?? 0.0
                 actualTotal += score
-                // find position
-                let pPos = team.roster.first(where: { $0.id == pid })?.position ?? leagueManager.playerCache?[pid]?.position ?? "UNK"
+                // find position using compact caches before global cache
+                let pPos: String = {
+                    if let p = team.roster.first(where: { $0.id == pid }) { return p.position }
+                    if let compact = league?.ownedPlayers?[pid], let pos = compact.position { return pos }
+                    if let th = league?.teamHistoricalPlayers?[team.id]?[pid], let pos = th.lastKnownPosition { return pos }
+                    if let raw = playerCache[pid], let pos = raw.position { return pos }
+                    return "UNK"
+                }()
                 let norm = PositionNormalizer.normalize(pPos)
                 if ["QB","RB","WR","TE","K"].contains(norm) { actualOff += score }
                 else if ["DL","LB","DB"].contains(norm) { actualDef += score }

@@ -260,15 +260,24 @@ struct MatchupView: View {
                 }
             }
         }
+
+        // Updated lookup: prefer team roster, then league.ownedPlayers, then league.teamHistoricalPlayers, then global playerCache.
         func lookupPlayerInfo(_ pid: String) -> (id: String, position: String, altPositions: [String]?) {
             if let p = team.roster.first(where: { $0.id == pid }) {
                 return (p.id, p.position, p.altPositions)
+            }
+            if let compact = league?.ownedPlayers?[pid] {
+                return (compact.id, compact.position ?? "UNK", compact.fantasyPositions)
+            }
+            if let th = league?.teamHistoricalPlayers?[team.id]?[pid] {
+                return (th.playerId, th.lastKnownPosition ?? "UNK", nil)
             }
             if let raw = leagueManager.playerCache?[pid] {
                 return (raw.player_id, raw.position ?? "UNK", raw.fantasy_positions)
             }
             return (pid, "UNK", nil)
         }
+
         var lineup: [LineupPlayer] = []
         var usedPlayers: Set<String> = []
         var availableStarters = paddedStarters
@@ -335,7 +344,7 @@ struct MatchupView: View {
             // as " (Traded/Released)" to indicate a historical starter that is not on the current roster.
             let wasInRoster = team.roster.contains(where: { $0.id == pid })
             if !wasInRoster {
-                displaySlot += " (Traded/Released)"
+                displaySlot += " (NLOT)"
                 slotColor = slotColor ?? .gray
             }
             lineup.append(LineupPlayer(
@@ -392,6 +401,10 @@ struct MatchupView: View {
             let slotAssignmentsForDebug = slotAssignments.map { pair -> (slot: String, player: Player?) in
                 if let pid = pair.playerId {
                     if let p = team.roster.first(where: { $0.id == pid }) {
+                        return (slot: pair.slot, player: p)
+                    }
+                    if let compact = league?.ownedPlayers?[pid] {
+                        let p = Player(id: compact.id, position: compact.position ?? "UNK", altPositions: compact.fantasyPositions, weeklyScores: [])
                         return (slot: pair.slot, player: p)
                     }
                     if let raw = leagueManager.playerCache?[pid] {
@@ -514,6 +527,31 @@ struct MatchupView: View {
                     return "TAXI"
                 }
             }
+        }
+        // Check per-league compact ownedPlayers
+        if let compact = league?.ownedPlayers?[playerId] {
+            if let pos = compact.position?.uppercased(), pos.contains("IR") {
+                if lineupDebugEnabled { print("[BenchSlotDetect] ownedPlayers.position -> player:\(playerId) matched IR via '\(pos)'") }
+                return irToken
+            }
+            if let fantasy = compact.fantasyPositions {
+                for alt in fantasy {
+                    let canonical = canonicalizeToken(alt)
+                    if canonical == irToken {
+                        if lineupDebugEnabled { print("[BenchSlotDetect] ownedPlayers.fantasy_positions -> player:\(playerId) matched IR via '\(alt)'") }
+                        return irToken
+                    }
+                    if canonical == "TAXI" {
+                        if lineupDebugEnabled { print("[BenchSlotDetect] ownedPlayers.fantasy_positions -> player:\(playerId) matched TAXI via '\(alt)'") }
+                        return "TAXI"
+                    }
+                }
+            }
+        }
+        // Check teamHistorical map for tokens
+        if let th = league?.teamHistoricalPlayers?[team.id]?[playerId], let pos = th.lastKnownPosition?.uppercased(), pos.contains("IR") {
+            if lineupDebugEnabled { print("[BenchSlotDetect] teamHistorical.lastKnownPosition -> player:\(playerId) matched IR via '\(pos)'") }
+            return irToken
         }
         if let raw = leagueManager.playerCache?[playerId] {
             if let pos = raw.position?.uppercased(), pos.contains("IR") {
@@ -1328,7 +1366,7 @@ struct MatchupView: View {
             print("\(prefix) WARNING: paddedStarters contains placeholder(s) '0' (some starters are missing or matchup data incomplete)")
         }
         let rosterIds = Set(team.roster.map { $0.id })
-        let missingInRoster = starters.filter { $0 != "0" && !rosterIds.contains($0) && leagueManager.playerCache?[$0] == nil }
+        let missingInRoster = starters.filter { $0 != "0" && !rosterIds.contains($0) && leagueManager.playerCache?[$0] == nil && league?.ownedPlayers?[$0] == nil }
         if !missingInRoster.isEmpty {
             print("\(prefix) NOTE: starter IDs not found in team's roster (they may have been traded/released or otherwise not present locally): \(missingInRoster)")
         }
