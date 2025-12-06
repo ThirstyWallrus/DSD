@@ -507,3 +507,4 @@ struct HeadToHeadStatsSection: View {
         }
     }
 }
+
