@@ -335,8 +335,6 @@ struct MatchupView: View {
             // as " (Traded/Released)" to indicate a historical starter that is not on the current roster.
             let wasInRoster = team.roster.contains(where: { $0.id == pid })
             if !wasInRoster {
-                // Confirm resolvable via cache (we already looked up info; if info.position == "UNK" and not in cache it's less helpful)
-                // Annotate display slot and visually mute the slot color so it's not mistaken for current roster player.
                 displaySlot += " (Traded/Released)"
                 slotColor = slotColor ?? .gray
             }
@@ -391,14 +389,12 @@ struct MatchupView: View {
         ordered.append(contentsOf: dbSlots)
         ordered.append(contentsOf: defensiveFlexSlotsArr)
         if lineupDebugEnabled {
-            // Provide debug with resolved Player placeholders for starters that are not in team.roster
             let slotAssignmentsForDebug = slotAssignments.map { pair -> (slot: String, player: Player?) in
                 if let pid = pair.playerId {
                     if let p = team.roster.first(where: { $0.id == pid }) {
                         return (slot: pair.slot, player: p)
                     }
                     if let raw = leagueManager.playerCache?[pid] {
-                        // Construct a lightweight Player placeholder for debugging output
                         let p = Player(id: pid, position: raw.position ?? "UNK", altPositions: raw.fantasy_positions, weeklyScores: [])
                         return (slot: pair.slot, player: p)
                     }
@@ -559,7 +555,8 @@ struct MatchupView: View {
     private func teamDisplay(for team: TeamStanding, week: Int) -> TeamDisplay {
         let lineup = orderedLineup(for: team, week: week)
         let bench = orderedBench(for: team, week: week)
-        let (actualTotal, maxTotal, _, _, _, _) = computeManagementForWeek(team: team, week: week)
+        // Delegate to shared ManagementCalculator for canonical computation
+        let (actualTotal, maxTotal, _, _, _, _) = ManagementCalculator.computeManagementForWeek(team: team, week: week, league: self.league ?? team.league, leagueManager: leagueManager)
         let managementPercent = maxTotal > 0 ? (actualTotal / maxTotal * 100) : 0.0
         return TeamDisplay(
             id: team.id,
@@ -1159,154 +1156,9 @@ struct MatchupView: View {
         let sanitized = SlotUtils.sanitizeStartingLineupConfig(config)
         return sanitized.flatMap { Array(repeating: $0.key, count: $0.value) }
     }
-    // Management calculation for TeamDisplay
+    // Management calculation for TeamDisplay — delegated to ManagementCalculator above
     private func computeManagementForWeek(team: TeamStanding, week: Int) -> (Double, Double, Double, Double, Double, Double) {
-        if let season = selectedSeasonData,
-           let entries = season.matchupsByWeek?[week],
-           let myEntry = entries.first(where: { $0.roster_id == Int(team.id) }),
-           let playersPoints = myEntry.players_points {
-            // Build a robust candidate id set: union of entry.players, entry.starters, players_points keys, and team roster ids
-            var idSet = Set<String>()
-            if let players = myEntry.players { idSet.formUnion(players) }
-            if let starters = myEntry.starters { idSet.formUnion(starters) }
-            idSet.formUnion(playersPoints.keys)
-            idSet.formUnion(team.roster.map { $0.id })
-            // Map idSet to candidate tuples
-            let playerCache = leagueManager.playerCache ?? [:]
-            let candidates: [(id: String, basePos: String, altPos: [String], score: Double)] = idSet.compactMap { pid in
-                // Try season roster first
-                if let p = team.roster.first(where: { $0.id == pid }) {
-                    let basePos = PositionNormalizer.normalize(p.position)
-                    let alt = (p.altPositions ?? []).map { PositionNormalizer.normalize($0) }
-                    let score = playersPoints[pid] ?? 0.0
-                    return (id: pid, basePos: basePos, altPos: alt, score: score)
-                }
-                // fallback to playerCache
-                if let raw = playerCache[pid] {
-                    let basePos = PositionNormalizer.normalize(raw.position ?? "UNK")
-                    let alt = (raw.fantasy_positions ?? []).map { PositionNormalizer.normalize($0) }
-                    let score = playersPoints[pid] ?? 0.0
-                    return (id: pid, basePos: basePos, altPos: alt, score: score)
-                }
-                // Last-resort include with UNK pos
-                let score = playersPoints[pid] ?? 0.0
-                return (id: pid, basePos: PositionNormalizer.normalize("UNK"), altPos: [], score: score)
-            }
-            // Determine starting slots
-            var startingSlots: [String] = SlotUtils.sanitizeStartingSlots(league?.startingLineup ?? [])
-            if startingSlots.isEmpty, let cfg = team.lineupConfig, !cfg.isEmpty {
-                startingSlots = expandSlots(cfg)
-            }
-            var strictSlots: [String] = []
-            var flexSlots: [String] = []
-            for slot in startingSlots {
-                let allowed = allowedPositions(for: slot)
-                if allowed.count == 1 &&
-                    !isDefensiveFlexSlot(slot) &&
-                    !offensiveFlexSlots.contains(slot.uppercased()) {
-                    strictSlots.append(slot)
-                } else {
-                    flexSlots.append(slot)
-                }
-            }
-            let optimalOrder = strictSlots + flexSlots
-            var used = Set<String>()
-            var maxTotal = 0.0
-            var maxOff = 0.0
-            var maxDef = 0.0
-            var actualTotal = 0.0
-            var actualOff = 0.0
-            var actualDef = 0.0
-            // compute actual totals from starters using playersPoints
-            if let starters = myEntry.starters {
-                for pid in starters where pid != "0" {
-                    let score = playersPoints[pid] ?? 0.0
-                    actualTotal += score
-                    // derive pos for offense/def split
-                    let rawP = team.roster.first(where: { $0.id == pid })
-                    let pos = PositionNormalizer.normalize(rawP?.position ?? playerCache[pid]?.position ?? "UNK")
-                    if ["QB","RB","WR","TE","K"].contains(pos) { actualOff += score }
-                    else if ["DL","LB","DB"].contains(pos) { actualDef += score }
-                }
-            }
-            // compute max totals using greedy assignment from candidate list
-            for slot in optimalOrder {
-                let allowed = allowedPositions(for: slot)
-                let candidatePool = candidates.filter { candidate in
-                    return !used.contains(candidate.id) && (allowed.contains(candidate.basePos) || !allowed.intersection(Set(candidate.altPos)).isEmpty)
-                }
-                if let pick = candidatePool.max(by: { $0.score < $1.score }) {
-                    used.insert(pick.id)
-                    maxTotal += pick.score
-                    if ["QB","RB","WR","TE","K"].contains(pick.basePos) { maxOff += pick.score }
-                    else if ["DL","LB","DB"].contains(pick.basePos) { maxDef += pick.score }
-                }
-            }
-            return (actualTotal, maxTotal, actualOff, maxOff, actualDef, maxDef)
-        }
-        // Fallback: legacy roster-based computation
-        let playerScores = team.roster.reduce(into: [String: Double]()) { dict, player in
-            if let score = player.weeklyScores.first(where: { $0.week == week }) {
-                dict[player.id] = score.points_half_ppr ?? score.points
-            }
-        }
-        let actualStarters = team.actualStartersByWeek?[week] ?? []
-        let actualTotal = actualStarters.reduce(0.0) { $0 + (playerScores[$1] ?? 0.0) }
-        let offPositions: Set<String> = ["QB", "RB", "WR", "TE", "K"]
-        let actualOff = actualStarters.reduce(0.0) { sum, id in
-            if let player = team.roster.first(where: { $0.id == id }), offPositions.contains(player.position) {
-                return sum + (playerScores[id] ?? 0.0)
-            } else {
-                return sum
-            }
-        }
-        let actualDef = actualTotal - actualOff
-        var startingSlots = team.league?.startingLineup ?? []
-        if startingSlots.isEmpty, let config = team.lineupConfig, !config.isEmpty {
-            startingSlots = expandSlots(config)
-        }
-        let fixedCounts = fixedSlotCounts(startingSlots: startingSlots)
-        let offPosSet: Set<String> = ["QB", "RB", "WR", "TE", "K"]
-        var offPlayerList = team.roster.filter { offPosSet.contains($0.position) }.map {
-            (id: $0.id, pos: $0.position, score: playerScores[$0.id] ?? 0.0)
-        }
-        var maxOff = 0.0
-        for pos in Array(offPosSet) {
-            if let count = fixedCounts[pos] {
-                let candidates = offPlayerList.filter { $0.pos == pos }.sorted { $0.score > $1.score }
-                maxOff += candidates.prefix(count).reduce(0.0) { $0 + $1.score }
-                let usedIds = candidates.prefix(count).map { $0.id }
-                offPlayerList.removeAll { usedIds.contains($0.id) }
-            }
-        }
-        let regFlexCount = startingSlots.reduce(0) { $0 + (regularFlexSlots.contains($1.uppercased()) ? 1 : 0) }
-        let supFlexCount = startingSlots.reduce(0) { $0 + (superFlexSlots.contains($1.uppercased()) ? 1 : 0) }
-        let regAllowed: Set<String> = ["RB", "WR", "TE"]
-        let regCandidates = offPlayerList.filter { regAllowed.contains($0.pos) }.sorted { $0.score > $1.score }
-        maxOff += regCandidates.prefix(regFlexCount).reduce(0.0) { $0 + $1.score }
-        let usedReg = regCandidates.prefix(regFlexCount).map { $0.id }
-        offPlayerList.removeAll { usedReg.contains($0.id) }
-        let supAllowed: Set<String> = ["QB", "RB", "WR", "TE"]
-        let supCandidates = offPlayerList.filter { supAllowed.contains($0.pos) }.sorted { $0.score > $1.score }
-        maxOff += supCandidates.prefix(supFlexCount).reduce(0.0) { $0 + $1.score }
-        let defPosSet: Set<String> = ["DL", "LB", "DB"]
-        var defPlayerList = team.roster.filter { defPosSet.contains($0.position) }.map {
-            (id: $0.id, pos: $0.position, score: playerScores[$0.id] ?? 0.0)
-        }
-        var maxDef = 0.0
-        for pos in Array(defPosSet) {
-            if let count = fixedCounts[pos] {
-                let candidates = defPlayerList.filter { $0.pos == pos }.sorted { $0.score > $1.score }
-                maxDef += candidates.prefix(count).reduce(0.0) { $0 + $1.score }
-                let usedIds = candidates.prefix(count).map { $0.id }
-                defPlayerList.removeAll { usedIds.contains($0.id) }
-            }
-        }
-        let idpFlexCount = startingSlots.reduce(0) { $0 + (idpFlexSlots.contains($1.uppercased()) ? 1 : 0) }
-        let idpCandidates = defPlayerList.sorted { $0.score > $1.score }
-        maxDef += idpCandidates.prefix(idpFlexCount).reduce(0.0) { $0 + $1.score }
-        let maxTotal = maxOff + maxDef
-        return (actualTotal, maxTotal, actualOff, maxOff, actualDef, maxDef)
+        return ManagementCalculator.computeManagementForWeek(team: team, week: week, league: self.league ?? team.league, leagueManager: leagueManager)
     }
     // MARK: - Debug helpers
     private func debugLogTeamLineup(
@@ -1342,7 +1194,6 @@ struct MatchupView: View {
             print("\(prefix) WARNING: paddedStarters contains placeholder(s) '0' (some starters are missing or matchup data incomplete)")
         }
         let rosterIds = Set(team.roster.map { $0.id })
-        // Only consider starters truly missing if they aren't in the roster AND not resolvable from the player cache.
         let missingInRoster = starters.filter { $0 != "0" && !rosterIds.contains($0) && leagueManager.playerCache?[$0] == nil }
         if !missingInRoster.isEmpty {
             print("\(prefix) NOTE: starter IDs not found in team's roster (they may have been traded/released or otherwise not present locally): \(missingInRoster)")
