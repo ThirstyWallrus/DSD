@@ -217,64 +217,10 @@ struct HeadToHeadStatsSection: View {
 
                     let sorted = sortedDetails(list)
                     VStack(spacing: 8) {
+                        // Extracted subview per-match to help compiler; avoid inline complex expression in ForEach closure.
                         ForEach(sorted.indices, id: \.self) { idx in
                             let match = sorted[idx]
-                            let verification = verifyMatch(match)
-                            HStack(spacing: 12) {
-                                VStack(alignment: .leading) {
-                                    Text("Season \(match.seasonId) • Week \(match.week)")
-                                        .font(.caption.bold())
-                                        .foregroundColor(match.result == "W" ? .green : (match.result == "L" ? .red : .yellow))
-                                    Text("Score: \(String(format: "%.2f", match.userPoints)) — \(String(format: "%.2f", match.oppPoints))")
-                                        .font(.caption2).foregroundColor(.white)
-                                }
-                                Spacer()
-                                VStack(alignment: .trailing) {
-                                    Text(match.result)
-                                        .font(.caption.bold())
-                                        .foregroundColor(match.result == "W" ? .green : (match.result == "L" ? .red : .yellow))
-
-                                    // Prefer verification values; fallback to stored values
-                                    if let userMgmt = verification.userMgmt, let oppMgmt = verification.oppMgmt {
-                                        HStack(spacing: 6) {
-                                            Text(String(format: "Mgmt: %.2f%%", userMgmt))
-                                                .font(.caption2)
-                                                .foregroundColor(Color.mgmtPercentColor(userMgmt))
-                                            Text("·").font(.caption2).foregroundColor(.white.opacity(0.5))
-                                            Text(String(format: "%.2f%%", oppMgmt))
-                                                .font(.caption2)
-                                                .foregroundColor(Color.mgmtPercentColor(oppMgmt))
-                                        }
-                                    } else if verification.matchupMissing {
-                                        Text("Matchup data unavailable")
-                                            .font(.caption2)
-                                            .foregroundColor(.red.opacity(0.8))
-                                    } else {
-                                        HStack(spacing: 6) {
-                                            Text(String(format: "Mgmt: %.2f%%", match.userMgmtPct))
-                                                .font(.caption2)
-                                                .foregroundColor(Color.mgmtPercentColor(match.userMgmtPct))
-                                            Text("·").font(.caption2).foregroundColor(.white.opacity(0.5))
-                                            Text(String(format: "%.2f%%", match.oppMgmtPct))
-                                                .font(.caption2)
-                                                .foregroundColor(Color.mgmtPercentColor(match.oppMgmtPct))
-                                        }
-                                    }
-
-                                    if !verification.missingPlayerIds.isEmpty {
-                                        HStack(spacing: 6) {
-                                            Image(systemName: "exclamationmark.triangle.fill")
-                                                .foregroundColor(.red)
-                                                .font(.caption2)
-                                            Text("\(verification.missingPlayerIds.count) missing players")
-                                                .font(.caption2)
-                                                .foregroundColor(.red)
-                                        }
-                                    }
-                                }
-                            }
-                            .padding(8)
-                            .background(RoundedRectangle(cornerRadius: 8).fill(Color.white.opacity(0.02)))
+                            matchDetailLegacyRow(match)
                         }
                     }
                 } else {
@@ -324,6 +270,66 @@ struct HeadToHeadStatsSection: View {
                             .foregroundColor(.red)
                             .font(.caption2)
                         Text("\(missing.count) missing players")
+                            .font(.caption2)
+                            .foregroundColor(.red)
+                    }
+                }
+            }
+        }
+        .padding(8)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Color.white.opacity(0.02)))
+    }
+
+    // New helper: legacy match detail row (H2HMatchDetail) moved to its own function to reduce inline complexity
+    private func matchDetailLegacyRow(_ match: H2HMatchDetail) -> some View {
+        let verification = verifyMatch(match)
+        return HStack(spacing: 12) {
+            VStack(alignment: .leading) {
+                Text("Season \(match.seasonId) • Week \(match.week)")
+                    .font(.caption.bold())
+                    .foregroundColor(match.result == "W" ? .green : (match.result == "L" ? .red : .yellow))
+                Text("Score: \(String(format: "%.2f", match.userPoints)) — \(String(format: "%.2f", match.oppPoints))")
+                    .font(.caption2).foregroundColor(.white)
+            }
+            Spacer()
+            VStack(alignment: .trailing) {
+                Text(match.result)
+                    .font(.caption.bold())
+                    .foregroundColor(match.result == "W" ? .green : (match.result == "L" ? .red : .yellow))
+
+                // Prefer verification values; fallback to stored values
+                if let userMgmt = verification.userMgmt, let oppMgmt = verification.oppMgmt {
+                    HStack(spacing: 6) {
+                        Text(String(format: "Mgmt: %.2f%%", userMgmt))
+                            .font(.caption2)
+                            .foregroundColor(Color.mgmtPercentColor(userMgmt))
+                        Text("·").font(.caption2).foregroundColor(.white.opacity(0.5))
+                        Text(String(format: "%.2f%%", oppMgmt))
+                            .font(.caption2)
+                            .foregroundColor(Color.mgmtPercentColor(oppMgmt))
+                    }
+                } else if verification.matchupMissing {
+                    Text("Matchup data unavailable")
+                        .font(.caption2)
+                        .foregroundColor(.red.opacity(0.8))
+                } else {
+                    HStack(spacing: 6) {
+                        Text(String(format: "Mgmt: %.2f%%", match.userMgmtPct))
+                            .font(.caption2)
+                            .foregroundColor(Color.mgmtPercentColor(match.userMgmtPct))
+                        Text("·").font(.caption2).foregroundColor(.white.opacity(0.5))
+                        Text(String(format: "%.2f%%", match.oppMgmtPct))
+                            .font(.caption2)
+                            .foregroundColor(Color.mgmtPercentColor(match.oppMgmtPct))
+                    }
+                }
+
+                if !verification.missingPlayerIds.isEmpty {
+                    HStack(spacing: 6) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundColor(.red)
+                            .font(.caption2)
+                        Text("\(verification.missingPlayerIds.count) missing players")
                             .font(.caption2)
                             .foregroundColor(.red)
                     }
@@ -507,4 +513,5 @@ struct HeadToHeadStatsSection: View {
         }
     }
 }
+
 
