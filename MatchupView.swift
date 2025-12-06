@@ -1,10 +1,8 @@
 //
-//  MatchupView.swift
-//  DynastyStatDrop
+// MatchupView.swift
+// DynastyStatDrop
 //
-
 import SwiftUI
-
 // Flex slot definitions for Sleeper
 private let offensiveFlexSlots: Set<String> = [
     "FLEX", "WRRB", "WRRBTE", "WRRB_TE", "RBWR", "RBWRTE",
@@ -15,18 +13,15 @@ private let superFlexSlots: Set<String> = ["SUPER_FLEX", "QBRBWRTE", "QBRBWR", "
 private let idpFlexSlots: Set<String> = [
     "IDP", "IDPFLEX", "IDP_FLEX", "DFLEX", "DL_LB_DB", "DL_LB", "LB_DB", "DL_DB"
 ]
-
 // Helper to determine if slot is offensive flex
 private func isOffensiveFlexSlot(_ slot: String) -> Bool {
     offensiveFlexSlots.contains(slot.uppercased())
 }
-
 // Helper to determine if slot is defensive flex
 private func isDefensiveFlexSlot(_ slot: String) -> Bool {
     let s = slot.uppercased()
     return idpFlexSlots.contains(s) || (s.contains("IDP") && s != "DL" && s != "LB" && s != "DB")
 }
-
 // Helper to get duel designation for a flex slot
 private func duelDesignation(for slot: String) -> String? {
     let s = slot.uppercased()
@@ -36,15 +31,12 @@ private func duelDesignation(for slot: String) -> String? {
     if s == "DL_LB_DB" { return "DL/LB/DB" }
     return nil
 }
-
 struct MatchupView: View {
     @EnvironmentObject var leagueManager: SleeperLeagueManager
     @EnvironmentObject var appSelection: AppSelection
     @EnvironmentObject var authViewModel: AuthViewModel
     @Binding var selectedTab: Tab
-
     // MARK: - Utility Models
-
     struct LineupPlayer: Identifiable {
         let id: String
         let displaySlot: String
@@ -55,7 +47,6 @@ struct MatchupView: View {
         let isBench: Bool
         let slotColor: Color?
     }
-
     struct TeamDisplay {
         let id: String
         let name: String
@@ -66,53 +57,42 @@ struct MatchupView: View {
         let managementPercent: Double
         let teamStanding: TeamStanding
     }
-
     // Layout constants
     fileprivate let horizontalEdgePadding: CGFloat = 16
     fileprivate let menuSpacing: CGFloat = 12
     fileprivate let maxContentWidth: CGFloat = 860
-
     // NOTE: These legacy constants remain as defaults but we now compute adaptive widths
     // at runtime using GeometryReader to avoid overflow on narrow screens.
+    // After removing GeometryReader these act as reasonable defaults and minimums.
     fileprivate let slotLabelWidth: CGFloat = 160
     fileprivate let scoreColumnWidth: CGFloat = 60
-
     @AppStorage("statDropPersonality") var userStatDropPersonality: StatDropPersonality = .classicESPN
     @State private var selectedWeek: String = ""
     @State private var isStatDropActive: Bool = false
     @State private var isLoading: Bool = false
-
     // Debug toggle for lineup diagnostics. Set to true to enable console logs.
     @State private var lineupDebugEnabled: Bool = true
-
     // NEW: H2H mini-view toggle
     @State private var isH2HActive: Bool = false
-
     // MARK: - Centralized Selection
-
     private var league: LeagueData? { appSelection.selectedLeague }
-
     // Only show real seasons for the selected league (NO "All Time" here)
     private var allSeasonIds: [String] {
         guard let league else { return [] }
         let sorted = league.seasons.map { $0.id }.sorted(by: >)
         return sorted
     }
-
     private var currentSeasonTeams: [TeamStanding] {
         league?.seasons.sorted { $0.id < $1.id }.last?.teams ?? league?.teams ?? []
     }
-
     private var seasonTeams: [TeamStanding] {
         guard let league else { return [] }
         return league.seasons.first(where: { $0.id == appSelection.selectedSeason })?.teams ?? currentSeasonTeams
     }
-
     // Small cached accessor to avoid repeatedly searching the seasons array
     private var selectedSeasonData: SeasonData? {
         league?.seasons.first(where: { $0.id == appSelection.selectedSeason }) ?? league?.seasons.sorted { $0.id < $1.id }.last
     }
-
     // Helper: determine if a matchup week has meaningful data (not solely padded placeholders)
     private func weekHasMeaningfulData(_ entries: [MatchupEntry]) -> Bool {
         return entries.contains { entry in
@@ -122,13 +102,11 @@ struct MatchupView: View {
             return false
         }
     }
-
     // Week menu, use matchupsByWeek if available but only surface weeks that actually have data
     private var availableWeeks: [String] {
         guard let season = selectedSeasonData, let weeksDict = season.matchupsByWeek else {
             return []
         }
-
         let sortedKeys = weeksDict.keys.sorted()
         let filtered = sortedKeys.filter { wk in
             if let entries = weeksDict[wk] { return weekHasMeaningfulData(entries) }
@@ -137,43 +115,35 @@ struct MatchupView: View {
         let finalKeys = filtered.isEmpty ? sortedKeys : filtered
         return finalKeys.map { "Week \($0)" }
     }
-
     private var currentSeasonId: String {
         league?.seasons.sorted { $0.id < $1.id }.last?.id ?? ""
     }
-
     private var cleanedLeagueName: String {
         league?.name.unicodeScalars.filter { !$0.properties.isEmojiPresentation }.reduce(into: "") { $0 += String($1) } ?? "League"
     }
-
     private var userTeamStanding: TeamStanding? {
         appSelection.selectedTeam
     }
-
     /// Returns the current week by preferring the league's most-recent meaningful week (in-progress or most recent with data).
     /// Falls back to the largest key in matchupsByWeek, or to the leagueManager.globalCurrentWeek when appropriate.
     private var currentMatchupWeek: Int {
         guard let season = selectedSeasonData, let weeksDict = season.matchupsByWeek, !weeksDict.isEmpty else {
             return max(1, leagueManager.globalCurrentWeek)
         }
-
         let weekKeys = weeksDict.keys.sorted()
         let meaningfulWeeks = weekKeys.filter { wk in
             if let entries = weeksDict[wk] { return weekHasMeaningfulData(entries) }
             return false
         }
-
         let gw = leagueManager.globalCurrentWeek
         if gw > 0 {
             if meaningfulWeeks.contains(gw) { return gw }
             if let nearestPast = meaningfulWeeks.filter({ $0 <= gw }).max() { return nearestPast }
             if let nearestPastAny = weekKeys.filter({ $0 <= gw }).max() { return nearestPastAny }
         }
-
         if let maxMeaningful = meaningfulWeeks.max() { return maxMeaningful }
         return weekKeys.max() ?? max(1, leagueManager.globalCurrentWeek)
     }
-
     /// Determines the currently selected week number, defaults to currentMatchupWeek if not set
     private var currentWeekNumber: Int {
         if let weekNum = Int(selectedWeek.replacingOccurrences(of: "Week ", with: "")), !selectedWeek.isEmpty {
@@ -181,7 +151,6 @@ struct MatchupView: View {
         }
         return currentMatchupWeek
     }
-
     // Week selector default logic
     private func setDefaultWeekSelection() {
         DispatchQueue.main.async {
@@ -189,12 +158,10 @@ struct MatchupView: View {
                 self.selectedWeek = ""
                 return
             }
-
             let desiredWeek = self.currentMatchupWeek
             let availableNums = self.availableWeeks
                 .compactMap { Int($0.replacingOccurrences(of: "Week ", with: "")) }
                 .sorted()
-
             if availableNums.contains(desiredWeek) {
                 self.selectedWeek = "Week \(desiredWeek)"; return
             }
@@ -210,7 +177,6 @@ struct MatchupView: View {
             self.selectedWeek = ""
         }
     }
-
     private func refreshData() {
         guard let leagueId = appSelection.selectedLeagueId else { return }
         isLoading = true
@@ -229,16 +195,13 @@ struct MatchupView: View {
             }
         }
     }
-
     // MARK: - Opponent Logic
-
     private func opponentTeamStandingForWeek(_ week: Int) -> TeamStanding? {
         guard let season = selectedSeasonData,
               let matchups = season.matchupsByWeek?[week],
               let userTeam = userTeamStanding,
               let userRosterId = Int(userTeam.id)
         else { return nil }
-
         let userEntry = matchups.first(where: { $0.roster_id == userRosterId })
         guard let matchupId = userEntry?.matchup_id else { return nil }
         if let oppEntry = matchups.first(where: { $0.matchup_id == matchupId && $0.roster_id != userRosterId }) {
@@ -246,13 +209,10 @@ struct MatchupView: View {
         }
         return nil
     }
-
     private var opponentTeamStanding: TeamStanding? {
         opponentTeamStandingForWeek(currentWeekNumber)
     }
-
     // MARK: - Lineup & Bench Sorting Helpers
-
     private let strictDisplayOrder: [String] = [
         "QB", "RB", "WR", "TE",
         "OFF_FLEX",
@@ -260,9 +220,7 @@ struct MatchupView: View {
         "DL", "LB", "DB",
         "DEF_FLEX"
     ]
-
     private let benchOrder: [String] = ["QB", "RB", "WR", "TE", "K", "DL", "LB", "DB"]
-
     /// Returns the full ordered lineup for a team for a given week.
     private func orderedLineup(for team: TeamStanding, week: Int) -> [LineupPlayer] {
         let resolvedSlots: [String] = {
@@ -274,20 +232,16 @@ struct MatchupView: View {
             }
             return []
         }()
-
         let season = selectedSeasonData
         let entriesForWeek = season?.matchupsByWeek?[week]
         let rosterId = Int(team.id) ?? -1
         let myEntry = entriesForWeek?.first(where: { $0.roster_id == rosterId })
-
         let startersFromEntry: [String]? = myEntry?.starters
         var starters = startersFromEntry ?? team.actualStartersByWeek?[week] ?? []
-
         var slots = resolvedSlots
         if slots.isEmpty && !starters.isEmpty {
             slots = Array(repeating: "FLEX", count: starters.count)
         }
-
         let paddedStarters: [String] = {
             if starters.count < slots.count {
                 return starters + Array(repeating: "0", count: slots.count - starters.count)
@@ -296,7 +250,6 @@ struct MatchupView: View {
             }
             return starters
         }()
-
         var playerScores: [String: Double] = [:]
         if let pp = myEntry?.players_points, !pp.isEmpty {
             playerScores = pp
@@ -307,7 +260,6 @@ struct MatchupView: View {
                 }
             }
         }
-
         func lookupPlayerInfo(_ pid: String) -> (id: String, position: String, altPositions: [String]?) {
             if let p = team.roster.first(where: { $0.id == pid }) {
                 return (p.id, p.position, p.altPositions)
@@ -317,11 +269,9 @@ struct MatchupView: View {
             }
             return (pid, "UNK", nil)
         }
-
         var lineup: [LineupPlayer] = []
         var usedPlayers: Set<String> = []
         var availableStarters = paddedStarters
-
         var slotAssignments: [(slot: String, playerId: String?)] = []
         for slot in slots {
             let allowed = allowedPositions(for: slot)
@@ -340,17 +290,14 @@ struct MatchupView: View {
                 slotAssignments.append((slot: slot, playerId: nil))
             }
         }
-
         for pid in availableStarters where pid != "0" {
             slotAssignments.append((slot: "FLEX", playerId: pid))
         }
-
         for (slot, pidOpt) in slotAssignments {
             guard let pid = pidOpt else { continue }
             let info = lookupPlayerInfo(pid)
             let normPos = PositionNormalizer.normalize(info.position)
             let normAlts = (info.altPositions ?? []).map { PositionNormalizer.normalize($0) }
-
             let eligiblePositions: [String] = {
                 if !normAlts.isEmpty {
                     let all = ([info.position] + (info.altPositions ?? [])).map { PositionNormalizer.normalize($0) }
@@ -363,7 +310,6 @@ struct MatchupView: View {
                     return [normPos]
                 }
             }()
-
             var displaySlot: String
             var slotColor: Color? = nil
             if isOffensiveFlexSlot(slot) || isDefensiveFlexSlot(slot) {
@@ -378,15 +324,12 @@ struct MatchupView: View {
                 else { displaySlot = normPos }
                 slotColor = colorForPosition(eligiblePositions.first ?? normPos)
             }
-
             let creditedPosition = SlotPositionAssigner.countedPosition(
                 for: slot,
                 candidatePositions: eligiblePositions,
                 base: info.position
             )
-
             let points = playerScores[pid] ?? 0.0
-
             // NEW: Detect whether the starter was present in the current team's roster.
             // If not present but resolvable from player cache / matchup data, annotate displaySlot
             // as " (Traded/Released)" to indicate a historical starter that is not on the current roster.
@@ -397,7 +340,6 @@ struct MatchupView: View {
                 displaySlot += " (Traded/Released)"
                 slotColor = slotColor ?? .gray
             }
-
             lineup.append(LineupPlayer(
                 id: pid,
                 displaySlot: displaySlot,
@@ -409,7 +351,6 @@ struct MatchupView: View {
                 slotColor: slotColor
             ))
         }
-
         var qbSlots: [LineupPlayer] = []
         var rbSlots: [LineupPlayer] = []
         var wrSlots: [LineupPlayer] = []
@@ -420,7 +361,6 @@ struct MatchupView: View {
         var lbSlots: [LineupPlayer] = []
         var dbSlots: [LineupPlayer] = []
         var defensiveFlexSlotsArr: [LineupPlayer] = []
-
         for playerObj in lineup {
             switch playerObj.creditedPosition {
             case "QB": qbSlots.append(playerObj)
@@ -439,7 +379,6 @@ struct MatchupView: View {
                 }
             }
         }
-
         var ordered: [LineupPlayer] = []
         ordered.append(contentsOf: qbSlots)
         ordered.append(contentsOf: rbSlots)
@@ -451,7 +390,6 @@ struct MatchupView: View {
         ordered.append(contentsOf: lbSlots)
         ordered.append(contentsOf: dbSlots)
         ordered.append(contentsOf: defensiveFlexSlotsArr)
-
         if lineupDebugEnabled {
             // Provide debug with resolved Player placeholders for starters that are not in team.roster
             let slotAssignmentsForDebug = slotAssignments.map { pair -> (slot: String, player: Player?) in
@@ -469,19 +407,15 @@ struct MatchupView: View {
             }
             debugLogTeamLineup(team: team, week: week, slots: slots, starters: starters, slotAssignments: slotAssignmentsForDebug, finalOrdered: ordered)
         }
-
         return ordered
     }
-
     /// Returns the bench, ordered as specified
     private func orderedBench(for team: TeamStanding, week: Int) -> [LineupPlayer] {
         let season = selectedSeasonData
         let entriesForWeek = season?.matchupsByWeek?[week]
         let rosterId = Int(team.id) ?? -1
         let myEntry = entriesForWeek?.first(where: { $0.roster_id == rosterId })
-
         let startersSet = Set(myEntry?.starters ?? team.actualStartersByWeek?[week] ?? [])
-
         var playerScores: [String: Double] = [:]
         if let pp = myEntry?.players_points, !pp.isEmpty {
             playerScores = pp
@@ -492,7 +426,6 @@ struct MatchupView: View {
                 }
             }
         }
-
         let benchPlayers = team.roster.filter { !startersSet.contains($0.id) }
         var bench: [LineupPlayer] = benchPlayers.map { player in
             let normPos = PositionNormalizer.normalize(player.position)
@@ -504,9 +437,7 @@ struct MatchupView: View {
                     return [normPos]
                 }
             }()
-
             var displaySlot = eligiblePositions.count > 1 ? eligiblePositions.joined(separator: "/") : normPos
-
             if let explicitToken = explicitSlotTokenForBenchPlayer(playerId: player.id, team: team, week: week, myEntry: myEntry) {
                 if explicitToken.caseInsensitiveCompare("IR") == .orderedSame {
                     if !displaySlot.uppercased().hasPrefix("IR ") {
@@ -532,7 +463,6 @@ struct MatchupView: View {
                     }
                 }
             }
-
             return LineupPlayer(
                 id: player.id,
                 displaySlot: displaySlot,
@@ -544,7 +474,6 @@ struct MatchupView: View {
                 slotColor: nil
             )
         }
-
         bench.sort { a, b in
             let ai = benchOrder.firstIndex(of: a.creditedPosition) ?? 99
             let bi = benchOrder.firstIndex(of: b.creditedPosition) ?? 99
@@ -552,18 +481,15 @@ struct MatchupView: View {
         }
         return bench
     }
-
     private func explicitSlotTokenForBenchPlayer(playerId: String, team: TeamStanding, week: Int, myEntry: MatchupEntry?) -> String? {
         let taxiTokens: Set<String> = ["TAXI", "TAXI_SLOT", "TAXI-SLOT", "TAXI SLOT"]
         let irToken = "IR"
-
         func canonicalizeToken(_ raw: String) -> String {
             let up = raw.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
             if up.contains("IR") { return irToken }
             if up.contains("TAXI") || taxiTokens.contains(up) { return "TAXI" }
             return up
         }
-
         if let entry = myEntry, let slotsMap = entry.players_slots, !slotsMap.isEmpty {
             if let rawToken = slotsMap[playerId] {
                 let canonical = canonicalizeToken(rawToken)
@@ -579,7 +505,6 @@ struct MatchupView: View {
                 }
             }
         }
-
         if let p = team.roster.first(where: { $0.id == playerId }) {
             let checks = ([p.position] + (p.altPositions ?? [])).compactMap { $0 }.map { $0.uppercased() }
             for c in checks {
@@ -594,7 +519,6 @@ struct MatchupView: View {
                 }
             }
         }
-
         if let raw = leagueManager.playerCache?[playerId] {
             if let pos = raw.position?.uppercased(), pos.contains("IR") {
                 if lineupDebugEnabled { print("[BenchSlotDetect] playerCache.position -> player:\(playerId) matched IR via '\(pos)'") }
@@ -614,13 +538,11 @@ struct MatchupView: View {
                 }
             }
         }
-
         if lineupDebugEnabled {
             print("[BenchSlotDetect] No explicit IR/TAXI token detected for player \(playerId) (team: \(team.name), week: \(week))")
         }
         return nil
     }
-
     /// Helper to get allowed positions for a slot
     private func allowedPositions(for slot: String) -> Set<String> {
         switch slot.uppercased() {
@@ -633,9 +555,7 @@ struct MatchupView: View {
             return Set([PositionNormalizer.normalize(slot)])
         }
     }
-
     // MARK: - TeamDisplay construction
-
     private func teamDisplay(for team: TeamStanding, week: Int) -> TeamDisplay {
         let lineup = orderedLineup(for: team, week: week)
         let bench = orderedBench(for: team, week: week)
@@ -652,17 +572,13 @@ struct MatchupView: View {
             teamStanding: team
         )
     }
-
     private var userTeam: TeamDisplay? {
         userTeamStanding.map { teamDisplay(for: $0, week: currentWeekNumber) }
     }
-
     private var opponentTeam: TeamDisplay? {
         opponentTeamStanding.map { teamDisplay(for: $0, week: currentWeekNumber) }
     }
-
     // MARK: - Helper: Username Extraction
-
     private var userDisplayName: String {
         if let dsdUser = authViewModel.currentUsername,
            let sleeper = UserDefaults.standard.string(forKey: "sleeperUsername_\(dsdUser)"),
@@ -677,12 +593,10 @@ struct MatchupView: View {
         }
         return "Your"
     }
-
     private var userTeamName: String {
         if let team = userTeamStanding { return team.name }
         return "Team"
     }
-
     private var opponentDisplayName: String {
         if let opp = opponentTeamStanding {
             if let stats = opp.league?.allTimeOwnerStats?[opp.ownerId], !stats.latestDisplayName.isEmpty {
@@ -693,14 +607,11 @@ struct MatchupView: View {
         }
         return "Opponent"
     }
-
     private var opponentTeamName: String {
         if let team = opponentTeamStanding { return team.name }
         return "Team"
     }
-
     // MARK: - UI
-
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
@@ -742,9 +653,7 @@ struct MatchupView: View {
         .onChange(of: appSelection.leagues) { _ in setDefaultWeekSelection() }
         .onChange(of: leagueManager.globalCurrentWeek) { _ in setDefaultWeekSelection() }
     }
-
     // MARK: - Header & Menus
-
     private var headerBlock: some View {
         VStack(spacing: 18) {
             Group {
@@ -778,39 +687,30 @@ struct MatchupView: View {
             selectionMenus
         }
     }
-
     private var selectionMenus: some View {
         VStack(spacing: 10) {
-            GeometryReader { geo in
-                HStack {
-                    leagueMenu
-                        .frame(width: geo.size.width)
-                }
+            // Top row: full-width league menu (used to be GeometryReader)
+            HStack {
+                leagueMenu
+                    .frame(maxWidth: .infinity)
             }
             .frame(height: 50)
-
-            // Bottom row: Season | Week | H2H (Button) | DSD
-            GeometryReader { geo in
-                let spacing: CGFloat = menuSpacing
-                let totalAvailable = geo.size.width - spacing * 3
-                let tabWidth = totalAvailable / 4
-                HStack(spacing: spacing) {
-                    seasonMenu
-                        .frame(width: tabWidth)
-                    weekMenu
-                        .frame(width: tabWidth)
-                    h2hButton
-                        .frame(width: tabWidth)
-                    statDropMenu
-                        .frame(width: tabWidth)
-                }
+            // Bottom row: four equal tabs (Season | Week | H2H | DSD)
+            HStack(spacing: menuSpacing) {
+                seasonMenu
+                    .frame(maxWidth: .infinity)
+                weekMenu
+                    .frame(maxWidth: .infinity)
+                h2hButton
+                    .frame(maxWidth: .infinity)
+                statDropMenu
+                    .frame(maxWidth: .infinity)
             }
             .frame(height: 50)
         }
         .padding(.vertical, 4)
         .padding(.horizontal, horizontalEdgePadding)
     }
-
     private var leagueMenu: some View {
         Menu {
             ForEach(appSelection.leagues, id: \.id) { lg in
@@ -826,7 +726,6 @@ struct MatchupView: View {
             menuLabel(appSelection.selectedLeague?.name ?? "League")
         }
     }
-
     // Season menu: when H2H mini-view active show a non-interactive "H2H" label
     private var seasonMenu: some View {
         Group {
@@ -848,7 +747,6 @@ struct MatchupView: View {
             }
         }
     }
-
     private var weekMenu: some View {
         Menu {
             ForEach(availableWeeks, id: \.self) { wk in
@@ -858,7 +756,6 @@ struct MatchupView: View {
             menuLabel(selectedWeek.isEmpty ? "Week \(currentMatchupWeek)" : selectedWeek)
         }
     }
-
     @ViewBuilder
     private func weekMenuRow(for weekLabel: String) -> some View {
         let weekNum = Int(weekLabel.replacingOccurrences(of: "Week ", with: "")) ?? 0
@@ -879,7 +776,6 @@ struct MatchupView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
-
     private var h2hButton: some View {
         Button {
             // Toggle H2H mini-view on/off
@@ -904,7 +800,6 @@ struct MatchupView: View {
         }
         .accessibilityLabel(isH2HActive ? "Return to Matchup view" : "Open Head to Head view")
     }
-
     private var statDropMenu: some View {
         Menu {
             if isStatDropActive {
@@ -916,7 +811,6 @@ struct MatchupView: View {
             menuLabel("DSD")
         }
     }
-
     private func menuLabel(_ text: String) -> some View {
         Text(text)
             .bold()
@@ -931,7 +825,6 @@ struct MatchupView: View {
                     .shadow(color: .blue.opacity(0.7), radius: 8, y: 2)
             )
     }
-
     private var statDropContent: some View {
         Group {
             if let team = userTeamStanding, let lg = league {
@@ -950,9 +843,7 @@ struct MatchupView: View {
             }
         }
     }
-
     // MARK: - Matchup Content
-
     private var matchupContent: some View {
         VStack(alignment: .leading, spacing: 24) {
             if let user = userTeamStanding, let opp = opponentTeamStanding, let lg = league {
@@ -964,37 +855,31 @@ struct MatchupView: View {
                         .multilineTextAlignment(.center)
                     scoresSection
                 }
-
                 // Lineups (unchanged)
                 VStack(spacing: 8) {
                     MyTeamView.phattGradientText(Text("Lineups"), size: 18)
                         .frame(maxWidth: .infinity)
                         .multilineTextAlignment(.center)
-
                     // Combined Lineup + Bench boxes (one per team), placed side-by-side.
-                    GeometryReader { geo in
-                        let spacing: CGFloat = 16
-                        let total = geo.size.width
-                        let perTeam = max(140, (total - spacing) / 2.0)
-                        let slotW = max(80, min(160, perTeam * 0.55))
-                        let scoreW = max(44, min(80, perTeam * 0.18))
-
-                        // Single row containing combined boxes for user and opponent.
-                        HStack(spacing: spacing) {
-                            teamCombinedLineupBenchBox(team: userTeam, accent: Color.cyan, title: "\(userDisplayName)'s Lineup", slotLabelWidth: slotW, scoreColumnWidth: scoreW)
-                                .frame(width: perTeam, alignment: .leading)
-                            teamCombinedLineupBenchBox(team: opponentTeam, accent: Color.yellow, title: "\(opponentDisplayName)'s Lineup", slotLabelWidth: slotW, scoreColumnWidth: scoreW)
-                                .frame(width: perTeam, alignment: .leading)
-                        }
-                        .padding(16)
-                        .background(
-                            RoundedRectangle(cornerRadius: 16)
-                                .fill(Color.white.opacity(0.04))
-                                .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.white.opacity(0.06), lineWidth: 1))
-                        )
-                        .frame(width: geo.size.width)
+                    // GeometryReader removed: compute conservative adaptive widths using screen width/clamped maxContentWidth.
+                    let spacing: CGFloat = 16
+                    let totalAvailable = min(maxContentWidth, UIScreen.main.bounds.width - horizontalEdgePadding * 2)
+                    let perTeam = max(140, (totalAvailable - spacing) / 2.0)
+                    let slotW = max(80, min(160, perTeam * 0.55))
+                    let scoreW = max(44, min(80, perTeam * 0.18))
+                    HStack(spacing: spacing) {
+                        teamCombinedLineupBenchBox(team: userTeam, accent: Color.cyan, title: "\(userDisplayName)'s Lineup", slotLabelWidth: slotW, scoreColumnWidth: scoreW)
+                            .frame(width: perTeam, alignment: .leading)
+                        teamCombinedLineupBenchBox(team: opponentTeam, accent: Color.yellow, title: "\(opponentDisplayName)'s Lineup", slotLabelWidth: slotW, scoreColumnWidth: scoreW)
+                            .frame(width: perTeam, alignment: .leading)
                     }
-                    .frame(minHeight: 240)
+                    .padding(16)
+                    .background(
+                        RoundedRectangle(cornerRadius: 16)
+                            .fill(Color.white.opacity(0.04))
+                            .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.white.opacity(0.06), lineWidth: 1))
+                    )
+                    // Removed fixed height to prevent clipping and overlapping
                 }
             } else {
                 Text("No matchup data available.")
@@ -1002,7 +887,6 @@ struct MatchupView: View {
             }
         }
     }
-
     // NEW: Head-to-head mini view content (shown when isH2HActive == true)
     private var headToHeadContent: some View {
         Group {
@@ -1019,7 +903,6 @@ struct MatchupView: View {
             }
         }
     }
-
     private var scoresSection: some View {
         HStack(spacing: 16) {
             teamScoreBox(team: userTeam, accent: Color.cyan, isUser: true)
@@ -1032,7 +915,6 @@ struct MatchupView: View {
                 .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.white.opacity(0.06), lineWidth: 1))
         )
     }
-
     private func splitTitle(_ title: String) -> (String, String) {
         let parts = title.split(separator: " ")
         guard parts.count >= 2 else { return (title, "") }
@@ -1040,7 +922,6 @@ struct MatchupView: View {
         let head = parts.dropLast().joined(separator: " ")
         return (head, suffix)
     }
-
     private func teamScoreBox(team: TeamDisplay?, accent: Color, isUser: Bool) -> some View {
         VStack(alignment: .center, spacing: 8) {
             let rawTitle = isUser ? "\(userDisplayName)'s Team" : "\(opponentDisplayName)'s Team"
@@ -1056,7 +937,6 @@ struct MatchupView: View {
                     .multilineTextAlignment(.center)
             }
             .frame(maxWidth: .infinity)
-
             if let team = team {
                 HStack {
                     Text("Points").frame(maxWidth: .infinity, alignment: .leading)
@@ -1086,13 +966,11 @@ struct MatchupView: View {
         .foregroundColor(.white)
         .frame(maxWidth: .infinity)
     }
-
     // MARK: — Adaptive combined lineup & bench box
     // This renders the starting lineup first, then a Black Knight "-----Bench-----" divider, then bench players.
     private var blackKnightPostScriptName: String {
         FontLoader.postScriptName(matching: "Black Knight") ?? "Black Knight"
     }
-
     private func teamCombinedLineupBenchBox(team: TeamDisplay?, accent: Color, title: String, slotLabelWidth: CGFloat = 160, scoreColumnWidth: CGFloat = 60) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             let (head, tail) = splitTitle(title)
@@ -1107,7 +985,6 @@ struct MatchupView: View {
                     .multilineTextAlignment(.center)
             }
             .frame(maxWidth: .infinity)
-
             if let lineup = team?.lineup, !lineup.isEmpty {
                 ForEach(lineup) { player in
                     HStack {
@@ -1136,7 +1013,6 @@ struct MatchupView: View {
             } else {
                 Text("No lineup data").foregroundColor(.gray)
             }
-
             // Bench divider using Black Knight font (centered)
             Text("-----Bench-----")
                 .font(.custom(blackKnightPostScriptName, size: 14))
@@ -1144,7 +1020,6 @@ struct MatchupView: View {
                 .frame(maxWidth: .infinity)
                 .multilineTextAlignment(.center)
                 .padding(.vertical, 6)
-
             if let bench = team?.bench, !bench.isEmpty {
                 ForEach(bench) { player in
                     HStack {
@@ -1167,7 +1042,6 @@ struct MatchupView: View {
         .foregroundColor(.white)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
-
     // MARK: (Legacy) teamLineupBox and teamBenchBox remain for reference but are no longer used by the combined layout.
     private func teamLineupBox(team: TeamDisplay?, accent: Color, title: String, slotLabelWidth: CGFloat = 160, scoreColumnWidth: CGFloat = 60) -> some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -1183,7 +1057,6 @@ struct MatchupView: View {
                     .multilineTextAlignment(.center)
             }
             .frame(maxWidth: .infinity)
-
             if let lineup = team?.lineup {
                 ForEach(lineup) { player in
                     HStack {
@@ -1215,7 +1088,6 @@ struct MatchupView: View {
         .foregroundColor(.white)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
-
     private func teamBenchBox(team: TeamDisplay?, accent: Color, title: String, slotLabelWidth: CGFloat = 160, scoreColumnWidth: CGFloat = 60) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             let (head, tail) = splitTitle(title)
@@ -1230,7 +1102,6 @@ struct MatchupView: View {
                     .multilineTextAlignment(.center)
             }
             .frame(maxWidth: .infinity)
-
             if let bench = team?.bench {
                 ForEach(bench) { player in
                     HStack {
@@ -1252,11 +1123,9 @@ struct MatchupView: View {
         .foregroundColor(.white)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
-
     private func headToHeadStatsSection(user: TeamStanding, opp: TeamStanding, league: LeagueData) -> some View {
         HeadToHeadStatsSection(user: user, opp: opp, league: league)
     }
-
     private func positionColor(_ pos: String) -> Color {
         switch pos {
         case "QB": return .red
@@ -1270,7 +1139,6 @@ struct MatchupView: View {
         default: return .white
         }
     }
-
     private func colorForPosition(_ pos: String) -> Color {
         switch pos {
         case "QB": return .red
@@ -1284,16 +1152,13 @@ struct MatchupView: View {
         default: return .white
         }
     }
-
     private func fixedSlotCounts(startingSlots: [String]) -> [String: Int] {
         startingSlots.reduce(into: [:]) { $0[$1, default: 0] += 1 }
     }
-
     private func expandSlots(_ config: [String: Int]) -> [String] {
         let sanitized = SlotUtils.sanitizeStartingLineupConfig(config)
         return sanitized.flatMap { Array(repeating: $0.key, count: $0.value) }
     }
-
     // Management calculation for TeamDisplay
     private func computeManagementForWeek(team: TeamStanding, week: Int) -> (Double, Double, Double, Double, Double, Double) {
         if let season = selectedSeasonData,
@@ -1302,7 +1167,6 @@ struct MatchupView: View {
            let playersPool = myEntry.players,
            let playersPoints = myEntry.players_points {
             let playerCache = leagueManager.playerCache ?? [:]
-
             let starters = myEntry.starters ?? []
             var actualTotal = 0.0
             var actualOff = 0.0
@@ -1318,12 +1182,10 @@ struct MatchupView: View {
                 if ["QB","RB","WR","TE","K"].contains(pos) { actualOff += score }
                 else if ["DL","LB","DB"].contains(pos) { actualDef += score }
             }
-
             var startingSlots: [String] = SlotUtils.sanitizeStartingSlots(league?.startingLineup ?? [])
             if startingSlots.isEmpty, let cfg = team.lineupConfig, !cfg.isEmpty {
                 startingSlots = expandSlots(cfg)
             }
-
             let candidates: [(id: String, basePos: String, altPos: [String], score: Double)] = playersPool.compactMap { pid in
                 let p = team.roster.first(where: { $0.id == pid })
                     ?? playerCache[pid].map { raw in
@@ -1334,7 +1196,6 @@ struct MatchupView: View {
                 let alt = (p.altPositions ?? []).map { PositionNormalizer.normalize($0) }
                 return (id: pid, basePos: basePos, altPos: alt, score: myEntry.players_points?[pid] ?? 0.0)
             }
-
             var strictSlots: [String] = []
             var flexSlots: [String] = []
             for slot in startingSlots {
@@ -1348,27 +1209,25 @@ struct MatchupView: View {
                 }
             }
             let optimalOrder = strictSlots + flexSlots
-
             var used = Set<String>()
             var maxTotal = 0.0
             var maxOff = 0.0
             var maxDef = 0.0
-
             for slot in optimalOrder {
                 let allowed = allowedPositions(for: slot)
-                if let pick = candidates
-                    .filter({ !used.contains($0.id) && (allowed.contains($0.basePos) || !allowed.intersection(Set($0.altPos)).isEmpty) })
-                    .max(by: { $0.score < $1.score }) {
+                // Break up the filter+max into two expressions to help the type checker
+                let candidatePool = candidates.filter { candidate in
+                    return !used.contains(candidate.id) && (allowed.contains(candidate.basePos) || !allowed.intersection(Set(candidate.altPos)).isEmpty)
+                }
+                if let pick = candidatePool.max(by: { $0.score < $1.score }) {
                     used.insert(pick.id)
                     maxTotal += pick.score
                     if ["QB","RB","WR","TE","K"].contains(pick.basePos) { maxOff += pick.score }
                     else if ["DL","LB","DB"].contains(pick.basePos) { maxDef += pick.score }
                 }
             }
-
             return (actualTotal, maxTotal, actualOff, maxOff, actualDef, maxDef)
         }
-
         // Fallback: legacy roster-based computation
         let playerScores = team.roster.reduce(into: [String: Double]()) { dict, player in
             if let score = player.weeklyScores.first(where: { $0.week == week }) {
@@ -1386,13 +1245,11 @@ struct MatchupView: View {
             }
         }
         let actualDef = actualTotal - actualOff
-
         var startingSlots = team.league?.startingLineup ?? []
         if startingSlots.isEmpty, let config = team.lineupConfig, !config.isEmpty {
             startingSlots = expandSlots(config)
         }
         let fixedCounts = fixedSlotCounts(startingSlots: startingSlots)
-
         let offPosSet: Set<String> = ["QB", "RB", "WR", "TE", "K"]
         var offPlayerList = team.roster.filter { offPosSet.contains($0.position) }.map {
             (id: $0.id, pos: $0.position, score: playerScores[$0.id] ?? 0.0)
@@ -1416,7 +1273,6 @@ struct MatchupView: View {
         let supAllowed: Set<String> = ["QB", "RB", "WR", "TE"]
         let supCandidates = offPlayerList.filter { supAllowed.contains($0.pos) }.sorted { $0.score > $1.score }
         maxOff += supCandidates.prefix(supFlexCount).reduce(0.0) { $0 + $1.score }
-
         let defPosSet: Set<String> = ["DL", "LB", "DB"]
         var defPlayerList = team.roster.filter { defPosSet.contains($0.position) }.map {
             (id: $0.id, pos: $0.position, score: playerScores[$0.id] ?? 0.0)
@@ -1433,13 +1289,10 @@ struct MatchupView: View {
         let idpFlexCount = startingSlots.reduce(0) { $0 + (idpFlexSlots.contains($1.uppercased()) ? 1 : 0) }
         let idpCandidates = defPlayerList.sorted { $0.score > $1.score }
         maxDef += idpCandidates.prefix(idpFlexCount).reduce(0.0) { $0 + $1.score }
-
         let maxTotal = maxOff + maxDef
         return (actualTotal, maxTotal, actualOff, maxOff, actualDef, maxDef)
     }
-
     // MARK: - Debug helpers
-
     private func debugLogTeamLineup(
         team: TeamStanding,
         week: Int,
@@ -1449,7 +1302,6 @@ struct MatchupView: View {
         finalOrdered: [LineupPlayer]
     ) {
         let prefix = "DSD::LineupDebug"
-
         print("\(prefix) Team: \(team.name) (id=\(team.id)) week=\(week)")
         let sanitizedLeagueSlots = SlotUtils.sanitizeStartingSlots(team.league?.startingLineup ?? [])
         if !sanitizedLeagueSlots.isEmpty {
@@ -1459,7 +1311,6 @@ struct MatchupView: View {
         }
         print("\(prefix) team.lineupConfig: \(team.lineupConfig ?? [:])")
         print("\(prefix) expanded slots (used here) count=\(slots.count) -> \(slots)")
-
         print("\(prefix) actualStartersByWeek[\(week)]: \(team.actualStartersByWeek?[week] ?? [])")
         print("\(prefix) starters from actualStartersByWeek used in orderedLineup: \(starters) (count: \(starters.count))")
         let paddedStarters: [String] = {
@@ -1471,33 +1322,28 @@ struct MatchupView: View {
             return starters
         }()
         print("\(prefix) paddedStarters count=\(paddedStarters.count) -> \(paddedStarters)")
-
         if paddedStarters.contains("0") {
             print("\(prefix) WARNING: paddedStarters contains placeholder(s) '0' (some starters are missing or matchup data incomplete)")
         }
-
         let rosterIds = Set(team.roster.map { $0.id })
         // Only consider starters truly missing if they aren't in the roster AND not resolvable from the player cache.
         let missingInRoster = starters.filter { $0 != "0" && !rosterIds.contains($0) && leagueManager.playerCache?[$0] == nil }
         if !missingInRoster.isEmpty {
             print("\(prefix) NOTE: starter IDs not found in team's roster (they may have been traded/released or otherwise not present locally): \(missingInRoster)")
         }
-
         print("\(prefix) Slot assignments (slot -> playerId/name or nil):")
         for (slot, player) in slotAssignments {
             if let p = player {
-                print("\(prefix)    \(slot) -> \(p.id) / \(p.position) / \(p.id)")
+                print("\(prefix) \(slot) -> \(p.id) / \(p.position) / \(p.id)")
             } else {
-                print("\(prefix)    \(slot) -> (unassigned)")
+                print("\(prefix) \(slot) -> (unassigned)")
             }
         }
-
         let assignedPlayerIds = slotAssignments.compactMap { $0.player?.id }
         let unassignedStarters = starters.filter { !assignedPlayerIds.contains($0) && $0 != "0" }
         if !unassignedStarters.isEmpty {
             print("\(prefix) UNASSIGNED starter ids after slot assignment: \(unassignedStarters)")
         }
-
         print("\(prefix) final ordered lineup count=\(finalOrdered.count) (expected slots: \(slots.count))")
         print("\(prefix) final ordered lineup player ids: \(finalOrdered.map { $0.id })")
         if finalOrdered.count != slots.count {
@@ -1505,7 +1351,6 @@ struct MatchupView: View {
         } else {
             print("\(prefix) final ordered lineup length matches expected slots")
         }
-
         print("\(prefix) roster size=\(team.roster.count), bench candidates (non-starters) count=\(team.roster.filter { !(team.actualStartersByWeek?[week] ?? []).contains($0.id) }.count)")
     }
 }
