@@ -2,10 +2,17 @@
 //  HeadToHeadStatsSection.swift
 //  DynastyStatDrop
 //
-//  Updated to accept precomputed H2H snapshots passed from MatchupView (Option A).
-//  HeadToHeadStatsSection will prefer the passed snapshots for Match History and
-//  summary aggregates, avoiding independent per-match recomputation and ensuring
-//  parity with the values shown in MatchupView.
+//  Updated to accept precomputed H2H snapshots passed from MatchupView
+//  and to remove legacy fallback / recomputation logic per request.
+//
+//  Design:
+//   - HeadToHeadStatsSection exclusively uses `matchSnapshots` (if provided)
+//     as the authoritative source for per-match scores and mgmt% values.
+//   - Aggregated stats (Record, Avg Mgmt%, Avg PPG) are computed only from
+//     these snapshots.
+//   - No fallback recomputation of mgmt% or scores is performed here.
+//   - The only season-scanning helper retained is `findMatchupWeeksBetweenTeams`
+//     which enumerates the weeks/seasons where the two teams met (used by callers).
 //
 
 import SwiftUI
@@ -76,7 +83,7 @@ struct HeadToHeadStatsSection: View {
     let matchSnapshots: [H2HMatchSnapshot]?
 
     // Optional context identifying the current season & week displayed by MatchupView.
-    // When a historical H2H detail matches these, we will prefer snapshot values if they are supplied.
+    // This may be used by callers; HeadToHeadStatsSection does not use it for recomputation.
     let currentSeasonId: String?
     let currentWeekNumber: Int?
 
@@ -121,21 +128,10 @@ struct HeadToHeadStatsSection: View {
         return (record, avgMgmtFor, avgPF, avgMgmtAgainst, avgPA)
     }
 
-    // Backwards-compatible legacy fallback: uses cached aggregated all-time H2H if snapshots are not present
-    private var h2hSummaryFallback: (record: String, avgMgmtFor: Double, avgPF: Double, avgMgmtAgainst: Double, avgPA: Double) {
-        if let uid = user?.ownerId, let oid = opp?.ownerId {
-            return Self.getHeadToHeadAllTime(userOwnerId: uid, oppOwnerId: oid, league: league)
-        }
-        if let uo = userSnapshot?.ownerId, let oo = oppSnapshot?.ownerId {
-            return Self.getHeadToHeadAllTime(userOwnerId: uo, oppOwnerId: oo, league: league)
-        }
-        return ("0-0", 0.0, 0.0, 0.0, 0.0)
-    }
-
-    // Prefer snapshot aggregates when available
+    // Prefer snapshot aggregates when available; otherwise return zeroed default.
     private var h2hSummary: (record: String, avgMgmtFor: Double, avgPF: Double, avgMgmtAgainst: Double, avgPA: Double) {
         if let _ = matchSnapshots { return aggregatesFromSnapshots }
-        return h2hSummaryFallback
+        return ("0-0", 0.0, 0.0, 0.0, 0.0)
     }
 
     var body: some View {
@@ -208,26 +204,9 @@ struct HeadToHeadStatsSection: View {
                     }
                 }
             } else {
-                // Fallback: legacy behavior — use aggregated H2HDetails if available and snapshots not provided
-                if let list = h2hDetails, !list.isEmpty {
-                    Divider().background(Color.white.opacity(0.06))
-                    Text("Match History")
-                        .font(.subheadline.bold())
-                        .foregroundColor(.white.opacity(0.9))
-
-                    let sorted = sortedDetails(list)
-                    VStack(spacing: 8) {
-                        // Extracted subview per-match to help compiler; avoid inline complex expression in ForEach closure.
-                        ForEach(sorted.indices, id: \.self) { idx in
-                            let match = sorted[idx]
-                            matchDetailLegacyRow(match)
-                        }
-                    }
-                } else {
-                    Text("No head-to-head matches on record.")
-                        .font(.caption)
-                        .foregroundColor(.white.opacity(0.6))
-                }
+                Text("No head-to-head matches on record.")
+                    .font(.caption)
+                    .foregroundColor(.white.opacity(0.6))
             }
         }
     }
@@ -280,188 +259,6 @@ struct HeadToHeadStatsSection: View {
         .background(RoundedRectangle(cornerRadius: 8).fill(Color.white.opacity(0.02)))
     }
 
-    // New helper: legacy match detail row (H2HMatchDetail) moved to its own function to reduce inline complexity
-    private func matchDetailLegacyRow(_ match: H2HMatchDetail) -> some View {
-        let verification = verifyMatch(match)
-        return HStack(spacing: 12) {
-            VStack(alignment: .leading) {
-                Text("Season \(match.seasonId) • Week \(match.week)")
-                    .font(.caption.bold())
-                    .foregroundColor(match.result == "W" ? .green : (match.result == "L" ? .red : .yellow))
-                Text("Score: \(String(format: "%.2f", match.userPoints)) — \(String(format: "%.2f", match.oppPoints))")
-                    .font(.caption2).foregroundColor(.white)
-            }
-            Spacer()
-            VStack(alignment: .trailing) {
-                Text(match.result)
-                    .font(.caption.bold())
-                    .foregroundColor(match.result == "W" ? .green : (match.result == "L" ? .red : .yellow))
-
-                // Prefer verification values; fallback to stored values
-                if let userMgmt = verification.userMgmt, let oppMgmt = verification.oppMgmt {
-                    HStack(spacing: 6) {
-                        Text(String(format: "Mgmt: %.2f%%", userMgmt))
-                            .font(.caption2)
-                            .foregroundColor(Color.mgmtPercentColor(userMgmt))
-                        Text("·").font(.caption2).foregroundColor(.white.opacity(0.5))
-                        Text(String(format: "%.2f%%", oppMgmt))
-                            .font(.caption2)
-                            .foregroundColor(Color.mgmtPercentColor(oppMgmt))
-                    }
-                } else if verification.matchupMissing {
-                    Text("Matchup data unavailable")
-                        .font(.caption2)
-                        .foregroundColor(.red.opacity(0.8))
-                } else {
-                    HStack(spacing: 6) {
-                        Text(String(format: "Mgmt: %.2f%%", match.userMgmtPct))
-                            .font(.caption2)
-                            .foregroundColor(Color.mgmtPercentColor(match.userMgmtPct))
-                        Text("·").font(.caption2).foregroundColor(.white.opacity(0.5))
-                        Text(String(format: "%.2f%%", match.oppMgmtPct))
-                            .font(.caption2)
-                            .foregroundColor(Color.mgmtPercentColor(match.oppMgmtPct))
-                    }
-                }
-
-                if !verification.missingPlayerIds.isEmpty {
-                    HStack(spacing: 6) {
-                        Image(systemName: "exclamationmark.triangle.fill")
-                            .foregroundColor(.red)
-                            .font(.caption2)
-                        Text("\(verification.missingPlayerIds.count) missing players")
-                            .font(.caption2)
-                            .foregroundColor(.red)
-                    }
-                }
-            }
-        }
-        .padding(8)
-        .background(RoundedRectangle(cornerRadius: 8).fill(Color.white.opacity(0.02)))
-    }
-
-    // MARK: - Legacy verification & helpers (left in place as a fallback)
-
-    private struct MatchVerification {
-        let userMgmt: Double?
-        let oppMgmt: Double?
-        let missingPlayerIds: [String]
-        let matchupMissing: Bool
-    }
-
-    private func verifyMatch(_ match: H2HMatchDetail) -> MatchVerification {
-        // If this match corresponds to the currently-displayed season/week and we were passed snapshots,
-        // prefer snapshot values and avoid recomputing.
-        if let curSeason = currentSeasonId, let curWeek = currentWeekNumber,
-           match.seasonId == curSeason, match.week == curWeek,
-           let usnap = userSnapshot, let osnap = oppSnapshot,
-           let uRid = usnap.rosterIdInt, let oRid = osnap.rosterIdInt {
-            if match.userRosterId == uRid && match.oppRosterId == oRid {
-                return MatchVerification(userMgmt: usnap.managementPercent, oppMgmt: osnap.managementPercent, missingPlayerIds: [], matchupMissing: false)
-            }
-            if match.userRosterId == oRid && match.oppRosterId == uRid {
-                return MatchVerification(userMgmt: osnap.managementPercent, oppMgmt: usnap.managementPercent, missingPlayerIds: [], matchupMissing: false)
-            }
-        }
-
-        // Locate user & opp matchup entries
-        let myEntry = findUserMatchupEntry(for: match)
-        let oppEntry = findOppMatchupEntry(for: match)
-
-        guard let myE = myEntry else {
-            return MatchVerification(userMgmt: nil, oppMgmt: nil, missingPlayerIds: [], matchupMissing: true)
-        }
-        guard let oppE = oppEntry else {
-            let unresolved = unresolvedPlayersIn(entry: myE, matchWeek: match.week)
-            return MatchVerification(userMgmt: nil, oppMgmt: nil, missingPlayerIds: unresolved, matchupMissing: false)
-        }
-
-        let storedTrustworthy: Bool = {
-            let bothHavePP = (myE.players_points?.isEmpty == false) && (oppE.players_points?.isEmpty == false)
-            let storedNonZero = match.userMgmtPct > 0 || match.oppMgmtPct > 0
-            return bothHavePP && storedNonZero
-        }()
-
-        let unresolved = unresolvedPlayersIn(entry: myE, matchWeek: match.week)
-
-        if storedTrustworthy {
-            return MatchVerification(userMgmt: match.userMgmtPct, oppMgmt: match.oppMgmtPct, missingPlayerIds: unresolved, matchupMissing: false)
-        }
-
-        let seasonTeamUser = findSeasonTeam(forEntry: myE)
-        let seasonTeamOpp = findSeasonTeam(forEntry: oppE)
-
-        let recomputedUser = ManagementCalculator.computeManagementPercentForEntry(entry: myE, seasonTeam: seasonTeamUser, week: match.week, league: league, leagueManager: leagueManager)
-        let recomputedOpp = ManagementCalculator.computeManagementPercentForEntry(entry: oppE, seasonTeam: seasonTeamOpp, week: match.week, league: league, leagueManager: leagueManager)
-
-        return MatchVerification(userMgmt: recomputedUser, oppMgmt: recomputedOpp, missingPlayerIds: unresolved, matchupMissing: false)
-    }
-
-    private func unresolvedPlayersIn(entry: MatchupEntry, matchWeek: Int) -> [String] {
-        var unresolved: [String] = []
-        let playerCache = leagueManager.playerCache ?? [:]
-        let seasonTeam = findSeasonTeam(forEntry: entry)
-        let candidatesToCheck = Set((entry.starters ?? []) + (entry.players ?? []) + Array(entry.players_points?.keys ?? []))
-        for pid in candidatesToCheck {
-            if pid == "0" { continue }
-            var found = false
-            if let team = seasonTeam {
-                if team.roster.contains(where: { $0.id == pid }) { found = true }
-            }
-            if !found {
-                if playerCache[pid] != nil { found = true }
-            }
-            if !found { unresolved.append(pid) }
-        }
-        return unresolved
-    }
-
-    private func findUserMatchupEntry(for match: H2HMatchDetail) -> MatchupEntry? {
-        let rosterId = Int(user?.id ?? userSnapshot?.rosterId ?? "") ?? -1
-        for season in league.seasons {
-            if let weeks = season.matchupsByWeek {
-                if let entries = weeks[match.week] {
-                    if let candidate = entries.first(where: { $0.roster_id == rosterId && ($0.matchup_id ?? -1) == match.matchupId }) {
-                        return candidate
-                    }
-                    if let candidate = entries.first(where: { $0.roster_id == rosterId }) {
-                        return candidate
-                    }
-                }
-            }
-        }
-        return nil
-    }
-
-    private func findOppMatchupEntry(for match: H2HMatchDetail) -> MatchupEntry? {
-        let rosterId = Int(opp?.id ?? oppSnapshot?.rosterId ?? "") ?? -1
-        for season in league.seasons {
-            if let weeks = season.matchupsByWeek {
-                if let entries = weeks[match.week] {
-                    if let candidate = entries.first(where: { $0.roster_id == rosterId && ($0.matchup_id ?? -1) == match.matchupId }) {
-                        return candidate
-                    }
-                    if let candidate = entries.first(where: { $0.roster_id == rosterId }) {
-                        return candidate
-                    }
-                }
-            }
-        }
-        return nil
-    }
-
-    private func findSeasonTeam(forEntry entry: MatchupEntry?) -> TeamStanding? {
-        guard let entry = entry else { return nil }
-        let rosterId = entry.roster_id
-        for season in league.seasons {
-            if let weeks = season.matchupsByWeek, weeks.contains(where: { $0.value.contains(where: { $0.roster_id == rosterId }) }) {
-                if let team = season.teams.first(where: { $0.id == String(rosterId) }) { return team }
-                if let team = league.teams.first(where: { $0.id == String(rosterId) }) { return team }
-            }
-        }
-        return nil
-    }
-
     private func statRow(_ label: String, _ value: String) -> some View {
         HStack {
             Text(label)
@@ -481,37 +278,61 @@ struct HeadToHeadStatsSection: View {
         return str
     }
 
-    // MARK: - Legacy aggregated helpers (unchanged)
-    static func getHeadToHeadAllTime(userOwnerId: String, oppOwnerId: String, league: LeagueData) -> (record: String, avgMgmtFor: Double, avgPF: Double, avgMgmtAgainst: Double, avgPA: Double) {
-        guard let userAgg = league.allTimeOwnerStats?[userOwnerId],
-              let h2h = userAgg.headToHeadVs[oppOwnerId] else {
-            return ("0-0", 0.0, 0.0, 0.0, 0.0)
-        }
-        return (h2h.record, h2h.avgMgmtFor, h2h.avgPointsFor, h2h.avgMgmtAgainst, h2h.avgPointsAgainst)
-    }
+    // MARK: - Minimal helper kept to determine the weeks/season matchups where the two teams met.
+    // This helper is intentionally read-only and DOES NOT perform mgmt% or score recomputation.
+    // It returns an ordered list of match descriptors (seasonId, week, matchupId, roster ids).
+    //
+    // Usage: callers (e.g., MatchupView) can call this to determine which season/week pairs to ask
+    // the authoritative per-week TeamDisplay / snapshot generator to build H2HMatchSnapshot objects.
+    func findMatchupWeeksBetweenTeams() -> [(seasonId: String, week: Int, matchupId: Int?, userRosterId: Int, oppRosterId: Int)] {
+        var out: [(seasonId: String, week: Int, matchupId: Int?, userRosterId: Int, oppRosterId: Int)] = []
 
-    static func getHeadToHeadDetails(userOwnerId: String, oppOwnerId: String, league: LeagueData) -> [H2HMatchDetail]? {
-        guard let userAgg = league.allTimeOwnerStats?[userOwnerId] else { return nil }
-        return userAgg.headToHeadDetails?[oppOwnerId]
-    }
+        // Determine user and opp owner ids (prefer TeamStanding.ownerId when available)
+        let userOwnerId = user?.ownerId ?? userSnapshot?.ownerId
+        let oppOwnerId = opp?.ownerId ?? oppSnapshot?.ownerId
 
-    private var h2hDetails: [H2HMatchDetail]? {
-        if let uid = user?.ownerId, let oid = opp?.ownerId {
-            return Self.getHeadToHeadDetails(userOwnerId: uid, oppOwnerId: oid, league: league)
-        }
-        if let uo = userSnapshot?.ownerId, let oo = oppSnapshot?.ownerId {
-            return Self.getHeadToHeadDetails(userOwnerId: uo, oppOwnerId: oo, league: league)
-        }
-        return nil
-    }
+        // If we have neither owner id nor numeric roster ids, attempt to use roster ids directly
+        let explicitUserRosterId = user?.id.flatMap { Int($0) } ?? userSnapshot?.rosterIdInt
+        let explicitOppRosterId = opp?.id.flatMap { Int($0) } ?? oppSnapshot?.rosterIdInt
 
-    private func sortedDetails(_ list: [H2HMatchDetail]) -> [H2HMatchDetail] {
-        list.sorted { lhs, rhs in
-            if lhs.seasonId != rhs.seasonId { return lhs.seasonId > rhs.seasonId }
-            if lhs.week != rhs.week { return lhs.week > rhs.week }
-            return lhs.matchupId > rhs.matchupId
+        // Iterate seasons/wks
+        for season in league.seasons {
+            guard let weeks = season.matchupsByWeek else { continue }
+            // Build season-local roster id candidates for owners if owner ids present
+            var seasonUserRosterId: Int? = nil
+            var seasonOppRosterId: Int? = nil
+            if let uOwner = userOwnerId {
+                seasonUserRosterId = season.teams.first(where: { $0.ownerId == uOwner }).flatMap { Int($0.id) }
+            }
+            if seasonUserRosterId == nil { seasonUserRosterId = explicitUserRosterId }
+
+            if let oOwner = oppOwnerId {
+                seasonOppRosterId = season.teams.first(where: { $0.ownerId == oOwner }).flatMap { Int($0.id) }
+            }
+            if seasonOppRosterId == nil { seasonOppRosterId = explicitOppRosterId }
+
+            guard let uRid = seasonUserRosterId, let oRid = seasonOppRosterId else { continue }
+
+            for wk in weeks.keys.sorted() {
+                let entries = weeks[wk] ?? []
+                let hasUser = entries.contains(where: { $0.roster_id == uRid })
+                let hasOpp = entries.contains(where: { $0.roster_id == oRid })
+                if hasUser && hasOpp {
+                    // attempt to prefer a matchup_id from either entry
+                    let uEntry = entries.first(where: { $0.roster_id == uRid })
+                    let oEntry = entries.first(where: { $0.roster_id == oRid })
+                    let mid = uEntry?.matchup_id ?? oEntry?.matchup_id
+                    out.append((seasonId: season.id, week: wk, matchupId: mid, userRosterId: uRid, oppRosterId: oRid))
+                }
+            }
         }
+
+        // Sort by season desc, week desc for convenience (match display order)
+        out.sort { a, b in
+            if a.seasonId != b.seasonId { return a.seasonId > b.seasonId }
+            if a.week != b.week { return a.week > b.week }
+            return (a.matchupId ?? 0) > (b.matchupId ?? 0)
+        }
+        return out
     }
 }
-
-
