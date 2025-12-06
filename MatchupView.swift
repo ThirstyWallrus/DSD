@@ -930,114 +930,13 @@ struct MatchupView: View {
                     MyTeamView.phattGradientText(Text("Head-To-Head"), size: 18)
                         .frame(maxWidth: .infinity)
                         .multilineTextAlignment(.center)
-                    // Construct simple snapshots from the already-computed TeamDisplay objects (userTeam / opponentTeam)
-                    // so HeadToHeadStatsSection can use those precomputed mgmt% / points and avoid recomputation.
-                    let userSnap: H2HTeamSnapshot? = {
-                        if let td = userTeam {
-                            return H2HTeamSnapshot(
-                                rosterId: td.id,
-                                ownerId: td.teamStanding.ownerId,
-                                name: td.name,
-                                totalPoints: td.totalPoints,
-                                maxPoints: td.maxPoints,
-                                managementPercent: td.managementPercent
-                            )
-                        }
-                        return nil
-                    }()
-                    let oppSnap: H2HTeamSnapshot? = {
-                        if let td = opponentTeam {
-                            return H2HTeamSnapshot(
-                                rosterId: td.id,
-                                ownerId: td.teamStanding.ownerId,
-                                name: td.name,
-                                totalPoints: td.totalPoints,
-                                maxPoints: td.maxPoints,
-                                managementPercent: td.managementPercent
-                            )
-                        }
-                        return nil
-                    }()
-
-                    // NEW: Build match snapshots from the canonical per-league matchupHistories when available.
-                    // If matchupHistories is missing, we backfill in-memory using HeadToHeadStatsService.rebuildMatchupHistories(for: &tempLeague, ...)
-                    // so the UI can display consistent history even if persistence hasn't been backfilled yet.
-                    let matchSnapshots: [H2HMatchSnapshot] = {
-                        // Determine rosterId strings for the user / opponent as stored in TeamStanding.id
-                        let userRosterIdStr = user.id
-                        let oppRosterIdStr = opp.id
-
-                        // Use a tempLeague to avoid modifying stored league unless caller explicitly persists.
-                        var tempLeague = lg
-                        if tempLeague.matchupHistories == nil {
-                            // In-memory backfill to allow the UI to show history when storage isn't yet migrated.
-                            HeadToHeadStatsService.rebuildMatchupHistories(for: &tempLeague, leagueManager: leagueManager)
-                        }
-
-                        // Get stored H2H details for user's perspective vs opponent
-                        let details = HeadToHeadStatsService.getMatchesFor(teamId: userRosterIdStr, opponentId: oppRosterIdStr, league: tempLeague)
-
-                        // Map each H2HMatchDetail to an H2HMatchSnapshot that HeadToHeadStatsSection consumes.
-                        // For the currently-displayed matchup (season/week), prefer the values from userSnap / oppSnap (TeamDisplay)
-                        // so the head-to-head UI matches the Matchup view's exact numbers.
-                        var accum: [H2HMatchSnapshot] = []
-                        for detail in details {
-                            // If detail corresponds to current season/week, try to use the TeamDisplay snapshots for parity
-                            if detail.seasonId == (appSelection.selectedSeason.isEmpty ? currentSeasonId : appSelection.selectedSeason),
-                               detail.week == currentWeekNumber,
-                               let usnap = userSnap, let osnap = oppSnap,
-                               Int(usnap.rosterId) == detail.userRosterId, Int(osnap.rosterId) == detail.oppRosterId {
-                                // Use TeamDisplay totals/mgmt% for precision
-                                let snap = H2HMatchSnapshot(
-                                    seasonId: detail.seasonId,
-                                    week: detail.week,
-                                    matchupId: detail.matchupId,
-                                    userRosterId: detail.userRosterId,
-                                    oppRosterId: detail.oppRosterId,
-                                    userPoints: usnap.totalPoints,
-                                    oppPoints: osnap.totalPoints,
-                                    userMgmtPct: usnap.managementPercent,
-                                    oppMgmtPct: osnap.managementPercent,
-                                    missingPlayerIds: []
-                                )
-                                accum.append(snap)
-                            } else {
-                                // Map stored detail values (convert 0 mgmt% to nil for unknown)
-                                let userMgmt: Double? = detail.userMgmtPct > 0.0 ? detail.userMgmtPct : nil
-                                let oppMgmt: Double? = detail.oppMgmtPct > 0.0 ? detail.oppMgmtPct : nil
-                                let snap = H2HMatchSnapshot(
-                                    seasonId: detail.seasonId,
-                                    week: detail.week,
-                                    matchupId: detail.matchupId,
-                                    userRosterId: detail.userRosterId,
-                                    oppRosterId: detail.oppRosterId,
-                                    userPoints: detail.userPoints,
-                                    oppPoints: detail.oppPoints,
-                                    userMgmtPct: userMgmt,
-                                    oppMgmtPct: oppMgmt,
-                                    missingPlayerIds: []
-                                )
-                                accum.append(snap)
-                            }
-                        }
-
-                        // Ensure newest-first ordering to match prior behavior
-                        let sorted = accum.sorted { lhs, rhs in
-                            if lhs.seasonId != rhs.seasonId { return lhs.seasonId > rhs.seasonId }
-                            if lhs.week != rhs.week { return lhs.week > rhs.week }
-                            return (lhs.matchupId ?? 0) > (rhs.matchupId ?? 0)
-                        }
-                        return sorted
-                    }()
-
+                    // MatchupView no longer constructs H2H snapshots — HeadToHeadStatsSection/Service
+                    // derive their own H2H details from league.matchupHistories or compute them directly.
+                    // Keep responsibilities separated: MatchupView only provides the two team displays.
                     HeadToHeadStatsSection(
                         user: user,
                         opp: opp,
                         league: lg,
-                        userSnapshot: userSnap,
-                        oppSnapshot: oppSnap,
-
-                        matchSnapshots: matchSnapshots,
                         currentSeasonId: appSelection.selectedSeason.isEmpty ? currentSeasonId : appSelection.selectedSeason,
                         currentWeekNumber: currentWeekNumber
                     )
@@ -1267,27 +1166,6 @@ struct MatchupView: View {
         }
         .foregroundColor(.white)
         .frame(maxWidth: .infinity, alignment: .leading)
-    }
-    private func headToHeadStatsSection(user: TeamStanding, opp: TeamStanding, league: LeagueData) -> some View {
-        // Create snapshots from TeamDisplay if available so HeadToHeadStatsSection can use them.
-        let userSnap: H2HTeamSnapshot? = {
-            if let td = userTeam { return H2HTeamSnapshot(rosterId: td.id, ownerId: td.teamStanding.ownerId, name: td.name, totalPoints: td.totalPoints, maxPoints: td.maxPoints, managementPercent: td.managementPercent) }
-            return nil
-        }()
-        let oppSnap: H2HTeamSnapshot? = {
-            if let td = opponentTeam { return H2HTeamSnapshot(rosterId: td.id, ownerId: td.teamStanding.ownerId, name: td.name, totalPoints: td.totalPoints, maxPoints: td.maxPoints, managementPercent: td.managementPercent) }
-            return nil
-        }()
-        return HeadToHeadStatsSection(
-            user: user,
-            opp: opp,
-            league: league,
-            userSnapshot: userSnap,
-            oppSnapshot: oppSnap,
-            matchSnapshots: nil,
-            currentSeasonId: appSelection.selectedSeason.isEmpty ? currentSeasonId : appSelection.selectedSeason,
-            currentWeekNumber: currentWeekNumber
-            )
     }
     private func positionColor(_ pos: String) -> Color {
         switch pos {
