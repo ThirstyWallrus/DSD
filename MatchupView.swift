@@ -1004,9 +1004,10 @@ struct MatchupView: View {
                         league: lg,
                         userSnapshot: userSnap,
                         oppSnapshot: oppSnap,
+                        
+                        matchSnapshots: matchSnapshots,
                         currentSeasonId: appSelection.selectedSeason.isEmpty ? currentSeasonId : appSelection.selectedSeason,
-                        currentWeekNumber: currentWeekNumber,
-                        matchSnapshots: matchSnapshots
+                        currentWeekNumber: currentWeekNumber
                     )
                 }
             } else {
@@ -1251,10 +1252,10 @@ struct MatchupView: View {
             league: league,
             userSnapshot: userSnap,
             oppSnapshot: oppSnap,
+            matchSnapshots: nil,
             currentSeasonId: appSelection.selectedSeason.isEmpty ? currentSeasonId : appSelection.selectedSeason,
-            currentWeekNumber: currentWeekNumber,
-            matchSnapshots: nil // legacy callsite (kept for compatibility) - prefer headToHeadContent which supplies snapshots
-        )
+            currentWeekNumber: currentWeekNumber
+            )
     }
     private func positionColor(_ pos: String) -> Color {
         switch pos {
