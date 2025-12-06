@@ -33,11 +33,15 @@ struct ManagementCalculator {
                         if let playersPoints = entry.players_points, !playersPoints.isEmpty {
                             return computeUsingMatchupEntry(team: team, entry: entry, playersPoints: playersPoints, league: lg, leagueManager: leagueManager, week: week)
                         } else {
-                            // Build fallback map from roster weeklyScores for the week
+                            // Build fallback map from any roster weeklyScores available in this season (not just the team's current roster).
+                            // This is important to capture historical starters (traded/released) who won't be present in the current TeamStanding.roster.
                             var fallback: [String: Double] = [:]
-                            for p in team.roster {
-                                if let s = p.weeklyScores.first(where: { $0.week == week }) {
-                                    fallback[p.id] = s.points_half_ppr ?? s.points
+                            for sTeam in season.teams {
+                                for p in sTeam.roster {
+                                    if let ws = p.weeklyScores.first(where: { $0.week == week }) {
+                                        // prefer half-ppr if present, otherwise use points
+                                        fallback[p.id] = ws.points_half_ppr ?? ws.points
+                                    }
                                 }
                             }
                             if !fallback.isEmpty {
@@ -71,12 +75,27 @@ struct ManagementCalculator {
             }
         }
 
+        // EXTENDED FALLBACK: If still empty and we have a league, scan season team rosters to capture historical players
+        if playersPoints.isEmpty, let lg = league {
+            for season in lg.seasons {
+                for sTeam in season.teams {
+                    for p in sTeam.roster {
+                        if playersPoints[p.id] == nil {
+                            if let s = p.weeklyScores.first(where: { $0.week == week }) {
+                                playersPoints[p.id] = s.points_half_ppr ?? s.points
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         guard !playersPoints.isEmpty else { return nil }
 
         // Determine starting slots
         var startingSlots: [String] = SlotUtils.sanitizeStartingSlots(league?.startingLineup ?? [])
         if startingSlots.isEmpty {
-            if let cfg = seasonTeam?.lineupConfig, !cfg.isEmpty {
+            if let cfg = seasonTeam?.lineup_config ?? seasonTeam?.lineupConfig, !cfg.isEmpty {
                 startingSlots = expandSlots(cfg)
             }
         }
@@ -183,7 +202,7 @@ struct ManagementCalculator {
         }
 
         var startingSlots: [String] = SlotUtils.sanitizeStartingSlots(league?.startingLineup ?? [])
-        if startingSlots.isEmpty, let cfg = team.lineupConfig, !cfg.isEmpty {
+        if startingSlots.isEmpty, let cfg = team.lineup_config ?? team.lineupConfig, !cfg.isEmpty {
             startingSlots = expandSlots(cfg)
         }
 
@@ -262,7 +281,7 @@ struct ManagementCalculator {
         let actualDef = actualTotal - actualOff
 
         var startingSlots = SlotUtils.sanitizeStartingSlots(league?.startingLineup ?? [])
-        if startingSlots.isEmpty, let cfg = team.lineupConfig, !cfg.isEmpty {
+        if startingSlots.isEmpty, let cfg = team.lineup_config ?? team.lineupConfig, !cfg.isEmpty {
             startingSlots = expandSlots(cfg)
         }
 

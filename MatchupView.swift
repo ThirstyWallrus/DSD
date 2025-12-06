@@ -800,7 +800,7 @@ struct MatchupView: View {
                 return sum + score
             }
         } ?? 0.0
-        let pfString = String(format: "%.1f", pf)
+        let pfString = String(format: "%.2f", pf)
         Button(action: { selectedWeek = weekLabel }) {
             HStack(spacing: 10) {
                 Text(weekLabel).foregroundColor(.white)
@@ -985,14 +985,14 @@ struct MatchupView: View {
                 HStack {
                     Text("Points").frame(maxWidth: .infinity, alignment: .leading)
                     Spacer()
-                    Text(String(format: "%.1f", team.totalPoints))
+                    Text(String(format: "%.2f", team.totalPoints))
                         .foregroundColor(.green)
                         .frame(width: 80, alignment: .trailing)
                 }
                 HStack {
                     Text("Max Points").frame(maxWidth: .infinity, alignment: .leading)
                     Spacer()
-                    Text(String(format: "%.1f", team.maxPoints))
+                    Text(String(format: "%.2f", team.maxPoints))
                         .foregroundColor(.white.opacity(0.8))
                         .frame(width: 80, alignment: .trailing)
                 }
@@ -1048,7 +1048,7 @@ struct MatchupView: View {
                             }
                         }
                         Spacer()
-                        Text(String(format: "%.1f", player.points))
+                        Text(String(format: "%.2f", player.points))
                             .foregroundColor(.green)
                             .frame(width: scoreColumnWidth, alignment: .trailing)
                     }
@@ -1120,7 +1120,7 @@ struct MatchupView: View {
                             }
                         }
                         Spacer()
-                        Text(String(format: "%.1f", player.points))
+                        Text(String(format: "%.2f", player.points))
                             .foregroundColor(.green)
                             .frame(width: scoreColumnWidth, alignment: .trailing)
                     }
