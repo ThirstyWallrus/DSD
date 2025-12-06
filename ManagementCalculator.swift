@@ -95,7 +95,7 @@ struct ManagementCalculator {
         // Determine starting slots
         var startingSlots: [String] = SlotUtils.sanitizeStartingSlots(league?.startingLineup ?? [])
         if startingSlots.isEmpty {
-            if let cfg = seasonTeam?.lineup_config ?? seasonTeam?.lineupConfig, !cfg.isEmpty {
+            if let cfg = seasonTeam?.lineupConfig, !cfg.isEmpty {
                 startingSlots = expandSlots(cfg)
             }
         }
@@ -202,7 +202,7 @@ struct ManagementCalculator {
         }
 
         var startingSlots: [String] = SlotUtils.sanitizeStartingSlots(league?.startingLineup ?? [])
-        if startingSlots.isEmpty, let cfg = team.lineup_config ?? team.lineupConfig, !cfg.isEmpty {
+        if startingSlots.isEmpty, let cfg = team.lineupConfig, !cfg.isEmpty {
             startingSlots = expandSlots(cfg)
         }
 
@@ -281,7 +281,7 @@ struct ManagementCalculator {
         let actualDef = actualTotal - actualOff
 
         var startingSlots = SlotUtils.sanitizeStartingSlots(league?.startingLineup ?? [])
-        if startingSlots.isEmpty, let cfg = team.lineup_config ?? team.lineupConfig, !cfg.isEmpty {
+        if startingSlots.isEmpty, let cfg = team.lineupConfig, !cfg.isEmpty {
             startingSlots = expandSlots(cfg)
         }
 
