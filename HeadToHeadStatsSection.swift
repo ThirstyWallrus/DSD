@@ -204,50 +204,7 @@ struct HeadToHeadStatsSection: View {
 
                 VStack(spacing: 8) {
                     ForEach(sorted) { match in
-                        HStack(spacing: 12) {
-                            VStack(alignment: .leading) {
-                                Text("Season \(match.seasonId) • Week \(match.week)")
-                                    .font(.caption.bold())
-                                    .foregroundColor(match.result == "W" ? .green : (match.result == "L" ? .red : .yellow))
-                                Text("Score: \(String(format: "%.2f", match.userPoints)) — \(String(format: "%.2f", match.oppPoints))")
-                                    .font(.caption2).foregroundColor(.white)
-                            }
-                            Spacer()
-                            VStack(alignment: .trailing) {
-                                Text(match.result)
-                                    .font(.caption.bold())
-                                    .foregroundColor(match.result == "W" ? .green : (match.result == "L" ? .red : .yellow))
-
-                                if let userMgmt = match.userMgmtPct, let oppMgmt = match.oppMgmtPct {
-                                    HStack(spacing: 6) {
-                                        Text(String(format: "Mgmt: %.2f%%", userMgmt))
-                                            .font(.caption2)
-                                            .foregroundColor(Color.mgmtPercentColor(userMgmt))
-                                        Text("·").font(.caption2).foregroundColor(.white.opacity(0.5))
-                                        Text(String(format: "%.2f%%", oppMgmt))
-                                            .font(.caption2)
-                                            .foregroundColor(Color.mgmtPercentColor(oppMgmt))
-                                    }
-                                } else {
-                                    Text("Mgmt: —")
-                                        .font(.caption2)
-                                        .foregroundColor(.white.opacity(0.6))
-                                }
-
-                                if let missing = match.missingPlayerIds, !missing.isEmpty {
-                                    HStack(spacing: 6) {
-                                        Image(systemName: "exclamationmark.triangle.fill")
-                                            .foregroundColor(.red)
-                                            .font(.caption2)
-                                        Text("\(missing.count) missing players")
-                                            .font(.caption2)
-                                            .foregroundColor(.red)
-                                    }
-                                }
-                            }
-                        }
-                        .padding(8)
-                        .background(RoundedRectangle(cornerRadius: 8).fill(Color.white.opacity(0.02)))
+                        matchRowView(match)
                     }
                 }
             } else {
@@ -327,6 +284,54 @@ struct HeadToHeadStatsSection: View {
                 }
             }
         }
+    }
+
+    // MARK: - Extracted subview to help compiler type-checking
+    private func matchRowView(_ match: H2HMatchSnapshot) -> some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading) {
+                Text("Season \(match.seasonId) • Week \(match.week)")
+                    .font(.caption.bold())
+                    .foregroundColor(match.result == "W" ? .green : (match.result == "L" ? .red : .yellow))
+                Text("Score: \(String(format: "%.2f", match.userPoints)) — \(String(format: "%.2f", match.oppPoints))")
+                    .font(.caption2).foregroundColor(.white)
+            }
+            Spacer()
+            VStack(alignment: .trailing) {
+                Text(match.result)
+                    .font(.caption.bold())
+                    .foregroundColor(match.result == "W" ? .green : (match.result == "L" ? .red : .yellow))
+
+                if let userMgmt = match.userMgmtPct, let oppMgmt = match.oppMgmtPct {
+                    HStack(spacing: 6) {
+                        Text(String(format: "Mgmt: %.2f%%", userMgmt))
+                            .font(.caption2)
+                            .foregroundColor(Color.mgmtPercentColor(userMgmt))
+                        Text("·").font(.caption2).foregroundColor(.white.opacity(0.5))
+                        Text(String(format: "%.2f%%", oppMgmt))
+                            .font(.caption2)
+                            .foregroundColor(Color.mgmtPercentColor(oppMgmt))
+                    }
+                } else {
+                    Text("Mgmt: —")
+                        .font(.caption2)
+                        .foregroundColor(.white.opacity(0.6))
+                }
+
+                if let missing = match.missingPlayerIds, !missing.isEmpty {
+                    HStack(spacing: 6) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundColor(.red)
+                            .font(.caption2)
+                        Text("\(missing.count) missing players")
+                            .font(.caption2)
+                            .foregroundColor(.red)
+                    }
+                }
+            }
+        }
+        .padding(8)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Color.white.opacity(0.02)))
     }
 
     // MARK: - Legacy verification & helpers (left in place as a fallback)
