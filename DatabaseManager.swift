@@ -139,9 +139,30 @@ class DatabaseManager {
 // FIXED: matchups array element is SleeperMatchup, with fields: rosterId, matchupId, starters, players, points, customPoints
 // Use the explicit .week (if present) as the week key for the map; fall back to matchupId for older persisted data.
 func buildWeekRosterMatchupMap(matchups: [SleeperMatchup]) -> [Int: [Int: Int]] {
+    // New behavior: prefer explicit week when present.
+    // If any matchups are missing .week, create a deterministic mapping from unique matchupId -> sequential week number
+    // (sorted ascending). This normalizes older persisted data that used matchupId as the key.
     var map: [Int: [Int: Int]] = [:]
+
+    // Determine whether any matchups are missing explicit weeks
+    let anyMissingWeek = matchups.contains { $0.week == nil }
+
+    // If any are missing, build a mapping from unique matchupId to sequential week number (1-based).
+    // We sort unique matchupId values ascending to make the mapping deterministic.
+    var matchupIdToWeek: [Int: Int] = [:]
+    if anyMissingWeek {
+        let uniqueIds = Array(Set(matchups.map { $0.matchupId })).sorted()
+        // Map each unique matchupId to a 1-based index
+        for (idx, mid) in uniqueIds.enumerated() {
+            matchupIdToWeek[mid] = idx + 1
+        }
+        // Debugging aid (non-sensitive)
+        print("[DatabaseManager] buildWeekRosterMatchupMap: found matchups with missing .week; mapping matchupId -> week sample: \(Array(matchupIdToWeek.prefix(10)))")
+    }
+
     for matchup in matchups {
-        let weekKey = matchup.week ?? matchup.matchupId
+        // Use explicit week when present; otherwise use derived mapping if available, otherwise fallback to matchupId as last resort.
+        let weekKey: Int = matchup.week ?? matchupIdToWeek[matchup.matchupId] ?? matchup.matchupId
         map[weekKey, default: [:]][matchup.rosterId] = weekKey
     }
     return map
