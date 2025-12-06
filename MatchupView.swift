@@ -892,7 +892,43 @@ struct MatchupView: View {
                     MyTeamView.phattGradientText(Text("Head-To-Head"), size: 18)
                         .frame(maxWidth: .infinity)
                         .multilineTextAlignment(.center)
-                    HeadToHeadStatsSection(user: user, opp: opp, league: lg)
+                    // Construct simple snapshots from the already-computed TeamDisplay objects (userTeam / opponentTeam)
+                    // so HeadToHeadStatsSection can use those precomputed mgmt% / points and avoid recomputation.
+                    let userSnap: H2HTeamSnapshot? = {
+                        if let td = userTeam {
+                            return H2HTeamSnapshot(
+                                rosterId: td.id,
+                                ownerId: td.teamStanding.ownerId,
+                                name: td.name,
+                                totalPoints: td.totalPoints,
+                                maxPoints: td.maxPoints,
+                                managementPercent: td.managementPercent
+                            )
+                        }
+                        return nil
+                    }()
+                    let oppSnap: H2HTeamSnapshot? = {
+                        if let td = opponentTeam {
+                            return H2HTeamSnapshot(
+                                rosterId: td.id,
+                                ownerId: td.teamStanding.ownerId,
+                                name: td.name,
+                                totalPoints: td.totalPoints,
+                                maxPoints: td.maxPoints,
+                                managementPercent: td.managementPercent
+                            )
+                        }
+                        return nil
+                    }()
+                    HeadToHeadStatsSection(
+                        user: user,
+                        opp: opp,
+                        league: lg,
+                        userSnapshot: userSnap,
+                        oppSnapshot: oppSnap,
+                        currentSeasonId: appSelection.selectedSeason.isEmpty ? currentSeasonId : appSelection.selectedSeason,
+                        currentWeekNumber: currentWeekNumber
+                    )
                 }
             } else {
                 Text("No head-to-head data available.")
@@ -1121,7 +1157,24 @@ struct MatchupView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
     private func headToHeadStatsSection(user: TeamStanding, opp: TeamStanding, league: LeagueData) -> some View {
-        HeadToHeadStatsSection(user: user, opp: opp, league: league)
+        // Create snapshots from TeamDisplay if available so HeadToHeadStatsSection can use them.
+        let userSnap: H2HTeamSnapshot? = {
+            if let td = userTeam { return H2HTeamSnapshot(rosterId: td.id, ownerId: td.teamStanding.ownerId, name: td.name, totalPoints: td.totalPoints, maxPoints: td.maxPoints, managementPercent: td.managementPercent) }
+            return nil
+        }()
+        let oppSnap: H2HTeamSnapshot? = {
+            if let td = opponentTeam { return H2HTeamSnapshot(rosterId: td.id, ownerId: td.teamStanding.ownerId, name: td.name, totalPoints: td.totalPoints, maxPoints: td.maxPoints, managementPercent: td.managementPercent) }
+            return nil
+        }()
+        return HeadToHeadStatsSection(
+            user: user,
+            opp: opp,
+            league: league,
+            userSnapshot: userSnap,
+            oppSnapshot: oppSnap,
+            currentSeasonId: appSelection.selectedSeason.isEmpty ? currentSeasonId : appSelection.selectedSeason,
+            currentWeekNumber: currentWeekNumber
+        )
     }
     private func positionColor(_ pos: String) -> Color {
         switch pos {
