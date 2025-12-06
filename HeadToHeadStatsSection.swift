@@ -292,8 +292,16 @@ struct HeadToHeadStatsSection: View {
         let oppOwnerId = opp?.ownerId ?? oppSnapshot?.ownerId
 
         // If we have neither owner id nor numeric roster ids, attempt to use roster ids directly
-        let explicitUserRosterId = user?.id.flatMap { Int($0) } ?? userSnapshot?.rosterIdInt
-        let explicitOppRosterId = opp?.id.flatMap { Int($0) } ?? oppSnapshot?.rosterIdInt
+        let explicitUserRosterId: Int? = {
+            if let idStr = user?.id, let i = Int(idStr) { return i }
+            if let i = userSnapshot?.rosterIdInt { return i }
+            return nil
+        }()
+        let explicitOppRosterId: Int? = {
+            if let idStr = opp?.id, let i = Int(idStr) { return i }
+            if let i = oppSnapshot?.rosterIdInt { return i }
+            return nil
+        }()
 
         // Iterate seasons/wks
         for season in league.seasons {
@@ -301,13 +309,18 @@ struct HeadToHeadStatsSection: View {
             // Build season-local roster id candidates for owners if owner ids present
             var seasonUserRosterId: Int? = nil
             var seasonOppRosterId: Int? = nil
+
             if let uOwner = userOwnerId {
-                seasonUserRosterId = season.teams.first(where: { $0.ownerId == uOwner }).flatMap { Int($0.id) }
+                if let team = season.teams.first(where: { $0.ownerId == uOwner }), let parsed = Int(team.id) {
+                    seasonUserRosterId = parsed
+                }
             }
             if seasonUserRosterId == nil { seasonUserRosterId = explicitUserRosterId }
 
             if let oOwner = oppOwnerId {
-                seasonOppRosterId = season.teams.first(where: { $0.ownerId == oOwner }).flatMap { Int($0.id) }
+                if let team = season.teams.first(where: { $0.ownerId == oOwner }), let parsed = Int(team.id) {
+                    seasonOppRosterId = parsed
+                }
             }
             if seasonOppRosterId == nil { seasonOppRosterId = explicitOppRosterId }
 
