@@ -117,6 +117,23 @@ class DatabaseManager {
             return false
         }
     }
+
+    // NEW: Build roster->matchup map for a stored season (derived from stored matchups).
+    // This provides a single computed view so callers don't need to keep a separate map in memory.
+    /// - Parameters:
+    ///   - leagueId: id of the league to read from the in-memory map
+    ///   - seasonId: optional season id; if nil the latest season is used
+    /// - Returns: [week: [rosterId: matchupWeekKey]] mapping
+    @MainActor
+    func getWeekRosterMatchupMap(leagueId: String, seasonId: String? = nil) -> [Int: [Int: Int]] {
+        guard let league = leagues[leagueId] else { return [:] }
+        let season: SeasonData? = {
+            if let sid = seasonId { return league.seasons.first(where: { $0.id == sid }) }
+            return league.seasons.sorted(by: { $0.id < $1.id }).last
+        }()
+        guard let matchups = season?.matchups else { return [:] }
+        return buildWeekRosterMatchupMap(matchups: matchups)
+    }
 }
 
 // FIXED: matchups array element is SleeperMatchup, with fields: rosterId, matchupId, starters, players, points, customPoints

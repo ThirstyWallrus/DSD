@@ -173,8 +173,6 @@ class SleeperLeagueManager: ObservableObject {
     private static var _lastRefresh: [String: Date] = [:]
     private var refreshThrottleInterval: TimeInterval { 10 * 60 } // 10 minutes
 
-    var weekRosterMatchupMap: [Int: [Int: Int]] = [:]
-
     init(autoLoad: Bool = false) {
         if autoLoad {
             loadLeaguesWithMigrationIfNeeded(for: activeUsername)
