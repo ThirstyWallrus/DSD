@@ -566,7 +566,7 @@ struct MatchupView: View {
                         return irToken
                     }
                     if canonical == "TAXI" {
-                        if lineupDebugEnabled { print("[BenchSlotDetect] playerCache.fantasy_positions -> player:\(playerId) matched IR via '\(alt)'") }
+                        if lineupDebugEnabled { print("[BenchSlotDetect] playerCache.fantasy_positions -> player:\(playerId) matched TAXI via '\(alt)'") }
                         return "TAXI"
                     }
                 }
@@ -593,16 +593,27 @@ struct MatchupView: View {
     private func teamDisplay(for team: TeamStanding, week: Int) -> TeamDisplay {
         let lineup = orderedLineup(for: team, week: week)
         let bench = orderedBench(for: team, week: week)
-        // Delegate to shared ManagementCalculator for canonical computation
-        let (actualTotal, maxTotal, _, _, _, _) = ManagementCalculator.computeManagementForWeek(team: team, week: week, league: self.league ?? team.league, leagueManager: leagueManager)
-        let managementPercent = maxTotal > 0 ? (actualTotal / maxTotal * 100) : 0.0
+        // Delegate to shared ManagementCalculator for canonical computation (max totals etc.)
+        let (_, computedMax, _, _, _, _) = ManagementCalculator.computeManagementForWeek(team: team, week: week, league: self.league ?? team.league, leagueManager: leagueManager)
+
+        // CRITICAL: Use lineup-derived sum for the displayed "Points" so the Matchup Stats must match Lineups.
+        // This guarantees the Matchup Stats "Points" equals the sum of player.points displayed in the Lineups UI.
+        let totalFromLineup = lineup.reduce(0.0) { $0 + $1.points }
+
+        #if DEBUG
+        if lineupDebugEnabled {
+            print("[MatchupView] teamDisplay: using lineup sum for team=\(team.name) week=\(week) totalFromLineup=\(String(format: \"%.2f\", totalFromLineup)) computedMax=\(String(format: \"%.2f\", computedMax))")
+        }
+        #endif
+
+        let managementPercent = computedMax > 0 ? (totalFromLineup / computedMax * 100) : 0.0
         return TeamDisplay(
             id: team.id,
             name: team.name,
             lineup: lineup,
             bench: bench,
-            totalPoints: actualTotal,
-            maxPoints: maxTotal,
+            totalPoints: totalFromLineup,
+            maxPoints: computedMax,
             managementPercent: managementPercent,
             teamStanding: team
         )
