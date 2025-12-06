@@ -959,81 +959,75 @@ struct MatchupView: View {
                         return nil
                     }()
 
-                    // NEW: Build historical match snapshots for all seasons/weeks where these two rosters faced each other.
-                    // MatchupView is the authoritative source of values since it uses the same TeamDisplay/ManagementCalculator
-                    // logic that backs the UI.
+                    // NEW: Build match snapshots from the canonical per-league matchupHistories when available.
+                    // If matchupHistories is missing, we backfill in-memory using HeadToHeadStatsService.rebuildMatchupHistories(for: &tempLeague, ...)
+                    // so the UI can display consistent history even if persistence hasn't been backfilled yet.
                     let matchSnapshots: [H2HMatchSnapshot] = {
-                        var accum: [H2HMatchSnapshot] = []
-                        guard let league = lg as LeagueData? else { return [] }
-                        // Determine roster ids to look for (across seasons teams may have different roster id strings)
-                        let userRosterIdCandidates: Set<Int> = Set(league.seasons.flatMap { season in
-                            season.teams.filter { $0.ownerId == user.ownerId }.compactMap { Int($0.id) }
-                        })
-                        let oppRosterIdCandidates: Set<Int> = Set(league.seasons.flatMap { season in
-                            season.teams.filter { $0.ownerId == opp.ownerId }.compactMap { Int($0.id) }
-                        })
-                        // If we couldn't map owner->roster via seasons, attempt to use the currently-selected roster ids
-                        var userRosterIdStr: Int? = Int(user.id)
-                        var oppRosterIdStr: Int? = Int(opp.id)
-                        if let us = userRosterIdCandidates.first { userRosterIdStr = us }
-                        if let os = oppRosterIdCandidates.first { oppRosterIdStr = os }
+                        // Determine rosterId strings for the user / opponent as stored in TeamStanding.id
+                        let userRosterIdStr = user.id
+                        let oppRosterIdStr = opp.id
 
-                        // Walk seasons and weeks (preserve descending order)
-                        for season in league.seasons {
-                            guard let byWeek = season.matchupsByWeek else { continue }
-                            for wk in byWeek.keys.sorted() {
-                                let entries = byWeek[wk] ?? []
-                                // Try to find roster ids for this season specifically (more robust)
-                                let seasonUserRosterId = season.teams.first(where: { $0.ownerId == user.ownerId }) .flatMap { Int($0.id) } ?? userRosterIdStr
-                                let seasonOppRosterId = season.teams.first(where: { $0.ownerId == opp.ownerId }) .flatMap { Int($0.id) } ?? oppRosterIdStr
-                                guard let uRid = seasonUserRosterId, let oRid = seasonOppRosterId else { continue }
-                                // find entries in this week for both roster ids
-                                guard let uEntry = entries.first(where: { $0.roster_id == uRid }) else { continue }
-                                guard let oEntry = entries.first(where: { $0.roster_id == oRid }) else { continue }
-                                // If both entries exist, construct TeamDisplay for that week using the season's TeamStanding
-                                let seasonUserTeam = season.teams.first(where: { $0.id == String(uRid) })
-                                let seasonOppTeam = season.teams.first(where: { $0.id == String(oRid) })
-                                // Build displays (TeamDisplay uses ManagementCalculator to compute totals/mgmt)
-                                if let sut = seasonUserTeam {
-                                    let tdUser = teamDisplay(for: sut, week: wk)
-                                    if let sot = seasonOppTeam {
-                                        let tdOpp = teamDisplay(for: sot, week: wk)
-                                        // Use mgmt% and total points from TeamDisplay (these are exactly what MatchupView shows)
-                                        let snapshot = H2HMatchSnapshot(
-                                            seasonId: season.id,
-                                            week: wk,
-                                            matchupId: uEntry.matchup_id ?? oEntry.matchup_id,
-                                            userRosterId: uRid,
-                                            oppRosterId: oRid,
-                                            userPoints: tdUser.totalPoints,
-                                            oppPoints: tdOpp.totalPoints,
-                                            userMgmtPct: tdUser.managementPercent,
-                                            oppMgmtPct: tdOpp.managementPercent,
-                                            missingPlayerIds: [] // MatchupView doesn't presently expose missingPlayers list for historical weeks; keep empty
-                                        )
-                                        accum.append(snapshot)
-                                    } else {
-                                        // Opponent team not found in season. Still may create a partial snapshot with entry.points if present.
-                                        let ptsUser = uEntry.points ?? (uEntry.players_points?.values.reduce(0.0, +) ?? 0.0)
-                                        let ptsOpp = oEntry.points ?? (oEntry.players_points?.values.reduce(0.0, +) ?? 0.0)
-                                        let snapshot = H2HMatchSnapshot(
-                                            seasonId: season.id,
-                                            week: wk,
-                                            matchupId: uEntry.matchup_id ?? oEntry.matchup_id,
-                                            userRosterId: uRid,
-                                            oppRosterId: oRid,
-                                            userPoints: ptsUser,
-                                            oppPoints: ptsOpp,
-                                            userMgmtPct: nil,
-                                            oppMgmtPct: nil,
-                                            missingPlayerIds: []
-                                        )
-                                        accum.append(snapshot)
-                                    }
-                                }
+                        // Use a tempLeague to avoid modifying stored league unless caller explicitly persists.
+                        var tempLeague = lg
+                        if tempLeague.matchupHistories == nil {
+                            // In-memory backfill to allow the UI to show history when storage isn't yet migrated.
+                            HeadToHeadStatsService.rebuildMatchupHistories(for: &tempLeague, leagueManager: leagueManager)
+                        }
+
+                        // Get stored H2H details for user's perspective vs opponent
+                        let details = HeadToHeadStatsService.getMatchesFor(teamId: userRosterIdStr, opponentId: oppRosterIdStr, league: tempLeague)
+
+                        // Map each H2HMatchDetail to an H2HMatchSnapshot that HeadToHeadStatsSection consumes.
+                        // For the currently-displayed matchup (season/week), prefer the values from userSnap / oppSnap (TeamDisplay)
+                        // so the head-to-head UI matches the Matchup view's exact numbers.
+                        var accum: [H2HMatchSnapshot] = []
+                        for detail in details {
+                            // If detail corresponds to current season/week, try to use the TeamDisplay snapshots for parity
+                            if detail.seasonId == (appSelection.selectedSeason.isEmpty ? currentSeasonId : appSelection.selectedSeason),
+                               detail.week == currentWeekNumber,
+                               let usnap = userSnap, let osnap = oppSnap,
+                               Int(usnap.rosterId) == detail.userRosterId, Int(osnap.rosterId) == detail.oppRosterId {
+                                // Use TeamDisplay totals/mgmt% for precision
+                                let snap = H2HMatchSnapshot(
+                                    seasonId: detail.seasonId,
+                                    week: detail.week,
+                                    matchupId: detail.matchupId,
+                                    userRosterId: detail.userRosterId,
+                                    oppRosterId: detail.oppRosterId,
+                                    userPoints: usnap.totalPoints,
+                                    oppPoints: osnap.totalPoints,
+                                    userMgmtPct: usnap.managementPercent,
+                                    oppMgmtPct: osnap.managementPercent,
+                                    missingPlayerIds: []
+                                )
+                                accum.append(snap)
+                            } else {
+                                // Map stored detail values (convert 0 mgmt% to nil for unknown)
+                                let userMgmt: Double? = detail.userMgmtPct > 0.0 ? detail.userMgmtPct : nil
+                                let oppMgmt: Double? = detail.oppMgmtPct > 0.0 ? detail.oppMgmtPct : nil
+                                let snap = H2HMatchSnapshot(
+                                    seasonId: detail.seasonId,
+                                    week: detail.week,
+                                    matchupId: detail.matchupId,
+                                    userRosterId: detail.userRosterId,
+                                    oppRosterId: detail.oppRosterId,
+                                    userPoints: detail.userPoints,
+                                    oppPoints: detail.oppPoints,
+                                    userMgmtPct: userMgmt,
+                                    oppMgmtPct: oppMgmt,
+                                    missingPlayerIds: []
+                                )
+                                accum.append(snap)
                             }
                         }
-                        return accum
+
+                        // Ensure newest-first ordering to match prior behavior
+                        let sorted = accum.sorted { lhs, rhs in
+                            if lhs.seasonId != rhs.seasonId { return lhs.seasonId > rhs.seasonId }
+                            if lhs.week != rhs.week { return lhs.week > rhs.week }
+                            return (lhs.matchupId ?? 0) > (rhs.matchupId ?? 0)
+                        }
+                        return sorted
                     }()
 
                     HeadToHeadStatsSection(
@@ -1042,7 +1036,7 @@ struct MatchupView: View {
                         league: lg,
                         userSnapshot: userSnap,
                         oppSnapshot: oppSnap,
-                        
+
                         matchSnapshots: matchSnapshots,
                         currentSeasonId: appSelection.selectedSeason.isEmpty ? currentSeasonId : appSelection.selectedSeason,
                         currentWeekNumber: currentWeekNumber

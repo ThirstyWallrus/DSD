@@ -171,6 +171,12 @@ struct LeagueData: Identifiable, Codable, Equatable {
 
     // Optional persisted minimal free-agent snapshot for this league (if feature enabled)
     var freeAgentsSnapshot: FreeAgentSnapshot? = nil
+
+    // NEW: Per-team matchup history (teamId -> opponentTeamId -> array of H2HMatchDetail)
+    // This stores perspective-specific match detail entries for each matchup encountered for that team.
+    // Example: matchupHistories["12"]["34"] = [H2HMatchDetail(...), ...] (team 12 vs opponent 34)
+    // This is intentionally stored at the league level to avoid changing TeamStanding shape widely.
+    var matchupHistories: [String: [String: [H2HMatchDetail]]]? = nil
     // ----------------------------------------------------------------
 }
 
