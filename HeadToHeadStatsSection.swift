@@ -13,6 +13,7 @@
 //
 
 import Foundation
+import SwiftUI
 
 @MainActor
 final class HeadToHeadStatsService {
@@ -234,5 +235,78 @@ final class HeadToHeadStatsService {
             map[teamId] = inner
             league.matchupHistories = map
         }
+    }
+}
+
+// -------------------------------------------------------
+// Lightweight SwiftUI view shim to satisfy MatchupView usage
+// Minimal, non-invasive: shows basic aggregates from HeadToHeadStatsService.
+// The view accepts MatchupView.TeamDisplay for user/opp to match the existing invocation in MatchupView.
+// -------------------------------------------------------
+
+struct HeadToHeadStatsSection: View {
+    let user: MatchupView.TeamDisplay
+    let opp: MatchupView.TeamDisplay
+    let league: LeagueData
+    let currentSeasonId: String
+    let currentWeekNumber: Int
+
+    var body: some View {
+        // Query stored matches (descending newest-first)
+        let matches = HeadToHeadStatsService.recentMatchesBetween(teamId: user.id, opponentId: opp.id, league: league)
+        let aggregates = HeadToHeadStatsService.computeAggregates(from: matches)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Record:")
+                    .foregroundColor(.orange)
+                    .font(.headline)
+                Text(aggregates.record)
+                    .foregroundColor(.white)
+                    .font(.subheadline)
+                Spacer()
+                Text("Matches: \(matches.count)")
+                    .foregroundColor(.white.opacity(0.9))
+                    .font(.caption)
+            }
+            HStack(spacing: 12) {
+                VStack(alignment: .leading) {
+                    Text("Avg PF")
+                        .foregroundColor(.orange)
+                        .font(.caption.bold())
+                    Text(String(format: "%.1f", aggregates.avgPF))
+                        .foregroundColor(.white)
+                        .font(.subheadline)
+                }
+                VStack(alignment: .leading) {
+                    Text("Avg PA")
+                        .foregroundColor(.orange)
+                        .font(.caption.bold())
+                    Text(String(format: "%.1f", aggregates.avgPA))
+                        .foregroundColor(.white)
+                        .font(.subheadline)
+                }
+                VStack(alignment: .leading) {
+                    Text("Avg Mgmt For")
+                        .foregroundColor(.orange)
+                        .font(.caption.bold())
+                    Text(String(format: "%.1f%%", aggregates.avgMgmtFor))
+                        .foregroundColor(.white)
+                        .font(.subheadline)
+                }
+                Spacer()
+            }
+            if matches.isEmpty {
+                Text("No head-to-head history stored for these teams.")
+                    .foregroundColor(.white.opacity(0.7))
+                    .font(.caption)
+                    .padding(.top, 6)
+            }
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(Color.white.opacity(0.02))
+                .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.white.opacity(0.06), lineWidth: 1))
+        )
     }
 }

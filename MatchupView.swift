@@ -683,10 +683,10 @@ struct MatchupView: View {
             setDefaultWeekSelection()
             refreshData()
         }
-        .onChange(of: appSelection.selectedSeason) { _ in setDefaultWeekSelection() }
-        .onChange(of: appSelection.selectedLeagueId) { _ in setDefaultWeekSelection() }
-        .onChange(of: appSelection.leagues) { _ in setDefaultWeekSelection() }
-        .onChange(of: leagueManager.globalCurrentWeek) { _ in setDefaultWeekSelection() }
+        .onChange(of: appSelection.selectedSeason) { _, _ in setDefaultWeekSelection() }
+        .onChange(of: appSelection.selectedLeagueId) { _, _ in setDefaultWeekSelection() }
+        .onChange(of: appSelection.leagues) { _, _ in setDefaultWeekSelection() }
+        .onChange(of: leagueManager.globalCurrentWeek) { _, _ in setDefaultWeekSelection() }
     }
     // MARK: - Header & Menus
     private var headerBlock: some View {
