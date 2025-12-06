@@ -152,7 +152,7 @@ struct DynastyStatDropApp: App {
                                 appSelection.updateLeagues(leagueManager.leagues, username: authViewModel.currentUsername)
                             }
                         }
-                        .onChange(of: authViewModel.isLoggedIn) { _, loggedIn in
+                        .onChange(of: authViewModel.isLoggedIn) { loggedIn in
                             if loggedIn, let user = authViewModel.currentUsername {
                                 leagueManager.setActiveUser(username: user)
                                 appSelection.updateLeagues(leagueManager.leagues, username: user)
@@ -164,12 +164,12 @@ struct DynastyStatDropApp: App {
                                 }
                             }
                         }
-                        .onChange(of: authViewModel.currentUsername) { _, user in
-                            guard let user else { return }
+                        .onChange(of: authViewModel.currentUsername) { user in
+                            guard let user = user else { return }
                             leagueManager.setActiveUser(username: user)
                             appSelection.updateLeagues(leagueManager.leagues, username: user)
                         }
-                        .onChange(of: scenePhase) { _, phase in
+                        .onChange(of: scenePhase) { phase in
                             if phase == .active,
                                authViewModel.isLoggedIn,
                                let user = authViewModel.currentUsername {
@@ -181,15 +181,15 @@ struct DynastyStatDropApp: App {
                                 }
                             }
                         }
-                        .onChange(of: leagueManager.leagues) { _ in
+                        .onChange(of: leagueManager.leagues) { newLeagues in
                             appSelection.updateLeagues(
-                                leagueManager.leagues,
+                                newLeagues,
                                 username: authViewModel.currentUsername
                             )
                         }
                         // NEW: When the appSelection.selectedLeagueId changes (user selects a different imported league),
                         // refresh the league metadata to update globalCurrentWeek from the Sleeper API.
-                        .onChange(of: appSelection.selectedLeagueId) { _, newLeagueId in
+                        .onChange(of: appSelection.selectedLeagueId) { newLeagueId in
                             guard let leagueId = newLeagueId else { return }
                             Task {
                                 // Ask the manager to refresh the "global current week" for this league.
