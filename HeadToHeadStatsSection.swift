@@ -115,7 +115,7 @@ struct HeadToHeadStatsSection: View {
 
     // REPLACED: Removed ScrollView -> List all matches inline, most recent first.
     // Each match row attempts to locate the original MatchupEntry and performs a validation check:
-    // - recomputes mgmt% (best-effort) and compares to stored values
+    // - recomputes mgmt% (if possible) and compares to stored values
     // - lists any unresolved player ids (not in that season's team roster AND not in canonical player cache)
     private var matchHistoryView: some View {
         Group {
@@ -252,7 +252,8 @@ struct HeadToHeadStatsSection: View {
 
         let oppSeasonTeam = findSeasonTeam(forEntry: oppEntry)
 
-        let oppMgmt: Double? = recomputeManagementPercent(entry: oppEntry, seasonTeam: oppSeasonTeam)
+        // Pass the week into recompute so the function can build a players_points fallback if necessary
+        let oppMgmt: Double? = recomputeManagementPercent(entry: oppEntry, seasonTeam: oppSeasonTeam, week: match.week)
 
         // Log a concise debug message for QA (non-invasive)
         if !unresolved.isEmpty {
@@ -324,9 +325,27 @@ struct HeadToHeadStatsSection: View {
 
     // Recompute Management % for the given matchup entry (user side).
     // Returns nil if recomputation couldn't be performed (insufficient data).
-    private func recomputeManagementPercent(entry: MatchupEntry, seasonTeam: TeamStanding?) -> Double? {
-        guard let playersPoints = entry.players_points, !playersPoints.isEmpty else {
-            // Not enough data to recompute
+    // NOTE: This routine is now tolerant of missing entry.players_points: if players_points is absent/empty,
+    //       it will attempt to build a fallback playersPoints map from the seasonTeam.roster weeklyScores
+    //       (using the provided week). This mirrors the tolerant behavior used elsewhere (AllTimeAggregator/computeMaxForEntry).
+    private func recomputeManagementPercent(entry: MatchupEntry, seasonTeam: TeamStanding?, week: Int) -> Double? {
+        // Attempt to obtain an authoritative players_points map. If not present, try to build a best-effort map
+        // from the seasonTeam roster weeklyScores for the requested week.
+        var playersPoints: [String: Double] = entry.players_points ?? [:]
+
+        if playersPoints.isEmpty {
+            // If we have the season team and week information, build fallback mapping from roster weeklyScores
+            if let team = seasonTeam {
+                for p in team.roster {
+                    if let s = p.weeklyScores.first(where: { $0.week == week }) {
+                        playersPoints[p.id] = s.points_half_ppr ?? s.points
+                    }
+                }
+            }
+        }
+
+        // If still empty, we can't reliably recompute actual starters' totals -> return nil
+        if playersPoints.isEmpty {
             return nil
         }
 
@@ -368,16 +387,19 @@ struct HeadToHeadStatsSection: View {
                 let alt = (raw.fantasy_positions ?? []).map { PositionNormalizer.normalize($0) }
                 return (id: pid, basePos: base, altPos: alt, score: playersPoints[pid] ?? 0.0)
             }
-            // Unknown player id and not in roster/playerCache: still include with points if any
-            return (id: pid, basePos: PositionNormalizer.normalize("UNK"), altPos: [], score: playersPoints[pid] ?? 0.0)
+            // Last-resort include with UNK pos
+            let score = playersPoints[pid] ?? 0.0
+            return (id: pid, basePos: PositionNormalizer.normalize("UNK"), altPos: [], score: score)
         }
 
-        // Split strict vs flex slots similar to other modules
+        // Determine starting slot strict vs flex split
         var strictSlots: [String] = []
         var flexSlots: [String] = []
         for slot in startingSlots {
             let allowed = allowedPositions(for: slot)
-            if allowed.count == 1 && !isIDPFlex(slot) && !offensiveFlexSlots.contains(slot.uppercased()) {
+            if allowed.count == 1 &&
+                !isIDPFlex(slot) &&
+                !offensiveFlexSlots.contains(slot.uppercased()) {
                 strictSlots.append(slot)
             } else {
                 flexSlots.append(slot)
@@ -385,26 +407,26 @@ struct HeadToHeadStatsSection: View {
         }
         let optimalOrder = strictSlots + flexSlots
 
-        // Greedy assignment to compute max total
         var used = Set<String>()
         var maxTotal = 0.0
         var actualTotal = 0.0
 
-        // Actual total = sum of starters' points (if starters present)
+        // compute actual total from starters using playersPoints (we built a fallback above)
         if let starters = entry.starters {
             for pid in starters where pid != "0" {
                 actualTotal += playersPoints[pid] ?? 0.0
             }
         }
 
+        // compute greedy max using candidate pool
         for slot in optimalOrder {
             let allowed = allowedPositions(for: slot)
-            let pick = candidates
-                .filter { !used.contains($0.id) && isEligible(($0.id, $0.basePos, $0.altPos, $0.score), allowed: allowed) }
-                .max { $0.score < $1.score }
-            if let chosen = pick {
-                used.insert(chosen.id)
-                maxTotal += chosen.score
+            let candidatePool = candidates.filter { candidate in
+                return !used.contains(candidate.id) && (allowed.contains(candidate.basePos) || !allowed.intersection(Set(candidate.altPos)).isEmpty)
+            }
+            if let pick = candidatePool.max(by: { $0.score < $1.score }) {
+                used.insert(pick.id)
+                maxTotal += pick.score
             }
         }
 
