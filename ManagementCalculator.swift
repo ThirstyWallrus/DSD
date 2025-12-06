@@ -24,9 +24,24 @@ struct ManagementCalculator {
     ///   - leagueManager: for player cache resolution when roster snapshots don't contain position info.
     /// - Returns: (actualTotal, maxTotal, actualOff, maxOff, actualDef, maxDef)
     static func computeManagementForWeek(team: TeamStanding, week: Int, league: LeagueData?, leagueManager: SleeperLeagueManager) -> (Double, Double, Double, Double, Double, Double) {
-        // Try to locate a MatchupEntry for this team in the provided league seasons (if any)
+        // If a league is provided, prioritize the season that contains the TeamStanding passed in.
+        // This ensures ManagementCalculator uses the same season snapshot that UI code (which passes a season-specific TeamStanding)
+        // uses when building the Lineups. Previously we iterated league.seasons in arbitrary order which could pick an entry
+        // from a different season and thus lead to mismatched totals.
         if let lg = league {
-            for season in lg.seasons {
+            // Build ordered seasons with the season containing the team first (if any).
+            var seasonsOrdered: [SeasonData] = []
+            if let containingSeason = lg.seasons.first(where: { season in
+                season.teams.contains(where: { $0.id == team.id })
+            }) {
+                seasonsOrdered.append(containingSeason)
+                // Append the rest preserving existing order but without duplicating the containingSeason
+                seasonsOrdered.append(contentsOf: lg.seasons.filter { $0.id != containingSeason.id })
+            } else {
+                seasonsOrdered = lg.seasons
+            }
+
+            for season in seasonsOrdered {
                 if let weeks = season.matchupsByWeek, let entries = weeks[week] {
                     if let entry = entries.first(where: { $0.roster_id == Int(team.id) }) {
                         // Found a matchup entry -> compute using entry players_points preferentially
@@ -48,7 +63,8 @@ struct ManagementCalculator {
                                 return computeUsingMatchupEntry(team: team, entry: entry, playersPoints: fallback, league: lg, leagueManager: leagueManager, week: week)
                             }
                         }
-                        // If no players_points and empty fallback, fall through to roster-based legacy computation below
+                        // If this season had a matching entry but we couldn't compute using players_points or fallback,
+                        // break and fall back to legacy roster-based computation below (avoid accidentally scanning other seasons).
                         break
                     }
                 }
@@ -193,7 +209,9 @@ struct ManagementCalculator {
             let diff = abs(entryScalar - actualTotal)
             if diff > epsilon {
                 // Log diagnostically
-                print("[ManagementCalculator] WARNING: players_points for matchup appears incomplete — falling back to entry.points (authoritative). week=\(week) unresolvedStarterIds=\(unresolvedStarterIds) sumResolved=\(String(format: \"%.2f\", actualTotal)) entry.points=\(String(format: \"%.2f\", entryScalar))")
+                let formattedResolved = String(format: "%.2f", actualTotal)
+                let formattedEntry = String(format: "%.2f", entryScalar)
+                print("[ManagementCalculator] WARNING: players_points for matchup appears incomplete — falling back to entry.points (authoritative). week=\(week) unresolvedStarterIds=\(unresolvedStarterIds) sumResolved=\(formattedResolved) entry.points=\(formattedEntry)")
                 // Use entryScalar as actual total to guarantee parity with Sleeper
                 actualTotal = entryScalar
             }
@@ -322,7 +340,9 @@ struct ManagementCalculator {
             let epsilon = 0.01
             let diff = abs(entryScalar - actualTotal)
             if diff > epsilon {
-                print("[ManagementCalculator] WARNING: incomplete players_points for matchup; using entry.points as authoritative. week=\(week) team=\(team.name) roster=\(team.id) unresolvedStarterIds=\(unresolvedStarterIds) sumResolved=\(String(format: \"%.2f\", actualTotal)) entry.points=\(String(format: \"%.2f\", entryScalar))")
+                let formattedResolved = String(format: "%.2f", actualTotal)
+                let formattedEntry = String(format: "%.2f", entryScalar)
+                print("[ManagementCalculator] WARNING: incomplete players_points for matchup; using entry.points as authoritative. week=\(week) team=\(team.name) roster=\(team.id) unresolvedStarterIds=\(unresolvedStarterIds) sumResolved=\(formattedResolved) entry.points=\(formattedEntry)")
                 // Replace actualTotal with the authoritative entry scalar
                 let previousActualTotal = actualTotal
                 actualTotal = entryScalar
@@ -343,7 +363,9 @@ struct ManagementCalculator {
                 }
 
                 // Log the adjustment
-                print("[ManagementCalculator] INFO: adjusted actualOff=\(String(format: \"%.2f\", actualOff)) actualDef=\(String(format: \"%.2f\", actualDef)) to match authoritative total")
+                let fmtOff = String(format: "%.2f", actualOff)
+                let fmtDef = String(format: "%.2f", actualDef)
+                print("[ManagementCalculator] INFO: adjusted actualOff=\(fmtOff) actualDef=\(fmtDef) to match authoritative total")
             }
         }
 
