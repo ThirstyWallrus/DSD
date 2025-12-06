@@ -9,10 +9,12 @@
 //
 //  Version History:
 //   1 -> 2 : Initial offensive / defensive split introduction (legacy).
-//   2 -> 3 : Weekly actual lineup volatility capture (weeklyActualLineupPoints).
+//   2 -> 3 : Weekly actual lineup volatility capture (legacy).
 //   3 -> 4 : Extended fields (actualStarterPositionCounts, actualStarterWeeks,
 //            waiverMoves, faabSpent, tradesCompleted) + unified dual-flex logic.
 //            (This migration is idempotent; safe to run once per data set.)
+//   4 -> 5 : Embeds per-league compact ownedPlayers and per-team teamHistoricalPlayers caches
+//            into LeagueData (Version B). If missing, a background lazy backfill is scheduled.
 //
 
 import Foundation
@@ -26,7 +28,7 @@ import Foundation
 final class DataMigrationManager: ObservableObject {
 
     private let dataVersionKey = "dsd.data.version"
-    private let currentDataVersion = 5   // UPDATED to 5 for extended starter / transaction metrics
+    private let currentDataVersion = 5   // UPDATED to 5 for extended starter / transaction metrics + caches
 
     private let offensivePositions: Set<String> = ["QB","RB","WR","TE","K"]
     private let defensivePositions: Set<String> = ["DL","LB","DB"]
@@ -72,6 +74,21 @@ final class DataMigrationManager: ObservableObject {
         leagueManager.saveLeagues()
         UserDefaults.standard.set(currentDataVersion, forKey: dataVersionKey)
         print("[Migration] Completed data migration to version \(currentDataVersion)")
+
+        // SCHEDULE BACKGROUND LAZY BACKFILL FOR COMPACT CACHES (Version B)
+        // For any migrated league missing ownedPlayers/teamHistoricalPlayers, run rebuildCachesForLeague in background.
+        Task {
+            for lg in leagueManager.leagues {
+                if lg.ownedPlayers == nil || lg.teamHistoricalPlayers == nil {
+                    do {
+                        print("[MigrationBackfill] scheduling cache rebuild for league \(lg.id)")
+                        try await leagueManager.rebuildCachesForLeague(leagueId: lg.id)
+                    } catch {
+                        print("[MigrationBackfill] failed to rebuild caches for league \(lg.id): \(error)")
+                    }
+                }
+            }
+        }
     }
     
     private func wipeOldCacheAndData() {

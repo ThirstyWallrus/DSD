@@ -6,6 +6,8 @@
 //  Change: fetchMatchupsByWeek now ensures all teams have a MatchupEntry for every week.
 //  Add: per-season playoff overrides persisted and exposed to import UI.
 //  Add: recompute championships helpers that populate computedChampionOwnerId / computedChampionships container.
+//  ADDITION: Version B — per-league compact ownedPlayers and per-team teamHistoricalPlayers caches.
+//            These caches are embedded inside LeagueData and persisted as single-file storage.
 //
 
 import Foundation
@@ -484,12 +486,241 @@ class SleeperLeagueManager: ObservableObject {
         return playerCache ?? [:]
     }
 
+    // Fetch players by id using cached allPlayers / playerCache. If missing, fetch players/nfl once and return requested subset.
+    // Note: This is still the canonical per-id resolver. The compact caches (ownedPlayers) are constructed from returned RawSleeperPlayer metadata.
     private func fetchPlayers(ids: [String]) async throws -> [RawSleeperPlayer] {
         if allPlayers.isEmpty {
             allPlayers = try await fetchPlayersDict()
         }
         return ids.compactMap { allPlayers[$0] }
     }
+
+    // --- NEW: Build compact per-league and per-team caches (Version B)
+    //
+    // Scans seasons and matchups to build:
+    //  - ownedPlayers: minimal CompactPlayer metadata for players that were rostered or appeared in matchups
+    //  - teamHistoricalPlayers: per-team compact records keyed by teamId (TeamStanding.id which is roster_id as String)
+    //
+    // This method is intentionally conservative and best-effort — failures do not abort imports.
+    private func buildPlayerCaches(from seasons: [SeasonData]) async throws -> (owned: [String: CompactPlayer], teamHistorical: [String: [String: TeamHistoricalPlayer]]) {
+        var ownedIds = Set<String>()
+        // per-player timeline
+        var firstSeenSeason: [String: String] = [:]
+        var firstSeenWeek: [String: Int] = [:]
+        var lastSeenSeason: [String: String] = [:]
+        var lastSeenWeek: [String: Int] = [:]
+        var lastKnownRosterId: [String: Int] = [:]
+
+        // per-team historical map: teamId -> (playerId -> TeamHistoricalPlayer)
+        var teamHistorical: [String: [String: TeamHistoricalPlayer]] = [:]
+
+        // iterate seasons/weeks/matchups
+        for season in seasons.sorted(by: { $0.id < $1.id }) {
+            let sid = season.id
+            // gather roster-based appearances from season.teams
+            for team in season.teams {
+                let teamId = team.id
+                for p in team.roster {
+                    let pid = p.id
+                    ownedIds.insert(pid)
+                    if firstSeenSeason[pid] == nil || (firstSeenSeason[pid]! > sid) {
+                        firstSeenSeason[pid] = sid
+                    }
+                    // weekly-level data not available here; keep nil for week if not found in matchups
+                    lastSeenSeason[pid] = sid
+                    lastKnownRosterId[pid] = Int(teamId) ?? lastKnownRosterId[pid]
+                    // teamHistorical update
+                    var map = teamHistorical[teamId] ?? [:]
+                    let existing = map[pid]
+                    let th = TeamHistoricalPlayer(
+                        playerId: pid,
+                        firstSeenSeason: existing?.firstSeenSeason ?? firstSeenSeason[pid],
+                        firstSeenWeek: existing?.firstSeenWeek ?? nil,
+                        lastSeenSeason: sid,
+                        lastSeenWeek: existing?.lastSeenWeek,
+                        lastKnownPosition: p.position,
+                        lastKnownName: nil,
+                        lastKnownRosterId: Int(teamId),
+                        nlot: false,
+                        appearancesCount: (existing?.appearancesCount ?? 0) + 1,
+                        notes: nil
+                    )
+                    map[pid] = th
+                    teamHistorical[teamId] = map
+                }
+            }
+
+            // matchups: week-level appearances & starters
+            if let map = season.matchupsByWeek {
+                for (week, entries) in map {
+                    for entry in entries {
+                        let rosterId = entry.roster_id
+                        let teamKey = String(rosterId)
+                        // players list
+                        if let players = entry.players {
+                            for pid in players {
+                                ownedIds.insert(pid)
+                                if firstSeenSeason[pid] == nil {
+                                    firstSeenSeason[pid] = sid
+                                    firstSeenWeek[pid] = week
+                                }
+                                // last seen update
+                                lastSeenSeason[pid] = sid
+                                lastSeenWeek[pid] = week
+                                lastKnownRosterId[pid] = rosterId
+
+                                var map = teamHistorical[teamKey] ?? [:]
+                                let existing = map[pid]
+                                let th = TeamHistoricalPlayer(
+                                    playerId: pid,
+                                    firstSeenSeason: existing?.firstSeenSeason ?? firstSeenSeason[pid],
+                                    firstSeenWeek: existing?.firstSeenWeek ?? firstSeenWeek[pid],
+                                    lastSeenSeason: sid,
+                                    lastSeenWeek: week,
+                                    lastKnownPosition: existing?.lastKnownPosition,
+                                    lastKnownName: existing?.lastKnownName,
+                                    lastKnownRosterId: rosterId,
+                                    nlot: false,
+                                    appearancesCount: (existing?.appearancesCount ?? 0) + 1,
+                                    notes: nil
+                                )
+                                map[pid] = th
+                                teamHistorical[teamKey] = map
+                            }
+                        }
+                        // starters
+                        if let starters = entry.starters {
+                            for pid in starters {
+                                ownedIds.insert(pid)
+                                if firstSeenSeason[pid] == nil {
+                                    firstSeenSeason[pid] = sid
+                                    firstSeenWeek[pid] = week
+                                }
+                                lastSeenSeason[pid] = sid
+                                lastSeenWeek[pid] = week
+                                lastKnownRosterId[pid] = rosterId
+
+                                var map = teamHistorical[teamKey] ?? [:]
+                                let existing = map[pid]
+                                let th = TeamHistoricalPlayer(
+                                    playerId: pid,
+                                    firstSeenSeason: existing?.firstSeenSeason ?? firstSeenSeason[pid],
+                                    firstSeenWeek: existing?.firstSeenWeek ?? firstSeenWeek[pid],
+                                    lastSeenSeason: sid,
+                                    lastSeenWeek: week,
+                                    lastKnownPosition: existing?.lastKnownPosition,
+                                    lastKnownName: existing?.lastKnownName,
+                                    lastKnownRosterId: rosterId,
+                                    nlot: false,
+                                    appearancesCount: (existing?.appearancesCount ?? 0) + 1,
+                                    notes: nil
+                                )
+                                map[pid] = th
+                                teamHistorical[teamKey] = map
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Resolve minimal RawSleeperPlayer metadata for ownedIds
+        let ids = Array(ownedIds)
+        let rawPlayers = (try? await fetchPlayers(ids: ids)) ?? []
+        var rawMap: [String: RawSleeperPlayer] = [:]
+        for r in rawPlayers { rawMap[r.player_id] = r }
+
+        // Determine latest-season roster players for NLOT detection
+        var currentRosterPlayers = Set<String>()
+        if let latest = seasons.sorted(by: { $0.id < $1.id }).last {
+            for team in latest.teams {
+                for p in team.roster { currentRosterPlayers.insert(p.id) }
+            }
+        }
+
+        // Build CompactPlayer map
+        var compact: [String: CompactPlayer] = [:]
+        for pid in ids {
+            let raw = rawMap[pid]
+            let cp = CompactPlayer(
+                id: pid,
+                fullName: raw?.full_name,
+                position: raw?.position,
+                fantasyPositions: raw?.fantasy_positions,
+                firstSeenSeason: firstSeenSeason[pid],
+                firstSeenWeek: firstSeenWeek[pid],
+                lastSeenSeason: lastSeenSeason[pid],
+                lastSeenWeek: lastSeenWeek[pid],
+                lastKnownRosterId: lastKnownRosterId[pid],
+                nlot: !currentRosterPlayers.contains(pid),
+                notes: nil
+            )
+            compact[pid] = cp
+        }
+
+        // Also mark teamHistorical.nlot flags based on latest roster membership per team
+        if let latest = seasons.sorted(by: { $0.id < $1.id }).last {
+            // latestTeamMembers: teamId -> set of playerIds
+            var latestTeamMembers: [String: Set<String>] = [:]
+            for team in latest.teams {
+                let tid = team.id
+                var s = Set<String>()
+                for p in team.roster { s.insert(p.id) }
+                latestTeamMembers[tid] = s
+            }
+            for (teamId, players) in teamHistorical {
+                var updatedMap: [String: TeamHistoricalPlayer] = [:]
+                for (pid, rec) in players {
+                    let nlot = !(latestTeamMembers[teamId]?.contains(pid) ?? false)
+                    let updated = TeamHistoricalPlayer(
+                        playerId: rec.playerId,
+                        firstSeenSeason: rec.firstSeenSeason,
+                        firstSeenWeek: rec.firstSeenWeek,
+                        lastSeenSeason: rec.lastSeenSeason,
+                        lastSeenWeek: rec.lastSeenWeek,
+                        lastKnownPosition: rec.lastKnownPosition,
+                        lastKnownName: rec.lastKnownName,
+                        lastKnownRosterId: rec.lastKnownRosterId,
+                        nlot: nlot,
+                        appearancesCount: rec.appearancesCount,
+                        notes: rec.notes
+                    )
+                    updatedMap[pid] = updated
+                }
+                teamHistorical[teamId] = updatedMap
+            }
+        }
+
+        return (owned: compact, teamHistorical: teamHistorical)
+    }
+
+    // Public wrapper: rebuild caches for an already-imported leagueId by reading persisted seasons
+    func rebuildCachesForLeague(leagueId: String) async throws {
+        // Load persisted league file
+        guard let league = loadLeagueFile(id: leagueId) else {
+            throw NSError(domain: "SleeperLeagueManager", code: 1, userInfo: [NSLocalizedDescriptionKey: "League not found on disk: \(leagueId)"])
+        }
+
+        // Build caches from the league seasons
+        let seasons = league.seasons
+        let caches = try await buildPlayerCaches(from: seasons)
+
+        var updatedLeague = league
+        updatedLeague.ownedPlayers = caches.owned
+        updatedLeague.teamHistoricalPlayers = caches.teamHistorical
+
+        // Recompute all-time cache using available in-memory allPlayers (best-effort)
+        let finalLeague = AllTimeAggregator.buildAllTime(for: updatedLeague, playerCache: allPlayers)
+
+        // Persist updated league file
+        persistLeagueFile(finalLeague)
+        saveIndex()
+        DatabaseManager.shared.saveLeague(finalLeague)
+
+        print("[CachesRebuild] Rebuilt player caches for league \(leagueId) — ownedPlayers=\(caches.owned.count) teamHistoricalTeams=\(caches.teamHistorical.count)")
+    }
+
+    // NOTE: fetchMatchupsByWeek and other functions remain below (unchanged), except where we call buildPlayerCaches/attach caches.
 
     // --- PATCHED: Ensure every team has a matchup entry for every week played ---
     private func fetchMatchupsByWeek(leagueId: String) async throws -> [Int: [MatchupEntry]] {
@@ -1081,7 +1312,7 @@ class SleeperLeagueManager: ObservableObject {
         let latestSeason = seasonData.last?.season ?? league.season ?? "\(currentYear)"
         let latestTeams = seasonData.last?.teams ?? []
 
-        return LeagueData(
+        var leagueData = LeagueData(
             id: league.league_id,
             name: league.name ?? "Unnamed League",
             season: latestSeason,
@@ -1089,6 +1320,20 @@ class SleeperLeagueManager: ObservableObject {
             seasons: seasonData,
             startingLineup: league.roster_positions ?? []
         )
+
+        // Attempt to build compact caches (ownedPlayers & teamHistoricalPlayers).
+        // Best-effort: failures logged but do not abort import.
+        do {
+            let caches = try await buildPlayerCaches(from: seasonData)
+            leagueData.ownedPlayers = caches.owned
+            leagueData.teamHistoricalPlayers = caches.teamHistorical
+            print("[CachesAttach] built compact player caches for league \(league.league_id): owned=\(caches.owned.count) teamHistoricalTeams=\(caches.teamHistorical.count)")
+        } catch {
+            print("[CachesAttach] Failed to build compact caches for league \(league.league_id): \(error)")
+            // continue without caches
+        }
+
+        return leagueData
     }
 
     // New helper: populate players_slots in matchupsByWeek using any per-roster settings that contain per-player mappings.
@@ -1496,7 +1741,7 @@ class SleeperLeagueManager: ObservableObject {
             newSeasons[i] = SeasonData(id: latestSeason.id, season: latestSeason.season, teams: teams, playoffStartWeek: playoffStart, playoffTeamsCount: nil, matchups: matchups, matchupsByWeek: matchupsByWeek)
         }
 
-        let updated = LeagueData(
+        var updated = LeagueData(
             id: league.id,
             name: league.name,
             season: league.season,
@@ -1504,6 +1749,16 @@ class SleeperLeagueManager: ObservableObject {
             seasons: newSeasons,
             startingLineup: league.startingLineup
         )
+
+        // Rebuild compact caches for updated league (best-effort)
+        do {
+            let caches = try await buildPlayerCaches(from: newSeasons)
+            updated.ownedPlayers = caches.owned
+            updated.teamHistoricalPlayers = caches.teamHistorical
+            print("[RefreshCaches] rebuilt compact caches for league \(league.id) after refresh")
+        } catch {
+            print("[RefreshCaches] failed to rebuild caches for league \(league.id): \(error)")
+        }
 
         return AllTimeAggregator.buildAllTime(for: updated, playerCache: allPlayers)
     }

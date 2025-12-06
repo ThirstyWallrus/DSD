@@ -3,6 +3,14 @@
 //  DynastyStatDrop
 //
 //  (No structural changes; relies on canonical models from LeagueData.swift)
+//  Extended with per-league cache accessors & persistence helpers for:
+//
+//    - ownedPlayers: [String: CompactPlayer]?
+//    - teamHistoricalPlayers: [String: [String: TeamHistoricalPlayer]]?
+//
+//  These helpers are intentionally lightweight and best-effort: they update the
+//  in-memory league map and persist the full LeagueData JSON using LeagueDiskStore.
+//  This preserves the single-file-per-league model and avoids adding sidecar files.
 //
 
 import Foundation
@@ -50,6 +58,64 @@ class DatabaseManager {
 
     func getWeeklyStatsForPosition(leagueId: String, week: Int, position: String) -> [PlayerWeeklyScore] {
         getWeeklyStatsByPosition(leagueId: leagueId, week: week)[position] ?? []
+    }
+
+    // MARK: --- New per-league cache accessors & persistence helpers ---
+
+    /// Returns the compact per-league ownedPlayers map (CompactPlayer) if present.
+    /// This is the persisted, compact subset of players that were ever rostered or appeared in matchups for the league.
+    @MainActor
+    func getOwnedPlayers(leagueId: String) -> [String: CompactPlayer]? {
+        return leagues[leagueId]?.ownedPlayers
+    }
+
+    /// Returns the teamHistoricalPlayers map for a particular roster/team id (teamId is TeamStanding.id)
+    /// keyed by playerId -> TeamHistoricalPlayer. Returns nil if not present.
+    @MainActor
+    func getTeamHistoricalPlayers(leagueId: String, rosterId: String) -> [String: TeamHistoricalPlayer]? {
+        return leagues[leagueId]?.teamHistoricalPlayers?[rosterId]
+    }
+
+    /// Returns the full teamHistoricalPlayers container for the league (teamId -> playerId -> TeamHistoricalPlayer)
+    @MainActor
+    func getAllTeamHistoricalPlayers(leagueId: String) -> [String: [String: TeamHistoricalPlayer]]? {
+        return leagues[leagueId]?.teamHistoricalPlayers
+    }
+
+    /// Persist updated compact caches into the single LeagueData file for `leagueId`.
+    /// - Updates the in-memory copy and writes the full LeagueData JSON using LeagueDiskStore.shared.saveLeague(_:)
+    /// - Returns true on success (best-effort), false otherwise.
+    /// - This function does not mutate other parts of the league; it only attaches the provided cache maps.
+    @MainActor
+    @discardableResult
+    func persistLeagueCaches(
+        leagueId: String,
+        ownedPlayers: [String: CompactPlayer]?,
+        teamHistoricalPlayers: [String: [String: TeamHistoricalPlayer]]?
+    ) -> Bool {
+        guard var league = leagues[leagueId] ?? LeagueDiskStore.shared.loadLeague(id: leagueId) else {
+            print("[DatabaseManager] persistLeagueCaches: league not loaded: \(leagueId)")
+            return false
+        }
+
+        // Attach caches (nil clears)
+        league.ownedPlayers = ownedPlayers
+        league.teamHistoricalPlayers = teamHistoricalPlayers
+
+        // Update in-memory map
+        leagues[leagueId] = league
+
+        // Persist to disk via the canonical disk store (atomic write inside)
+        do {
+            LeagueDiskStore.shared.saveLeague(league)
+            // Also keep the in-memory DBManager copy consistent (already set above)
+            print("[DatabaseManager] persisted caches for league \(leagueId) (ownedPlayers=\(ownedPlayers?.count ?? 0), teamHistoricalTeams=\(teamHistoricalPlayers?.count ?? 0))")
+            return true
+        } catch {
+            // LeagueDiskStore.saveLeague doesn't currently throw, but defensive logging retained
+            print("[DatabaseManager] failed to persist caches for league \(leagueId): \(error)")
+            return false
+        }
     }
 }
 

@@ -80,6 +80,61 @@ struct H2HMatchDetail: Codable, Equatable {
     let result: String // "W", "L", "T"
 }
 
+// MARK: - Compact per-league player cache (Version B)
+//
+// Stored inside LeagueData as `ownedPlayers`.
+// Purpose: Persist only players that were ever rostered or appeared in matchups for the league.
+// Compact: No weeklyScores, only metadata used to resolve name/position and first/last seen timeline.
+public struct CompactPlayer: Codable, Equatable {
+    let id: String
+    let fullName: String?
+    let position: String?
+    let fantasyPositions: [String]?
+
+    // first/last seen timeline (season id + week)
+    let firstSeenSeason: String?
+    let firstSeenWeek: Int?
+    let lastSeenSeason: String?
+    let lastSeenWeek: Int?
+
+    // last known roster id (roster_id from Sleeper) when observed
+    let lastKnownRosterId: Int?
+
+    // No Longer On Team flag (NLOT)
+    // true => not present on latest-season rosters for the league context
+    let nlot: Bool
+
+    // Optional short notes (developer/debug)
+    let notes: String?
+}
+
+// MARK: - Per-team historical player record (compact)
+//
+// Purpose: small per-team provenance used to resolve historical starters and quick provenance.
+// Stored inside LeagueData as `teamHistoricalPlayers` keyed by teamId -> playerId -> TeamHistoricalPlayer
+public struct TeamHistoricalPlayer: Codable, Equatable {
+    let playerId: String
+    let firstSeenSeason: String?
+    let firstSeenWeek: Int?
+    let lastSeenSeason: String?
+    let lastSeenWeek: Int?
+    let lastKnownPosition: String?
+    let lastKnownName: String?
+    let lastKnownRosterId: Int?
+    let nlot: Bool
+    // Optional compact appearances timeline (seasonId + week) - omit to save space unless needed
+    let appearancesCount: Int?
+    let notes: String?
+}
+
+// Optional: persisted lightweight free-agent snapshot (minimal fields + timestamp).
+// Keep optional and compact (only populated if feature enabled).
+public struct FreeAgentSnapshot: Codable, Equatable {
+    let timestamp: Date
+    let playerIds: [String]    // only ids
+    let notes: String?
+}
+
 // MARK: - Core League Models
 
 struct LeagueData: Identifiable, Codable, Equatable {
@@ -102,6 +157,21 @@ struct LeagueData: Identifiable, Codable, Equatable {
     // NEW: Computed championships container (safe/preserved, doesn't overwrite original TeamStanding.championships)
     // Key: ownerId -> count
     var computedChampionships: [String: Int]? = nil
+
+    // ----------------------------------------------------------------
+    // Version B additions (single-file caches)
+    //
+    // Compact per-league owned players cache (only players that were rostered or appeared in matchups)
+    // Key: playerId -> CompactPlayer
+    var ownedPlayers: [String: CompactPlayer]? = nil
+
+    // Per-team historical player records (teamId -> playerId -> TeamHistoricalPlayer)
+    // teamId corresponds to TeamStanding.id (which is roster_id as a String).
+    var teamHistoricalPlayers: [String: [String: TeamHistoricalPlayer]]? = nil
+
+    // Optional persisted minimal free-agent snapshot for this league (if feature enabled)
+    var freeAgentsSnapshot: FreeAgentSnapshot? = nil
+    // ----------------------------------------------------------------
 }
 
 struct SeasonData: Identifiable, Codable, Equatable {
