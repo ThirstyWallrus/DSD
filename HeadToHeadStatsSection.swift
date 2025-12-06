@@ -2,32 +2,6 @@
 //  HeadToHeadStatsSection.swift
 //  DynastyStatDrop
 //
-//  Extracted Head-to-Head stats UI with per-match history list.
-//  Cleaned: removed debug UI and console diagnostic logging.
-//
-//  CHANGES MADE (per request 2025-12-06):
-//  - Removed the ScrollView around past matchups and switched to a plain VStack listing ALL matches
-//    with the most recent match at the top (sorted by season desc, week desc, matchupId desc).
-//  - Added validation for each historical matchup: the code attempts to locate the original MatchupEntry
-//    for the user in the league seasons' matchup data and recomputes a management % from the matchup
-//    players_points & slot rules (similar to the logic used elsewhere in the app).
-//  - For each past matchup we now attempt to verify that every player in the matchup's player pool
-//    (starters and players) can be resolved either from the historical season team roster or from
-//    the global player cache (leagueManager.playerCache). If any player IDs are not resolvable they
-//    are surfaced as a short inline-warning next to that match row. This satisfies the request to
-//    "make sure all players that were on the roster for the past matchups are accounted for."
-//
-//  Notes about behavior:
-//  - The verification is best-effort: it searches each season's matchupsByWeek to find the MatchupEntry
-//    for the user's roster_id and week. If not found the row will show "Matchup data unavailable".
-//  - The recomputed management % uses the league.startingLineup for slot rules and the same
-//    candidate/slot greedy algorithm used in other parts of the app to determine an optimal max total.
-//  - Missing player IDs (if any) are shown as a small red hint inline; we also print a concise debug
-//    message to the console so developers can find the missing ids more easily during QA.
-//
-//  If you'd like a different UI treatment (popover with full missing-player detail, automated fetch
-//  attempt for missing historical rosters, or a toggle to collapse/expand per-match verification),
-//  tell me and I will update with careful, non-disruptive changes.
 //
 
 import SwiftUI
@@ -163,10 +137,10 @@ struct HeadToHeadStatsSection: View {
                             VStack(alignment: .leading) {
                                 Text("Season \(match.seasonId) • Week \(match.week)")
                                     .font(.caption.bold())
-                                    .foregroundColor(.blue.opacity(0.8))
+                                    .foregroundColor(match.result == "W" ? .green : (match.result == "L" ? .red : .yellow))
                                 Text("Score: \(String(format: "%.2f", match.userPoints)) — \(String(format: "%.2f", match.oppPoints))")
                                     .font(.caption2)
-                                    .foregroundColor(.blue.opacity(0.7))
+                                    .foregroundColor(.white)
                             }
                             Spacer()
                             VStack(alignment: .trailing) {
@@ -174,7 +148,7 @@ struct HeadToHeadStatsSection: View {
                                     .font(.caption.bold())
                                     .foregroundColor(match.result == "W" ? .green : (match.result == "L" ? .red : .yellow))
                                 // Management % display with recomputed check (if available)
-                                if let recomputed = verification.recomputedMgmt {
+                                if let oppMgmt = verification.oppMgmt {
                                     HStack(spacing: 6) {
                                         Text(String(format: "Mgmt: %.2f%%", match.userMgmtPct))
                                             .font(.caption2)
@@ -182,9 +156,9 @@ struct HeadToHeadStatsSection: View {
                                         Text("·")
                                             .font(.caption2)
                                             .foregroundColor(.white.opacity(0.5))
-                                        Text(String(format: "Computed: %.2f%%", recomputed))
+                                        Text(String(format: "%.2f%%", oppMgmt))
                                             .font(.caption2)
-                                            .foregroundColor(Color.mgmtPercentColor(recomputed))
+                                            .foregroundColor(Color.mgmtPercentColor(oppMgmt))
                                     }
                                 } else if verification.matchupMissing {
                                     Text("Matchup data unavailable")
@@ -226,7 +200,7 @@ struct HeadToHeadStatsSection: View {
 
     // A compact result for match verification
     private struct MatchVerification {
-        let recomputedMgmt: Double?
+        let oppMgmt: Double?
         let missingPlayerIds: [String]
         let matchupMissing: Bool
     }
@@ -237,7 +211,7 @@ struct HeadToHeadStatsSection: View {
     private func verifyMatch(_ match: H2HMatchDetail) -> MatchVerification {
         // Try to locate the matchup entry (best-effort across all seasons)
         guard let myEntry = findUserMatchupEntry(for: match) else {
-            return MatchVerification(recomputedMgmt: nil, missingPlayerIds: [], matchupMissing: true)
+            return MatchVerification(oppMgmt: nil, missingPlayerIds: [], matchupMissing: true)
         }
 
         // We have a MatchupEntry for the user for that week/season
@@ -251,7 +225,7 @@ struct HeadToHeadStatsSection: View {
         var unresolved: [String] = []
         let playerCache = leagueManager.playerCache ?? [:]
 
-        let candidatesToCheck = Set((myEntry.starters ?? []) + playersPool)
+        let candidatesToCheck = Set((myEntry.starters ?? []) + playersPool + Array(playersPoints.keys))
 
         for pid in candidatesToCheck {
             // skip padded/zero
@@ -268,16 +242,24 @@ struct HeadToHeadStatsSection: View {
             }
         }
 
-        // Recompute mgmt%: compute actualTotal and maxTotal using the same greedy slot assignment logic
-        // as other parts of the app (best-effort).
-        let recomputed: Double? = recomputeManagementPercent(entry: myEntry, seasonTeam: seasonTeam)
+        guard let oppEntry = findOppMatchupEntry(for: match) else {
+            // Log a concise debug message for QA (non-invasive)
+            if !unresolved.isEmpty {
+                print("[H2H][Verify] Season:\(match.seasonId) Wk:\(match.week) - Unresolved player IDs: \(unresolved)")
+            }
+            return MatchVerification(oppMgmt: nil, missingPlayerIds: unresolved, matchupMissing: false)
+        }
+
+        let oppSeasonTeam = findSeasonTeam(forEntry: oppEntry)
+
+        let oppMgmt: Double? = recomputeManagementPercent(entry: oppEntry, seasonTeam: oppSeasonTeam)
 
         // Log a concise debug message for QA (non-invasive)
         if !unresolved.isEmpty {
             print("[H2H][Verify] Season:\(match.seasonId) Wk:\(match.week) - Unresolved player IDs: \(unresolved)")
         }
 
-        return MatchVerification(recomputedMgmt: recomputed, missingPlayerIds: unresolved, matchupMissing: false)
+        return MatchVerification(oppMgmt: oppMgmt, missingPlayerIds: unresolved, matchupMissing: false)
     }
 
     // Attempt to locate the user's MatchupEntry in the league seasons by week & roster_id.
@@ -302,9 +284,27 @@ struct HeadToHeadStatsSection: View {
         return nil
     }
 
+    private func findOppMatchupEntry(for match: H2HMatchDetail) -> MatchupEntry? {
+        let rosterId = Int(opp.id) ?? -1
+        for season in league.seasons {
+            if let weeks = season.matchupsByWeek {
+                if let entries = weeks[match.week] {
+                    if let candidate = entries.first(where: { $0.roster_id == rosterId && ($0.matchup_id ?? -1) == match.matchupId }) {
+                        return candidate
+                    }
+                    if let candidate = entries.first(where: { $0.roster_id == rosterId }) {
+                        return candidate
+                    }
+                }
+            }
+        }
+        return nil
+    }
+
     // Finds the TeamStanding in the season that corresponds to a given MatchupEntry (if possible).
     // This helps us check the historical roster for that entry.
-    private func findSeasonTeam(forEntry entry: MatchupEntry) -> TeamStanding? {
+    private func findSeasonTeam(forEntry entry: MatchupEntry?) -> TeamStanding? {
+        guard let entry = entry else { return nil }
         // roster_id is Int in entry; find the season containing that entry
         let rosterId = entry.roster_id
         for season in league.seasons {
@@ -325,7 +325,7 @@ struct HeadToHeadStatsSection: View {
     // Recompute Management % for the given matchup entry (user side).
     // Returns nil if recomputation couldn't be performed (insufficient data).
     private func recomputeManagementPercent(entry: MatchupEntry, seasonTeam: TeamStanding?) -> Double? {
-        guard let playersPool = entry.players, !playersPool.isEmpty, let playersPoints = entry.players_points else {
+        guard let playersPoints = entry.players_points, !playersPoints.isEmpty else {
             // Not enough data to recompute
             return nil
         }
@@ -346,7 +346,16 @@ struct HeadToHeadStatsSection: View {
         let playerCache = leagueManager.playerCache ?? [:]
 
         // Build candidate list with normalized base positions and alt positions (normalized)
-        let candidates: [(id: String, basePos: String, altPos: [String], score: Double)] = playersPool.compactMap { pid in
+        // Use a robust id set that includes starters, players, players_points keys, and roster ids
+        var idSet = Set<String>()
+        if let players = entry.players { idSet.formUnion(players) }
+        if let starters = entry.starters { idSet.formUnion(starters) }
+        idSet.formUnion(playersPoints.keys)
+        if let team = seasonTeam {
+            idSet.formUnion(team.roster.map { $0.id })
+        }
+
+        let candidates: [(id: String, basePos: String, altPos: [String], score: Double)] = idSet.compactMap { pid in
             // Attempt to find a historical player object in season team roster
             if let p = seasonTeam?.roster.first(where: { $0.id == pid }) {
                 let base = PositionNormalizer.normalize(p.position)
@@ -359,7 +368,7 @@ struct HeadToHeadStatsSection: View {
                 let alt = (raw.fantasy_positions ?? []).map { PositionNormalizer.normalize($0) }
                 return (id: pid, basePos: base, altPos: alt, score: playersPoints[pid] ?? 0.0)
             }
-            // If we can't resolve any positional info still include with UNK so it may be used if slot allowed contains UNK
+            // Unknown player id and not in roster/playerCache: still include with points if any
             return (id: pid, basePos: PositionNormalizer.normalize("UNK"), altPos: [], score: playersPoints[pid] ?? 0.0)
         }
 
@@ -383,20 +392,13 @@ struct HeadToHeadStatsSection: View {
 
         // Actual total = sum of starters' points (if starters present)
         if let starters = entry.starters {
-            for pid in starters {
+            for pid in starters where pid != "0" {
                 actualTotal += playersPoints[pid] ?? 0.0
-            }
-        } else {
-            // If starters not present, attempt to estimate actual from seasonTeam.actualStartersByWeek if available
-            if let sTeam = seasonTeam {
-                // attempt to find by week mapping in season (not always present); best-effort skip otherwise
-                // (We cannot always reconstruct actual starters without matchup.starters)
             }
         }
 
         for slot in optimalOrder {
             let allowed = allowedPositions(for: slot)
-            // choose best candidate that is not used and is eligible
             let pick = candidates
                 .filter { !used.contains($0.id) && isEligible(($0.id, $0.basePos, $0.altPos, $0.score), allowed: allowed) }
                 .max { $0.score < $1.score }
