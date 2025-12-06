@@ -237,7 +237,7 @@ struct MatchupView: View {
         let rosterId = Int(team.id) ?? -1
         let myEntry = entriesForWeek?.first(where: { $0.roster_id == rosterId })
         let startersFromEntry: [String]? = myEntry?.starters
-        var starters = startersFromEntry ?? team.actualStartersByWeek?[week] ?? []
+        let starters = startersFromEntry ?? team.actualStartersByWeek?[week] ?? []
         var slots = resolvedSlots
         if slots.isEmpty && !starters.isEmpty {
             slots = Array(repeating: "FLEX", count: starters.count)
@@ -566,7 +566,7 @@ struct MatchupView: View {
                         return irToken
                     }
                     if canonical == "TAXI" {
-                        if lineupDebugEnabled { print("[BenchSlotDetect] playerCache.fantasy_positions -> player:\(playerId) matched TAXI via '\(alt)'") }
+                        if lineupDebugEnabled { print("[BenchSlotDetect] playerCache.fantasy_positions -> player:\(playerId) matched IR via '\(alt)'") }
                         return "TAXI"
                     }
                 }
@@ -881,7 +881,7 @@ struct MatchupView: View {
     // MARK: - Matchup Content
     private var matchupContent: some View {
         VStack(alignment: .leading, spacing: 24) {
-            if let user = userTeamStanding, let opp = opponentTeamStanding, let lg = league {
+            if let userDisplay = userTeam, let oppDisplay = opponentTeam, let lg = league {
                 // NOTE: Head-to-head removed from main matchupContent per request.
                 // Matchup Stats (unchanged)
                 VStack(spacing: 8) {
@@ -903,9 +903,9 @@ struct MatchupView: View {
                     let slotW = max(80, min(160, perTeam * 0.55))
                     let scoreW = max(44, min(80, perTeam * 0.18))
                     HStack(spacing: spacing) {
-                        teamCombinedLineupBenchBox(team: userTeam, accent: Color.cyan, title: "\(userDisplayName)'s Lineup", slotLabelWidth: slotW, scoreColumnWidth: scoreW)
+                        teamCombinedLineupBenchBox(team: userDisplay, accent: Color.cyan, title: "\(userDisplayName)'s Lineup", slotLabelWidth: slotW, scoreColumnWidth: scoreW)
                             .frame(width: perTeam, alignment: .leading)
-                        teamCombinedLineupBenchBox(team: opponentTeam, accent: Color.yellow, title: "\(opponentDisplayName)'s Lineup", slotLabelWidth: slotW, scoreColumnWidth: scoreW)
+                        teamCombinedLineupBenchBox(team: oppDisplay, accent: Color.yellow, title: "\(opponentDisplayName)'s Lineup", slotLabelWidth: slotW, scoreColumnWidth: scoreW)
                             .frame(width: perTeam, alignment: .leading)
                     }
                     .padding(16)
@@ -925,7 +925,7 @@ struct MatchupView: View {
     // NEW: Head-to-head mini view content (shown when isH2HActive == true)
     private var headToHeadContent: some View {
         Group {
-            if let user = userTeamStanding, let opp = opponentTeamStanding, let lg = league {
+            if let userDisplay = userTeam, let oppDisplay = opponentTeam, let lg = league {
                 VStack(spacing: 8) {
                     MyTeamView.phattGradientText(Text("Head-To-Head"), size: 18)
                         .frame(maxWidth: .infinity)
@@ -934,8 +934,8 @@ struct MatchupView: View {
                     // derive their own H2H details from league.matchupHistories or compute them directly.
                     // Keep responsibilities separated: MatchupView only provides the two team displays.
                     HeadToHeadStatsSection(
-                        user: user,
-                        opp: opp,
+                        user: userDisplay,
+                        opp: oppDisplay,
                         league: lg,
                         currentSeasonId: appSelection.selectedSeason.isEmpty ? currentSeasonId : appSelection.selectedSeason,
                         currentWeekNumber: currentWeekNumber
