@@ -1164,37 +1164,38 @@ struct MatchupView: View {
         if let season = selectedSeasonData,
            let entries = season.matchupsByWeek?[week],
            let myEntry = entries.first(where: { $0.roster_id == Int(team.id) }),
-           let playersPool = myEntry.players,
            let playersPoints = myEntry.players_points {
+            // Build a robust candidate id set: union of entry.players, entry.starters, players_points keys, and team roster ids
+            var idSet = Set<String>()
+            if let players = myEntry.players { idSet.formUnion(players) }
+            if let starters = myEntry.starters { idSet.formUnion(starters) }
+            idSet.formUnion(playersPoints.keys)
+            idSet.formUnion(team.roster.map { $0.id })
+            // Map idSet to candidate tuples
             let playerCache = leagueManager.playerCache ?? [:]
-            let starters = myEntry.starters ?? []
-            var actualTotal = 0.0
-            var actualOff = 0.0
-            var actualDef = 0.0
-            for pid in starters {
-                let raw = team.roster.first(where: { $0.id == pid }) ??
-                    playerCache[pid].map { raw in
-                        Player(id: pid, position: raw.position ?? "UNK", altPositions: raw.fantasy_positions, weeklyScores: [])
-                    }
-                let pos = PositionNormalizer.normalize(raw?.position ?? "UNK")
+            let candidates: [(id: String, basePos: String, altPos: [String], score: Double)] = idSet.compactMap { pid in
+                // Try season roster first
+                if let p = team.roster.first(where: { $0.id == pid }) {
+                    let basePos = PositionNormalizer.normalize(p.position)
+                    let alt = (p.altPositions ?? []).map { PositionNormalizer.normalize($0) }
+                    let score = playersPoints[pid] ?? 0.0
+                    return (id: pid, basePos: basePos, altPos: alt, score: score)
+                }
+                // fallback to playerCache
+                if let raw = playerCache[pid] {
+                    let basePos = PositionNormalizer.normalize(raw.position ?? "UNK")
+                    let alt = (raw.fantasy_positions ?? []).map { PositionNormalizer.normalize($0) }
+                    let score = playersPoints[pid] ?? 0.0
+                    return (id: pid, basePos: basePos, altPos: alt, score: score)
+                }
+                // Last-resort include with UNK pos
                 let score = playersPoints[pid] ?? 0.0
-                actualTotal += score
-                if ["QB","RB","WR","TE","K"].contains(pos) { actualOff += score }
-                else if ["DL","LB","DB"].contains(pos) { actualDef += score }
+                return (id: pid, basePos: PositionNormalizer.normalize("UNK"), altPos: [], score: score)
             }
+            // Determine starting slots
             var startingSlots: [String] = SlotUtils.sanitizeStartingSlots(league?.startingLineup ?? [])
             if startingSlots.isEmpty, let cfg = team.lineupConfig, !cfg.isEmpty {
                 startingSlots = expandSlots(cfg)
-            }
-            let candidates: [(id: String, basePos: String, altPos: [String], score: Double)] = playersPool.compactMap { pid in
-                let p = team.roster.first(where: { $0.id == pid })
-                    ?? playerCache[pid].map { raw in
-                        Player(id: pid, position: raw.position ?? "UNK", altPositions: raw.fantasy_positions, weeklyScores: [])
-                    }
-                guard let p = p else { return nil }
-                let basePos = PositionNormalizer.normalize(p.position)
-                let alt = (p.altPositions ?? []).map { PositionNormalizer.normalize($0) }
-                return (id: pid, basePos: basePos, altPos: alt, score: myEntry.players_points?[pid] ?? 0.0)
             }
             var strictSlots: [String] = []
             var flexSlots: [String] = []
@@ -1213,9 +1214,24 @@ struct MatchupView: View {
             var maxTotal = 0.0
             var maxOff = 0.0
             var maxDef = 0.0
+            var actualTotal = 0.0
+            var actualOff = 0.0
+            var actualDef = 0.0
+            // compute actual totals from starters using playersPoints
+            if let starters = myEntry.starters {
+                for pid in starters where pid != "0" {
+                    let score = playersPoints[pid] ?? 0.0
+                    actualTotal += score
+                    // derive pos for offense/def split
+                    let rawP = team.roster.first(where: { $0.id == pid })
+                    let pos = PositionNormalizer.normalize(rawP?.position ?? playerCache[pid]?.position ?? "UNK")
+                    if ["QB","RB","WR","TE","K"].contains(pos) { actualOff += score }
+                    else if ["DL","LB","DB"].contains(pos) { actualDef += score }
+                }
+            }
+            // compute max totals using greedy assignment from candidate list
             for slot in optimalOrder {
                 let allowed = allowedPositions(for: slot)
-                // Break up the filter+max into two expressions to help the type checker
                 let candidatePool = candidates.filter { candidate in
                     return !used.contains(candidate.id) && (allowed.contains(candidate.basePos) || !allowed.intersection(Set(candidate.altPos)).isEmpty)
                 }
