@@ -154,9 +154,48 @@ struct ManagementCalculator {
         var maxTotal = 0.0
         var actualTotal = 0.0
 
+        // Attempt to compute actualTotal using entry.players_points for starters preferentially.
+        // BUT: it's possible that players_points exists yet omits some starter ids. We will attempt to augment
+        // playersPoints by scanning season/team rosters (historical), and if unresolved remains while entry.points exists,
+        // treat entry.points as authoritative to avoid undercounting.
+        var unresolvedStarterIds: [String] = []
         if let starters = entry.starters {
             for pid in starters where pid != "0" {
-                actualTotal += playersPoints[pid] ?? 0.0
+                if let val = playersPoints[pid] {
+                    actualTotal += val
+                } else {
+                    // try to find weeklyScores across seasonTeam (already attempted above) OR across league seasons
+                    var found = false
+                    if let lg = league {
+                        for season in lg.seasons {
+                            for sTeam in season.teams {
+                                if let p = sTeam.roster.first(where: { $0.id == pid }),
+                                   let ws = p.weeklyScores.first(where: { $0.week == week }) {
+                                    let v = ws.points_half_ppr ?? ws.points
+                                    playersPoints[pid] = v
+                                    actualTotal += v
+                                    found = true
+                                    break
+                                }
+                            }
+                            if found { break }
+                        }
+                    }
+                    if !found { unresolvedStarterIds.append(pid) }
+                }
+            }
+        }
+
+        // If unresolved starters remain but the entry scalar points is present, prefer the authoritative scalar
+        if !unresolvedStarterIds.isEmpty, let entryScalar = entry.points {
+            // Only override when the difference is meaningful (avoid tiny rounding diffs)
+            let epsilon = 0.01
+            let diff = abs(entryScalar - actualTotal)
+            if diff > epsilon {
+                // Log diagnostically
+                print("[ManagementCalculator] WARNING: players_points for matchup appears incomplete — falling back to entry.points (authoritative). week=\(week) unresolvedStarterIds=\(unresolvedStarterIds) sumResolved=\(String(format: \"%.2f\", actualTotal)) entry.points=\(String(format: \"%.2f\", entryScalar))")
+                // Use entryScalar as actual total to guarantee parity with Sleeper
+                actualTotal = entryScalar
             }
         }
 
@@ -227,21 +266,84 @@ struct ManagementCalculator {
         var actualDef = 0.0
 
         // actual totals from starters
+        // Enhanced: if playersPoints lacks a starter's entry, attempt to find weeklyScores across league seasons.
+        // If unresolved starters remain and entry.points is present, prefer entry.points (authoritative) to avoid omissions.
+        var mutablePlayersPoints = playersPoints // local copy we can augment
+        var unresolvedStarterIds: [String] = []
+
         if let starters = entry.starters {
             for pid in starters where pid != "0" {
-                let score = playersPoints[pid] ?? 0.0
-                actualTotal += score
-                // find position using compact caches before global cache
-                let pPos: String = {
-                    if let p = team.roster.first(where: { $0.id == pid }) { return p.position }
-                    if let compact = league?.ownedPlayers?[pid], let pos = compact.position { return pos }
-                    if let th = league?.teamHistoricalPlayers?[team.id]?[pid], let pos = th.lastKnownPosition { return pos }
-                    if let raw = playerCache[pid], let pos = raw.position { return pos }
-                    return "UNK"
-                }()
-                let norm = PositionNormalizer.normalize(pPos)
-                if ["QB","RB","WR","TE","K"].contains(norm) { actualOff += score }
-                else if ["DL","LB","DB"].contains(norm) { actualDef += score }
+                // Primary: players_point mapping
+                if let score = mutablePlayersPoints[pid] {
+                    actualTotal += score
+                    // find position using compact caches before global cache
+                    let pPos: String = {
+                        if let p = team.roster.first(where: { $0.id == pid }) { return p.position }
+                        if let compact = league?.ownedPlayers?[pid], let pos = compact.position { return pos }
+                        if let th = league?.teamHistoricalPlayers?[team.id]?[pid], let pos = th.lastKnownPosition { return pos }
+                        if let raw = playerCache[pid], let pos = raw.position { return pos }
+                        return "UNK"
+                    }()
+                    let norm = PositionNormalizer.normalize(pPos)
+                    if ["QB","RB","WR","TE","K"].contains(norm) { actualOff += score }
+                    else if ["DL","LB","DB"].contains(norm) { actualDef += score }
+                    continue
+                }
+
+                // Secondary: try to augment playersPoints from season rosters (historical)
+                var found = false
+                if let lg = league {
+                    for s in lg.seasons {
+                        for sTeam in s.teams {
+                            if let p = sTeam.roster.first(where: { $0.id == pid }), let ws = p.weeklyScores.first(where: { $0.week == week }) {
+                                let v = ws.points_half_ppr ?? ws.points
+                                mutablePlayersPoints[pid] = v
+                                actualTotal += v
+                                // determine pPos from the season roster snapshot we just found
+                                let pPos = p.position
+                                let norm = PositionNormalizer.normalize(pPos)
+                                if ["QB","RB","WR","TE","K"].contains(norm) { actualOff += v }
+                                else if ["DL","LB","DB"].contains(norm) { actualDef += v }
+                                found = true
+                                break
+                            }
+                        }
+                        if found { break }
+                    }
+                }
+                if !found {
+                    unresolvedStarterIds.append(pid)
+                }
+            }
+        }
+
+        // If unresolved starters remain but the entry scalar points exists, prefer entry.points as authoritative for actualTotal.
+        if !unresolvedStarterIds.isEmpty, let entryScalar = entry.points {
+            let epsilon = 0.01
+            let diff = abs(entryScalar - actualTotal)
+            if diff > epsilon {
+                print("[ManagementCalculator] WARNING: incomplete players_points for matchup; using entry.points as authoritative. week=\(week) team=\(team.name) roster=\(team.id) unresolvedStarterIds=\(unresolvedStarterIds) sumResolved=\(String(format: \"%.2f\", actualTotal)) entry.points=\(String(format: \"%.2f\", entryScalar))")
+                // Replace actualTotal with the authoritative entry scalar
+                let previousActualTotal = actualTotal
+                actualTotal = entryScalar
+
+                // To preserve the offensive/defensive split as best-effort:
+                // - If we have any resolved actualOff/actualDef we will scale them proportionally
+                //   such that actualOff + actualDef == actualTotal while preserving known ratio.
+                let knownSplit = actualOff + actualDef
+                if knownSplit > 0 {
+                    let scale = actualTotal / knownSplit
+                    actualOff *= scale
+                    actualDef *= scale
+                } else {
+                    // No resolved split information (all starters missing positions/scores). Best-effort default:
+                    // assign entire actualTotal to actualOff (conservative) then actualDef = 0 (will be corrected later by consumers if needed)
+                    actualOff = actualTotal
+                    actualDef = 0.0
+                }
+
+                // Log the adjustment
+                print("[ManagementCalculator] INFO: adjusted actualOff=\(String(format: \"%.2f\", actualOff)) actualDef=\(String(format: \"%.2f\", actualDef)) to match authoritative total")
             }
         }
 
