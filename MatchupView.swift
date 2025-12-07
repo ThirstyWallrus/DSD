@@ -602,7 +602,9 @@ struct MatchupView: View {
 
         #if DEBUG
         if lineupDebugEnabled {
-            print("[MatchupView] teamDisplay: using lineup sum for team=\(team.name) week=\(week) totalFromLineup=\(String(format: \"%.2f\", totalFromLineup)) computedMax=\(String(format: \"%.2f\", computedMax))")
+            let fmtTotal = String(format: "%.2f", totalFromLineup)
+            let fmtMax = String(format: "%.2f", computedMax)
+            print("[MatchupView] teamDisplay: using lineup sum for team=\(team.name) week=\(week) totalFromLineup=\(fmtTotal) computedMax=\(fmtMax)")
         }
         #endif
 
