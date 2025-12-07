@@ -74,6 +74,10 @@ struct MatchupView: View {
     @State private var lineupDebugEnabled: Bool = true
     // NEW: H2H mini-view toggle
     @State private var isH2HActive: Bool = false
+
+    // NEW: Show bench & mgmt debug panel
+    @State private var showMgmtDebug: Bool = false
+
     // MARK: - Centralized Selection
     private var league: LeagueData? { appSelection.selectedLeague }
     // Only show real seasons for the selected league (NO "All Time" here)
@@ -594,7 +598,15 @@ struct MatchupView: View {
         let lineup = orderedLineup(for: team, week: week)
         let bench = orderedBench(for: team, week: week)
         // Delegate to shared ManagementCalculator for canonical computation (max totals etc.)
-        let (_, computedMax, _, _, _, _) = ManagementCalculator.computeManagementForWeek(team: team, week: week, league: self.league ?? team.league, leagueManager: leagueManager)
+        let (_, calcMax, _, _, _, _) = ManagementCalculator.computeManagementForWeek(team: team, week: week, league: self.league ?? team.league, leagueManager: leagueManager)
+
+        // HYBRID FALLBACK: prefer computed per-week max (calcMax) if > 0; otherwise fall back to persisted season-level team.maxPointsFor when present
+        let computedMax: Double = {
+            if calcMax > 0 { return calcMax }
+            if team.maxPointsFor > 0 { return team.maxPointsFor }
+            return calcMax // zero
+        }()
+        let usedFallbackSeasonMax = (calcMax <= 0 && team.maxPointsFor > 0)
 
         // CRITICAL: Use lineup-derived sum for the displayed "Points" so the Matchup Stats must match Lineups.
         // This guarantees the Matchup Stats "Points" equals the sum of player.points displayed in the Lineups UI.
@@ -603,8 +615,9 @@ struct MatchupView: View {
         #if DEBUG
         if lineupDebugEnabled {
             let fmtTotal = String(format: "%.2f", totalFromLineup)
+            let fmtCalc = String(format: "%.2f", calcMax)
             let fmtMax = String(format: "%.2f", computedMax)
-            print("[MatchupView] teamDisplay: using lineup sum for team=\(team.name) week=\(week) totalFromLineup=\(fmtTotal) computedMax=\(fmtMax)")
+            print("[MatchupView] teamDisplay: team=\(team.name) week=\(week) totalFromLineup=\(fmtTotal) calcMax=\(fmtCalc) computedMax=\(fmtMax) usedFallbackSeasonMax=\(usedFallbackSeasonMax)")
         }
         #endif
 
@@ -679,6 +692,10 @@ struct MatchupView: View {
                             headToHeadContent
                         } else {
                             matchupContent
+                        }
+                        // Debug panel (collapsible)
+                        if showMgmtDebug {
+                            debugPanel
                         }
                     }
                     .frame(maxWidth: maxContentWidth)
@@ -898,9 +915,21 @@ struct MatchupView: View {
                 // NOTE: Head-to-head removed from main matchupContent per request.
                 // Matchup Stats (unchanged)
                 VStack(spacing: 8) {
-                    MyTeamView.phattGradientText(Text("Matchup Stats"), size: 18)
-                        .frame(maxWidth: .infinity)
-                        .multilineTextAlignment(.center)
+                    HStack {
+                        MyTeamView.phattGradientText(Text("Matchup Stats"), size: 18)
+                            .frame(maxWidth: .infinity)
+                            .multilineTextAlignment(.center)
+                        // Debug toggle (small)
+                        Button(action: { withAnimation { showMgmtDebug.toggle() } }) {
+                            Text(showMgmtDebug ? "Hide Debug" : "Show Debug")
+                                .font(.caption)
+                                .bold()
+                                .foregroundColor(.orange)
+                                .padding(6)
+                                .background(RoundedRectangle(cornerRadius: 8).fill(Color.black.opacity(0.5)))
+                        }
+                        .padding(.trailing, 8)
+                    }
                     scoresSection
                 }
                 // Lineups (unchanged)
@@ -1099,124 +1128,134 @@ struct MatchupView: View {
         .foregroundColor(.white)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
-    // MARK: (Legacy) teamLineupBox and teamBenchBox remain for reference but are no longer used by the combined layout.
-    private func teamLineupBox(team: TeamDisplay?, accent: Color, title: String, slotLabelWidth: CGFloat = 160, scoreColumnWidth: CGFloat = 60) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            let (head, tail) = splitTitle(title)
-            VStack(spacing: 2) {
-                Text(head)
-                    .font(.headline.bold())
-                    .foregroundColor(.orange)
-                    .multilineTextAlignment(.center)
-                Text(tail)
-                    .font(.subheadline)
-                    .foregroundColor(.white.opacity(0.9))
-                    .multilineTextAlignment(.center)
+    // MARK: - Debug Panel (Bench & Mgmt% inspection)
+    private var debugPanel: some View {
+        Group {
+            if let userTS = userTeamStanding, let oppTS = opponentTeamStanding, let lg = league {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Debug: Bench & Mgmt%")
+                        .font(.headline)
+                        .foregroundColor(.orange)
+                    HStack(alignment: .top, spacing: 12) {
+                        benchDebugBox(for: userTS, week: currentWeekNumber, title: "\(userDisplayName) (\(userTS.name))")
+                        benchDebugBox(for: oppTS, week: currentWeekNumber, title: "\(opponentDisplayName) (\(oppTS.name))")
+                    }
+                    .padding(8)
+                    .background(RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(0.02)))
+                }
+                .padding(8)
+            } else {
+                EmptyView()
             }
-            .frame(maxWidth: .infinity)
-            if let lineup = team?.lineup {
-                ForEach(lineup) { player in
+        }
+    }
+    private func benchDebugBox(for team: TeamStanding, week: Int, title: String) -> some View {
+        let season = selectedSeasonData
+        let entriesForWeek = season?.matchupsByWeek?[week]
+        let rosterId = Int(team.id) ?? -1
+        let myEntry = entriesForWeek?.first(where: { $0.roster_id == rosterId })
+        // Compute players_points counts and roster-derived weekly-scores count
+        let playersPointsCount = myEntry?.players_points?.count ?? 0
+        var rosterScoresCount = 0
+        if let s = season {
+            var seen = Set<String>()
+            for sTeam in s.teams {
+                for p in sTeam.roster {
+                    if let _ = p.weeklyScores.first(where: { $0.week == week }) {
+                        seen.insert(p.id)
+                    }
+                }
+            }
+            rosterScoresCount = seen.count
+        }
+        // compute computedMax and whether fallback used
+        let (_, calcMax, _, _, _, _) = ManagementCalculator.computeManagementForWeek(team: team, week: week, league: self.league ?? team.league, leagueManager: leagueManager)
+        let computedMax = (calcMax > 0) ? calcMax : (team.maxPointsFor > 0 ? team.maxPointsFor : calcMax)
+        let usedFallback = (calcMax <= 0 && team.maxPointsFor > 0)
+        // bench details
+        let benchList = orderedBench(for: team, week: week)
+        return VStack(alignment: .leading, spacing: 8) {
+            Text(title).font(.subheadline.bold()).foregroundColor(.white)
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Mgmt% summary").font(.caption.bold()).foregroundColor(.orange)
+                    Text("computedMax: \(String(format: \"%.2f\", computedMax))")
+                        .font(.caption)
+                        .foregroundColor(.white)
+                    Text("usedFallbackSeasonMax: \(usedFallback ? "YES" : "NO")")
+                        .font(.caption)
+                        .foregroundColor(usedFallback ? .yellow : .white)
+                    Text("players_points count: \(playersPointsCount)")
+                        .font(.caption)
+                        .foregroundColor(.white)
+                    Text("roster weekly-scores found: \(rosterScoresCount)")
+                        .font(.caption)
+                        .foregroundColor(.white)
+                    if let scalar = myEntry?.points {
+                        Text("entry.points (scalar): \(String(format: \"%.2f\", scalar))")
+                            .font(.caption)
+                            .foregroundColor(.white)
+                    }
+                }
+                Spacer()
+            }
+            Divider().background(Color.white.opacity(0.06))
+            Text("Bench players (id - slot - points - source)")
+                .font(.caption.bold())
+                .foregroundColor(.orange)
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(benchList) { p in
                     HStack {
-                        Group {
-                            if let slotColor = player.slotColor {
-                                Text(player.displaySlot)
-                                    .foregroundColor(slotColor)
-                                    .frame(width: slotLabelWidth, alignment: .leading)
-                                    .lineLimit(1)
-                                    .minimumScaleFactor(0.7)
-                            } else {
-                                Text(player.displaySlot)
-                                    .foregroundColor(positionColor(player.creditedPosition))
-                                    .frame(width: slotLabelWidth, alignment: .leading)
-                                    .lineLimit(1)
-                                    .minimumScaleFactor(0.7)
-                            }
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("\(p.id) • \(p.displaySlot)")
+                                .font(.caption)
+                                .foregroundColor(.white)
+                            Text("pts: \(String(format: \"%.2f\", p.points)) • src: \(scoreSourceFor(playerId: p.id, team: team, week: week, myEntry: myEntry, season: season))")
+                                .font(.caption2)
+                                .foregroundColor(Color.white.opacity(0.8))
                         }
                         Spacer()
-                        Text(String(format: "%.2f", player.points))
-                            .foregroundColor(.green)
-                            .frame(width: scoreColumnWidth, alignment: .trailing)
                     }
+                    .padding(4)
+                    .background(RoundedRectangle(cornerRadius: 6).fill(Color.black.opacity(0.3)))
                 }
-            } else {
-                Text("No lineup data").foregroundColor(.gray)
             }
         }
-        .foregroundColor(.white)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(8)
+        .frame(maxWidth: .infinity)
     }
-    private func teamBenchBox(team: TeamDisplay?, accent: Color, title: String, slotLabelWidth: CGFloat = 160, scoreColumnWidth: CGFloat = 60) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            let (head, tail) = splitTitle(title)
-            VStack(spacing: 2) {
-                Text(head)
-                    .font(.headline.bold())
-                    .foregroundColor(.orange)
-                    .multilineTextAlignment(.center)
-                Text(tail)
-                    .font(.subheadline)
-                    .foregroundColor(.white.opacity(0.9))
-                    .multilineTextAlignment(.center)
-            }
-            .frame(maxWidth: .infinity)
-            if let bench = team?.bench {
-                ForEach(bench) { player in
-                    HStack {
-                        Text(player.displaySlot)
-                            .foregroundColor(positionColor(player.creditedPosition))
-                            .frame(width: slotLabelWidth, alignment: .leading)
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.7)
-                        Spacer()
-                        Text(String(format: "%.2f", player.points))
-                            .foregroundColor(.green.opacity(0.7))
-                            .frame(width: scoreColumnWidth, alignment: .trailing)
-                    }
+    /// Best-effort detection of where a player's weekly score was sourced from.
+    private func scoreSourceFor(playerId: String, team: TeamStanding, week: Int, myEntry: MatchupEntry?, season: SeasonData?) -> String {
+        // 1) matchup entry players_points
+        if let entry = myEntry, let pp = entry.players_points, pp[playerId] != nil {
+            return "entry.players_points"
+        }
+        // 2) selected season rosters weeklyScores
+        if let s = season {
+            for sTeam in s.teams {
+                if let p = sTeam.roster.first(where: { $0.id == playerId }), let _ = p.weeklyScores.first(where: { $0.week == week }) {
+                    return "season.roster"
                 }
-            } else {
-                Text("No bench data").foregroundColor(.gray)
             }
         }
-        .foregroundColor(.white)
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-    private func positionColor(_ pos: String) -> Color {
-        switch pos {
-        case "QB": return .red
-        case "RB": return .green
-        case "WR": return .blue
-        case "TE": return .yellow
-        case "K": return .purple.opacity(0.6)
-        case "DL": return .orange
-        case "LB": return .purple
-        case "DB": return .pink
-        default: return .white
+        // 3) league compact ownedPlayers
+        if let compact = league?.ownedPlayers?[playerId] {
+            // compact has no weeklyScores but can indicate seen players
+            return "ownedPlayers"
         }
-    }
-    private func colorForPosition(_ pos: String) -> Color {
-        switch pos {
-        case "QB": return .red
-        case "RB": return .green
-        case "WR": return .blue
-        case "TE": return .yellow
-        case "K": return .purple.opacity(0.6)
-        case "DL": return .orange
-        case "LB": return .purple
-        case "DB": return .pink
-        default: return .white
+        // 4) teamHistoricalPlayers
+        if let th = league?.teamHistoricalPlayers?[team.id]?[playerId] {
+            return "teamHistorical"
         }
+        // 5) global player cache
+        if let raw = leagueManager.playerCache?[playerId] {
+            // global cache doesn't include weeklyScores but is still a provenance source
+            return "playerCache"
+        }
+        return "none"
     }
-    private func fixedSlotCounts(startingSlots: [String]) -> [String: Int] {
-        startingSlots.reduce(into: [:]) { $0[$1, default: 0] += 1 }
-    }
-    private func expandSlots(_ config: [String: Int]) -> [String] {
-        let sanitized = SlotUtils.sanitizeStartingLineupConfig(config)
-        return sanitized.flatMap { Array(repeating: $0.key, count: $0.value) }
-    }
-    // Management calculation for TeamDisplay — delegated to ManagementCalculator above
-    private func computeManagementForWeek(team: TeamStanding, week: Int) -> (Double, Double, Double, Double, Double, Double) {
-        return ManagementCalculator.computeManagementForWeek(team: team, week: week, league: self.league ?? team.league, leagueManager: leagueManager)
-    }
+    // MARK: - Helper: Username Extraction (duplicate removed)
+    // (kept earlier userDisplayName/userTeamName functions above)
     // MARK: - Debug helpers
     private func debugLogTeamLineup(
         team: TeamStanding,
@@ -1276,5 +1315,42 @@ struct MatchupView: View {
             print("\(prefix) final ordered lineup length matches expected slots")
         }
         print("\(prefix) roster size=\(team.roster.count), bench candidates (non-starters) count=\(team.roster.filter { !(team.actualStartersByWeek?[week] ?? []).contains($0.id) }.count)")
+    }
+    private func positionColor(_ pos: String) -> Color {
+        switch pos {
+        case "QB": return .red
+        case "RB": return .green
+        case "WR": return .blue
+        case "TE": return .yellow
+        case "K": return .purple.opacity(0.6)
+        case "DL": return .orange
+        case "LB": return .purple
+        case "DB": return .pink
+        default: return .white
+        }
+    }
+    private func colorForPosition(_ pos: String) -> Color {
+        switch pos {
+        case "QB": return .red
+        case "RB": return .green
+        case "WR": return .blue
+        case "TE": return .yellow
+        case "K": return .purple.opacity(0.6)
+        case "DL": return .orange
+        case "LB": return .purple
+        case "DB": return .pink
+        default: return .white
+        }
+    }
+    private func fixedSlotCounts(startingSlots: [String]) -> [String: Int] {
+        startingSlots.reduce(into: [:]) { $0[$1, default: 0] += 1 }
+    }
+    private func expandSlots(_ config: [String: Int]) -> [String] {
+        let sanitized = SlotUtils.sanitizeStartingLineupConfig(config)
+        return sanitized.flatMap { Array(repeating: $0.key, count: $0.value) }
+    }
+    // Management calculation for TeamDisplay — delegated to ManagementCalculator above
+    private func computeManagementForWeek(team: TeamStanding, week: Int) -> (Double, Double, Double, Double, Double, Double) {
+        return ManagementCalculator.computeManagementForWeek(team: team, week: week, league: self.league ?? team.league, leagueManager: leagueManager)
     }
 }
