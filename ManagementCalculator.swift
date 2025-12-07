@@ -24,15 +24,15 @@ struct ManagementCalculator {
     ///   - leagueManager: for player cache resolution when roster snapshots don't contain position info.
     /// - Returns: (actualTotal, maxTotal, actualOff, maxOff, actualDef, maxDef)
     static func computeManagementForWeek(team: TeamStanding, week: Int, league: LeagueData?, leagueManager: SleeperLeagueManager) -> (Double, Double, Double, Double, Double, Double) {
-        // If a league is provided, prioritize the season that contains the TeamStanding passed in.
+        // If a league is provided, prefer the season containing the matchup/week for augmentation and candidate pool.
         if let lg = league {
-            // Build ordered seasons with the season containing the team first (if any).
+            // Build an ordered seasons list that places the containing season first when possible.
             var seasonsOrdered: [SeasonData] = []
             if let containingSeason = lg.seasons.first(where: { season in
-                season.teams.contains(where: { $0.id == team.id })
+                // include seasons that have matchups for the requested week and include this team id
+                (season.matchupsByWeek?[week] != nil) && season.teams.contains(where: { $0.id == team.id })
             }) {
                 seasonsOrdered.append(containingSeason)
-                // Append the rest preserving existing order but without duplicating the containingSeason
                 seasonsOrdered.append(contentsOf: lg.seasons.filter { $0.id != containingSeason.id })
             } else {
                 seasonsOrdered = lg.seasons
@@ -41,85 +41,53 @@ struct ManagementCalculator {
             for season in seasonsOrdered {
                 if let weeks = season.matchupsByWeek, let entries = weeks[week] {
                     if let entry = entries.first(where: { $0.roster_id == Int(team.id) }) {
-                        // Found a matchup entry -> compute using entry players_points preferentially
+                        // Found a matchup entry -> compute using entry.players_points preferentially
                         if let playersPoints = entry.players_points, !playersPoints.isEmpty {
-                            // AUGMENT playersPoints but ONLY for IDs that are relevant to this matchup/team.
+                            // AUGMENT playersPoints but ONLY using the season-team roster for that matchup/week.
+                            // ENFORCE: Only include players that were on this roster snapshot during this season/week.
                             var augmented = playersPoints // copy to mutate
 
-                            // Build targeted id set to avoid pulling in whole-season players
-                            var idsToCheck = Set<String>()
-                            if let ps = entry.players { idsToCheck.formUnion(ps) }
-                            if let sts = entry.starters { idsToCheck.formUnion(sts) }
-                            idsToCheck.formUnion(team.roster.map { $0.id })
-                            if let ownedKeys = lg.ownedPlayers?.keys { idsToCheck.formUnion(ownedKeys) }
-                            if let thKeys = lg.teamHistoricalPlayers?[team.id]?.keys { idsToCheck.formUnion(thKeys) }
+                            // Determine the seasonTeam snapshot corresponding to this team in this season
+                            guard let seasonTeam = season.teams.first(where: { $0.id == String(entry.roster_id) }) else {
+                                // Fall back to computeUsingMatchupEntry which will itself try to be conservative.
+                                return computeUsingMatchupEntry(team: team, entry: entry, playersPoints: augmented, league: lg, leagueManager: leagueManager, week: week)
+                            }
 
-                            // Scan the containing season first (best chance to find historical/IR/taxi snapshots)
-                            for sTeam in season.teams {
-                                for p in sTeam.roster {
-                                    if augmented[p.id] == nil, idsToCheck.contains(p.id) {
-                                        if let ws = p.weeklyScores.first(where: { $0.week == week }) {
-                                            augmented[p.id] = ws.points_half_ppr ?? ws.points
-                                        }
+                            // Build roster ids for this season/team (these are the only eligible players for MAX)
+                            let rosterIds = Set(seasonTeam.roster.map { $0.id })
+                            let startersSet = Set(entry.starters ?? [])
+
+                            // Augment: only take weeklyScores from the seasonTeam's roster and only for rosterIds.
+                            for p in seasonTeam.roster {
+                                if augmented[p.id] == nil {
+                                    // If player marked IR/TAXI and NOT a starter, skip augmenting them for max eligibility.
+                                    let isIRorTaxi = explicitIrorTaxiFromRoster(player: p, entry: entry, league: lg, leagueManager: leagueManager)
+                                    if isIRorTaxi && !startersSet.contains(p.id) { continue }
+                                    if let ws = p.weeklyScores.first(where: { $0.week == week }) {
+                                        augmented[p.id] = ws.points_half_ppr ?? ws.points
                                     }
                                 }
                             }
 
-                            // Then scan other seasons only for ids in idsToCheck
-                            for s in lg.seasons where s.id != season.id {
-                                for sTeam in s.teams {
-                                    for p in sTeam.roster {
-                                        if augmented[p.id] == nil, idsToCheck.contains(p.id) {
-                                            if let ws = p.weeklyScores.first(where: { $0.week == week }) {
-                                                augmented[p.id] = ws.points_half_ppr ?? ws.points
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-
+                            // IMPORTANT: do NOT scan other seasons for augmentation. The requirement is strict:
+                            // Only players that were on that roster during that matchup/week are eligible for Max.
                             return computeUsingMatchupEntry(team: team, entry: entry, playersPoints: augmented, league: lg, leagueManager: leagueManager, week: week)
                         } else {
-                            // No players_points present: build fallback but LIMIT to ids that make sense to consider.
-                            // We will include:
-                            // - starters list
-                            // - entry.players list (if present)
-                            // - team's current roster
-                            // - league ownedPlayers & teamHistoricalPlayers for this team
-                            var idsToCheck = Set<String>()
-                            if let ps = entry.players { idsToCheck.formUnion(ps) }
-                            if let sts = entry.starters { idsToCheck.formUnion(sts) }
-                            idsToCheck.formUnion(team.roster.map { $0.id })
-                            if let ownedKeys = lg.ownedPlayers?.keys { idsToCheck.formUnion(ownedKeys) }
-                            if let thKeys = lg.teamHistoricalPlayers?[team.id]?.keys { idsToCheck.formUnion(thKeys) }
-
+                            // No players_points present: build a fallback map from THIS season's team roster ONLY.
+                            // Only include players who were on that roster snapshot during the week.
                             var fallback: [String: Double] = [:]
-                            // Scan season teams but only add weeklyScores for idsToCheck
-                            for sTeam in season.teams {
-                                for p in sTeam.roster {
-                                    if idsToCheck.contains(p.id), fallback[p.id] == nil {
-                                        if let ws = p.weeklyScores.first(where: { $0.week == week }) {
-                                            fallback[p.id] = ws.points_half_ppr ?? ws.points
-                                        }
-                                    }
+                            guard let seasonTeam = season.teams.first(where: { $0.id == String(entry.roster_id) }) else {
+                                break
+                            }
+                            let startersSet = Set(entry.starters ?? [])
+                            for p in seasonTeam.roster {
+                                // Exclude IR/TAXI players from fallback unless they are starters
+                                let isIRorTaxi = explicitIrorTaxiFromRoster(player: p, entry: entry, league: lg, leagueManager: leagueManager)
+                                if isIRorTaxi && !startersSet.contains(p.id) { continue }
+                                if let ws = p.weeklyScores.first(where: { $0.week == week }) {
+                                    fallback[p.id] = ws.points_half_ppr ?? ws.points
                                 }
                             }
-
-                            // If we still missing some ids (e.g., historical snapshots in other seasons), scan other seasons but still limited
-                            if !idsToCheck.isEmpty {
-                                for s in lg.seasons where s.id != season.id {
-                                    for sTeam in s.teams {
-                                        for p in sTeam.roster {
-                                            if idsToCheck.contains(p.id), fallback[p.id] == nil {
-                                                if let ws = p.weeklyScores.first(where: { $0.week == week }) {
-                                                    fallback[p.id] = ws.points_half_ppr ?? ws.points
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-
                             if !fallback.isEmpty {
                                 return computeUsingMatchupEntry(team: team, entry: entry, playersPoints: fallback, league: lg, leagueManager: leagueManager, week: week)
                             }
@@ -132,7 +100,7 @@ struct ManagementCalculator {
             }
         }
 
-        // Legacy roster-based computation (fallback)
+        // Legacy roster-based computation (fallback) — uses the TeamStanding.roster as best-effort
         return legacyRosterBasedManagement(team: team, week: week, league: league, leagueManager: leagueManager)
     }
 
@@ -152,24 +120,19 @@ struct ManagementCalculator {
             }
         }
 
-        // EXTENDED FALLBACK: If still empty and we have a league, scan season team rosters but LIMIT to relevant ids
+        // EXTENDED FALLBACK: If still empty and we have a league, scan seasons but LIMIT to the season/team roster that contains this matchup.
         if playersPoints.isEmpty, let lg = league {
-            // Build idsToCheck from entry + seasonTeam + league caches
-            var idsToCheck = Set<String>()
-            if let ps = entry.players { idsToCheck.formUnion(ps) }
-            if let sts = entry.starters { idsToCheck.formUnion(sts) }
-            if let t = seasonTeam { idsToCheck.formUnion(t.roster.map { $0.id }) }
-            if let owned = lg.ownedPlayers?.keys { idsToCheck.formUnion(owned) }
-            if let th = lg.teamHistoricalPlayers?[seasonTeam?.id ?? ""]?.keys { idsToCheck.formUnion(th) }
-
-            for season in lg.seasons {
-                for sTeam in season.teams {
-                    for p in sTeam.roster {
-                        if playersPoints[p.id] == nil, idsToCheck.contains(p.id) {
-                            if let s = p.weeklyScores.first(where: { $0.week == week }) {
-                                playersPoints[p.id] = s.points_half_ppr ?? s.points
-                            }
-                        }
+            // Find the season that contains this matchup entry (if any)
+            if let seasonContaining = lg.seasons.first(where: { season in
+                season.matchupsByWeek?[week]?.contains(where: { $0.roster_id == entry.roster_id }) ?? false
+            }), let seasonTeam = seasonContaining.teams.first(where: { $0.id == String(entry.roster_id) }) {
+                let startersSet = Set(entry.starters ?? [])
+                for p in seasonTeam.roster {
+                    // Exclude IR/TAXI unless starter
+                    let isIRorTaxi = explicitIrorTaxiFromRoster(player: p, entry: entry, league: lg, leagueManager: leagueManager)
+                    if isIRorTaxi && !startersSet.contains(p.id) { continue }
+                    if playersPoints[p.id] == nil, let s = p.weeklyScores.first(where: { $0.week == week }) {
+                        playersPoints[p.id] = s.points_half_ppr ?? s.points
                     }
                 }
             }
@@ -192,14 +155,28 @@ struct ManagementCalculator {
         let playerCache = leagueManager.playerCache ?? [:]
 
         // Build candidate pool using a safe lookup order:
-        // 1) seasonTeam.roster
-        // 2) league.ownedPlayers (CompactPlayer)
-        // 3) league.teamHistoricalPlayers for this roster/team
-        // 4) global playerCache (full RawSleeperPlayer)
-        // 5) fallback "UNK"
+        // IMPORTANT: Only include players that were on the seasonTeam roster for that matchup/week.
+        // We assemble pidSet from playersPoints keys intersected with seasonTeam.roster (if available), else fallback to playersPoints keys.
+        var pidSet = Set(playersPoints.keys)
+        if let lg = league {
+            if let seasonContaining = lg.seasons.first(where: { season in
+                season.matchupsByWeek?[week]?.contains(where: { $0.roster_id == entry.roster_id }) ?? false
+            }), let seasonTeam = seasonContaining.teams.first(where: { $0.id == String(entry.roster_id) }) {
+                let rosterIds = Set(seasonTeam.roster.map { $0.id })
+                pidSet.formIntersection(rosterIds)
+                // If intersection empties but starters are listed, prefer starters restricted to roster
+                let startersInRoster = Set(entry.starters ?? []).intersection(rosterIds)
+                pidSet.formUnion(startersInRoster)
+            }
+        }
+
+        // Fallback: if pidSet ended empty (odd case), use playersPoints keys directly (defensive)
+        if pidSet.isEmpty { pidSet = Set(playersPoints.keys) }
+
+        // Build candidate array restricted to pidSet
         var candidates: [(id: String, basePos: String, altPos: [String], score: Double)] = []
-        for pid in Set(Array(playersPoints.keys) + (seasonTeam?.roster.map { $0.id } ?? [])) {
-            if let p = seasonTeam?.roster.first(where: { $0.id == pid }) {
+        for pid in pidSet {
+            if let p = seasonTeamFor(entry: entry, league: league)?.roster.first(where: { $0.id == pid }) {
                 candidates.append((id: pid, basePos: PositionNormalizer.normalize(p.position), altPos: (p.altPositions ?? []).map { PositionNormalizer.normalize($0) }, score: playersPoints[pid] ?? 0.0))
                 continue
             }
@@ -207,11 +184,6 @@ struct ManagementCalculator {
                 let base = PositionNormalizer.normalize(compact.position ?? "UNK")
                 let alts = (compact.fantasyPositions ?? []).map { PositionNormalizer.normalize($0) }
                 candidates.append((id: pid, basePos: base, altPos: alts, score: playersPoints[pid] ?? 0.0))
-                continue
-            }
-            if let teamHist = league?.teamHistoricalPlayers?[seasonTeam?.id ?? ""]?[pid] {
-                let base = PositionNormalizer.normalize(teamHist.lastKnownPosition ?? "UNK")
-                candidates.append((id: pid, basePos: base, altPos: [], score: playersPoints[pid] ?? 0.0))
                 continue
             }
             if let raw = playerCache[pid] {
@@ -240,7 +212,7 @@ struct ManagementCalculator {
         var actualTotal = 0.0
 
         // Attempt to compute actualTotal using entry.players_points for starters preferentially.
-        // We will attempt to augment playersPoints when starter ids missing (limited search).
+        // We will attempt to augment playersPoints for missing starter ids only from the seasonTeam roster.
         var mutablePlayersPoints = playersPoints
         var unresolvedStarterIds: [String] = []
         if let starters = entry.starters {
@@ -248,21 +220,18 @@ struct ManagementCalculator {
                 if let val = mutablePlayersPoints[pid] {
                     actualTotal += val
                 } else {
-                    // try to find weeklyScores across league seasons but limited to this pid only
+                    // try to find weeklyScores in seasonTeam roster only
                     var found = false
                     if let lg = league {
-                        for season in lg.seasons {
-                            for sTeam in season.teams {
-                                if let p = sTeam.roster.first(where: { $0.id == pid }),
-                                   let ws = p.weeklyScores.first(where: { $0.week == week }) {
-                                    let v = ws.points_half_ppr ?? ws.points
-                                    mutablePlayersPoints[pid] = v
-                                    actualTotal += v
-                                    found = true
-                                    break
-                                }
+                        if let seasonContaining = lg.seasons.first(where: { season in
+                            season.matchupsByWeek?[week]?.contains(where: { $0.roster_id == entry.roster_id }) ?? false
+                        }), let seasonTeam = seasonContaining.teams.first(where: { $0.id == String(entry.roster_id) }) {
+                            if let p = seasonTeam.roster.first(where: { $0.id == pid }), let ws = p.weeklyScores.first(where: { $0.week == week }) {
+                                let v = ws.points_half_ppr ?? ws.points
+                                mutablePlayersPoints[pid] = v
+                                actualTotal += v
+                                found = true
                             }
-                            if found { break }
                         }
                     }
                     if !found { unresolvedStarterIds.append(pid) }
@@ -298,65 +267,77 @@ struct ManagementCalculator {
     // MARK: - Private helpers (encapsulated)
 
     /// Main worker: compute totals using a provided playersPoints map.
-    /// IMPORTANT: do not let playersPoints.keys expand to entire-season players unless those ids are relevant.
+    /// IMPORTANT: Candidate pool is strictly limited to players that were on the seasonTeam roster
+    /// for the matchup/week. Do not include players from other teams or other seasons.
     private static func computeUsingMatchupEntry(team: TeamStanding, entry: MatchupEntry, playersPoints: [String: Double], league: LeagueData?, leagueManager: SleeperLeagueManager, week: Int) -> (Double, Double, Double, Double, Double, Double) {
         let playerCache = leagueManager.playerCache ?? [:]
 
-        // Build idSet targeted to the matchup/team context
-        var idSet = Set<String>()
-        if let players = entry.players { idSet.formUnion(players) }
-        if let starters = entry.starters { idSet.formUnion(starters) }
-        idSet.formUnion(team.roster.map { $0.id })
-        // Include keys of playersPoints if they were supplied intentionally (but be careful)
-        // We'll only use playersPoints keys if they seem relevant: intersection with team/entry/league caches
-        // This prevents a full-season playersPoints map from expanding idSet blindly.
-        let playersPointsKeys = Set(playersPoints.keys)
-        // If there's any overlap with our known caches, include only those overlaps; otherwise include playersPoints keys
-        // but prefer to limit — pragmatic compromise:
-        var includePPKeys = Set<String>()
-        includePPKeys.formUnion(playersPointsKeys.intersection(idSet))
-        if includePPKeys.isEmpty {
-            // Try intersection with league compact caches
-            if let owned = league?.ownedPlayers?.keys {
-                includePPKeys.formUnion(playersPointsKeys.intersection(Set(owned)))
-            }
-            if includePPKeys.isEmpty {
-                if let th = league?.teamHistoricalPlayers?[team.id]?.keys {
-                    includePPKeys.formUnion(playersPointsKeys.intersection(Set(th)))
-                }
-            }
-            // Last resort: if playersPointsKeys are starters/entry players, include them
-            includePPKeys.formUnion(playersPointsKeys.intersection((entry.players ?? []) + (entry.starters ?? [])))
+        // Determine seasonTeam (season snapshot) containing this matchup entry if possible
+        let seasonContaining = league.flatMap { lg in
+            lg.seasons.first(where: { season in
+                season.matchupsByWeek?[week]?.contains(where: { $0.roster_id == entry.roster_id }) ?? false
+            })
         }
-        idSet.formUnion(includePPKeys)
+        let seasonTeam = seasonContaining?.teams.first(where: { $0.id == String(entry.roster_id) })
+
+        // If we have a seasonTeam, eligible roster IDs for MAX are exactly that roster's player ids.
+        var eligibleRosterIds: Set<String> = []
+        if let sTeam = seasonTeam {
+            eligibleRosterIds = Set(sTeam.roster.map { $0.id })
+        } else {
+            // Fallback: use the provided TeamStanding.roster (best-effort)
+            eligibleRosterIds = Set(team.roster.map { $0.id })
+        }
+
+        // Build idSet targeted to the roster snapshot --- ONLY players present on that roster snapshot are eligible.
+        // Also allow inclusion of starters from entry if they are present in eligibleRosterIds.
+        var idSet = eligibleRosterIds
+        if let starters = entry.starters {
+            idSet.formUnion(starters.filter { eligibleRosterIds.contains($0) })
+        }
+        if let players = entry.players {
+            idSet.formUnion(players.filter { eligibleRosterIds.contains($0) })
+        }
+        // Also include any playersPoints keys that appear in the roster (defensive)
+        idSet.formUnion(Set(playersPoints.keys).intersection(eligibleRosterIds))
 
         // Local mutable copy we may augment for missing ids in idSet (only those ids)
         var mutablePlayersPoints = playersPoints
 
-        // AUGMENT playersPoints for any ids in idSet that are missing a score by scanning league seasons
-        if let lg = league {
-            // Preference: scan season that likely contains the matchup (season that includes team first)
-            var seasonsToScan = lg.seasons
-            if let containing = lg.seasons.first(where: { $0.teams.contains(where: { $0.id == team.id }) }) {
-                seasonsToScan.removeAll { $0.id == containing.id }
-                seasonsToScan.insert(containing, at: 0)
-            }
-
-            for season in seasonsToScan {
-                for sTeam in season.teams {
-                    for p in sTeam.roster {
-                        if mutablePlayersPoints[p.id] == nil && idSet.contains(p.id) {
-                            if let ws = p.weeklyScores.first(where: { $0.week == week }) {
-                                mutablePlayersPoints[p.id] = ws.points_half_ppr ?? ws.points
-                            }
-                        }
+        // AUGMENT playersPoints for any ids in idSet that are missing a score by scanning the seasonTeam roster only
+        if let sTeam = seasonTeam {
+            let startersSet = Set(entry.starters ?? [])
+            for p in sTeam.roster {
+                if idSet.contains(p.id), mutablePlayersPoints[p.id] == nil {
+                    // Skip augment for Taxi/IR players unless they are starters (policy)
+                    if explicitIrorTaxiFromRoster(player: p, entry: entry, league: league, leagueManager: leagueManager) && !startersSet.contains(p.id) {
+                        continue
                     }
+                    if let ws = p.weeklyScores.first(where: { $0.week == week }) {
+                        mutablePlayersPoints[p.id] = ws.points_half_ppr ?? ws.points
+                    }
+                }
+            }
+        } else {
+            // If no seasonTeam available, attempt to augment from provided team.roster but still limit to idSet
+            for p in team.roster where idSet.contains(p.id) {
+                if mutablePlayersPoints[p.id] == nil, let ws = p.weeklyScores.first(where: { $0.week == week }) {
+                    mutablePlayersPoints[p.id] = ws.points_half_ppr ?? ws.points
                 }
             }
         }
 
-        // Build candidates using compact cache-aware lookup order
-        let candidates: [(id: String, basePos: String, altPos: [String], score: Double)] = idSet.map { pid in
+        // Build candidates using compact cache-aware lookup order, but only for ids in idSet
+        let candidates: [(id: String, basePos: String, altPos: [String], score: Double)] = idSet.compactMap { pid in
+            // Exclude IR/TAXI players from candidates unless they are starters (this preserves earlier policy)
+            let startersSet = Set(entry.starters ?? [])
+            if explicitIrorTaxi(pid: pid, entry: entry, seasonTeam: seasonTeam, league: league, leagueManager: leagueManager) && !startersSet.contains(pid) {
+                return nil
+            }
+
+            if let p = seasonTeam?.roster.first(where: { $0.id == pid }) {
+                return (id: pid, basePos: PositionNormalizer.normalize(p.position), altPos: (p.altPositions ?? []).map { PositionNormalizer.normalize($0) }, score: mutablePlayersPoints[pid] ?? 0.0)
+            }
             if let p = team.roster.first(where: { $0.id == pid }) {
                 return (id: pid, basePos: PositionNormalizer.normalize(p.position), altPos: (p.altPositions ?? []).map { PositionNormalizer.normalize($0) }, score: mutablePlayersPoints[pid] ?? 0.0)
             }
@@ -398,7 +379,7 @@ struct ManagementCalculator {
         var actualOff = 0.0
         var actualDef = 0.0
 
-        // Actual totals from starters: try playersPoints first, augment from seasons for missing starter ids
+        // Actual totals from starters: try playersPoints first, augment from seasonTeam roster for missing starter ids
         var unresolvedStarterIds: [String] = []
         var mutableForActual = mutablePlayersPoints
         if let starters = entry.starters {
@@ -407,6 +388,7 @@ struct ManagementCalculator {
                     actualTotal += score
                     // find position using compact caches before global cache
                     let pPos: String = {
+                        if let p = seasonTeam?.roster.first(where: { $0.id == pid }) { return p.position }
                         if let p = team.roster.first(where: { $0.id == pid }) { return p.position }
                         if let compact = league?.ownedPlayers?[pid], let pos = compact.position { return pos }
                         if let th = league?.teamHistoricalPlayers?[team.id]?[pid], let pos = th.lastKnownPosition { return pos }
@@ -419,25 +401,17 @@ struct ManagementCalculator {
                     continue
                 }
 
-                // Secondary: try to augment playersPoints from season rosters (historical)
+                // Secondary: try to augment playersPoints from seasonTeam roster only
                 var found = false
-                if let lg = league {
-                    for s in lg.seasons {
-                        for sTeam in s.teams {
-                            if let p = sTeam.roster.first(where: { $0.id == pid }), let ws = p.weeklyScores.first(where: { $0.week == week }) {
-                                let v = ws.points_half_ppr ?? ws.points
-                                mutablePlayersPoints[pid] = v
-                                actualTotal += v
-                                // determine pPos from the season roster snapshot we just found
-                                let pPos = p.position
-                                let norm = PositionNormalizer.normalize(pPos)
-                                if ["QB","RB","WR","TE","K"].contains(norm) { actualOff += v }
-                                else if ["DL","LB","DB"].contains(norm) { actualDef += v }
-                                found = true
-                                break
-                            }
-                        }
-                        if found { break }
+                if let sTeam = seasonTeam {
+                    if let p = sTeam.roster.first(where: { $0.id == pid }), let ws = p.weeklyScores.first(where: { $0.week == week }) {
+                        let v = ws.points_half_ppr ?? ws.points
+                        mutablePlayersPoints[pid] = v
+                        actualTotal += v
+                        let norm = PositionNormalizer.normalize(p.position)
+                        if ["QB","RB","WR","TE","K"].contains(norm) { actualOff += v }
+                        else if ["DL","LB","DB"].contains(norm) { actualDef += v }
+                        found = true
                     }
                 }
                 if !found {
@@ -455,7 +429,6 @@ struct ManagementCalculator {
                 let formattedEntry = String(format: "%.2f", entryScalar)
                 print("[ManagementCalculator] WARNING: incomplete players_points for matchup; using entry.points as authoritative. week=\(week) team=\(team.name) roster=\(team.id) unresolvedStarterIds=\(unresolvedStarterIds) sumResolved=\(formattedResolved) entry.points=\(formattedEntry)")
                 // Replace actualTotal with the authoritative entry scalar
-                let previousActualTotal = actualTotal
                 actualTotal = entryScalar
 
                 // To preserve the offensive/defensive split as best-effort:
@@ -468,7 +441,7 @@ struct ManagementCalculator {
                     actualDef *= scale
                 } else {
                     // No resolved split information (all starters missing positions/scores). Best-effort default:
-                    // assign entire actualTotal to actualOff (conservative) then actualDef = 0 (will be corrected later by consumers if needed)
+                    // assign entire actualTotal to actualOff (conservative) then actualDef = 0
                     actualOff = actualTotal
                     actualDef = 0.0
                 }
@@ -569,6 +542,60 @@ struct ManagementCalculator {
         let maxTotal = maxOff + maxDef
 
         return (actualTotal, maxTotal, actualOff, maxOff, actualDef, maxDef)
+    }
+
+    // MARK: Helper utilities used above
+
+    /// Return the SeasonData.team snapshot that contains `entry` if available
+    private static func seasonTeamFor(entry: MatchupEntry, league: LeagueData?) -> TeamStanding? {
+        guard let lg = league else { return nil }
+        for season in lg.seasons {
+            if let weeks = season.matchupsByWeek, weeks.keys.contains(where: { _ in true }) {
+                if let entries = season.matchupsByWeek?.values.flatMap({ $0 }), entries.contains(where: { $0.roster_id == entry.roster_id }) {
+                    return season.teams.first(where: { $0.id == String(entry.roster_id) })
+                }
+            }
+        }
+        return nil
+    }
+
+    /// Conservative check: determine if an explicit IR/TAXI token exists for a player using approximate provenance
+    /// used to exclude IR/TAXI from Max candidates (unless starter).
+    private static func explicitIrorTaxiFromRoster(player: Player, entry: MatchupEntry, league: LeagueData?, leagueManager: SleeperLeagueManager) -> Bool {
+        // Check explicit players_slots in entry if available
+        if let rawMap = entry.players_slots, let token = rawMap[player.id] {
+            let up = token.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+            if up.contains("IR") || up.contains("TAXI") { return true }
+        }
+        // Check player's own altPositions / position tokens
+        let checks = ([player.position] + (player.altPositions ?? [])).compactMap { $0 }.map { $0.uppercased() }
+        for c in checks {
+            if c.contains("IR") || c.contains("TAXI") { return true }
+        }
+        // Per-league ownedPlayers or teamHistorical not needed here because we are operating strictly from roster snapshot
+        return false
+    }
+
+    /// Slightly more general check by id (used when we only have id and not Player)
+    private static func explicitIrorTaxi(pid: String, entry: MatchupEntry, seasonTeam: TeamStanding?, league: LeagueData?, leagueManager: SleeperLeagueManager) -> Bool {
+        // 1) entry.players_slots
+        if let map = entry.players_slots, let raw = map[pid] {
+            let up = raw.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+            if up.contains("IR") || up.contains("TAXI") { return true }
+        }
+        // 2) seasonTeam roster altPositions
+        if let sTeam = seasonTeam, let p = sTeam.roster.first(where: { $0.id == pid }) {
+            let checks = ([p.position] + (p.altPositions ?? [])).compactMap { $0 }.map { $0.uppercased() }
+            for c in checks { if c.contains("IR") || c.contains("TAXI") { return true } }
+        }
+        // 3) league compact caches (safe, but we will still later restrict eligibility to roster)
+        if let lg = league {
+            if let comp = lg.ownedPlayers?[pid], let pos = comp.position?.uppercased(), pos.contains("IR") { return true }
+            if let th = lg.teamHistoricalPlayers?[String(entry.roster_id)]?[pid], let pos = th.lastKnownPosition?.uppercased(), (pos.contains("IR") || pos.contains("TAXI")) { return true }
+        }
+        // 4) global player cache
+        if let mgr = leagueManager, let raw = mgr.playerCache?[pid], let pos = raw.position?.uppercased(), pos.contains("IR") { return true }
+        return false
     }
 
     // Small util helpers duplicated/embedded to avoid coupling
