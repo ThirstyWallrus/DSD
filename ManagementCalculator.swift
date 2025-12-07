@@ -289,9 +289,9 @@ struct ManagementCalculator {
             }
         }
 
-        // If maxTotal is zero (no usable candidates), return nil-like behavior by returning zeros
-        if maxTotal <= 0 { return (actualTotal, 0, 0, 0, 0, 0) }
-        // We return mgmt% in older API, but here callers expect totals; keep consistent
+        // If maxTotal is zero (no usable candidates), return nil so caller knows percent couldn't be computed
+        if maxTotal <= 0 { return nil }
+        // Return management percentage
         return (actualTotal / maxTotal) * 100.0
     }
 
@@ -405,7 +405,7 @@ struct ManagementCalculator {
             for pid in starters where pid != "0" {
                 if let score = mutableForActual[pid] {
                     actualTotal += score
-                    // find position
+                    // find position using compact caches before global cache
                     let pPos: String = {
                         if let p = team.roster.first(where: { $0.id == pid }) { return p.position }
                         if let compact = league?.ownedPlayers?[pid], let pos = compact.position { return pos }
@@ -419,16 +419,18 @@ struct ManagementCalculator {
                     continue
                 }
 
-                // Try to find weeklyScores in seasons for this single pid
+                // Secondary: try to augment playersPoints from season rosters (historical)
                 var found = false
                 if let lg = league {
                     for s in lg.seasons {
                         for sTeam in s.teams {
                             if let p = sTeam.roster.first(where: { $0.id == pid }), let ws = p.weeklyScores.first(where: { $0.week == week }) {
                                 let v = ws.points_half_ppr ?? ws.points
-                                mutableForActual[pid] = v
+                                mutablePlayersPoints[pid] = v
                                 actualTotal += v
-                                let norm = PositionNormalizer.normalize(p.position)
+                                // determine pPos from the season roster snapshot we just found
+                                let pPos = p.position
+                                let norm = PositionNormalizer.normalize(pPos)
                                 if ["QB","RB","WR","TE","K"].contains(norm) { actualOff += v }
                                 else if ["DL","LB","DB"].contains(norm) { actualDef += v }
                                 found = true
@@ -438,30 +440,46 @@ struct ManagementCalculator {
                         if found { break }
                     }
                 }
-                if !found { unresolvedStarterIds.append(pid) }
-            }
-        }
-
-        // If unresolved starters and entry.points present, prefer entry.points
-        if !unresolvedStarterIds.isEmpty, let entryScalar = entry.points {
-            let epsilon = 0.01
-            let diff = abs(entryScalar - actualTotal)
-            if diff > epsilon {
-                actualTotal = entryScalar
-                // scale split proportionally if we had any known split
-                let known = actualOff + actualDef
-                if known > 0 {
-                    let scale = actualTotal / known
-                    actualOff *= scale
-                    actualDef *= scale
-                } else {
-                    actualOff = actualTotal
-                    actualDef = 0.0
+                if !found {
+                    unresolvedStarterIds.append(pid)
                 }
             }
         }
 
-        // Greedy selection for max
+        // If unresolved starters remain but the entry scalar points exists, prefer entry.points as authoritative for actualTotal.
+        if !unresolvedStarterIds.isEmpty, let entryScalar = entry.points {
+            let epsilon = 0.01
+            let diff = abs(entryScalar - actualTotal)
+            if diff > epsilon {
+                let formattedResolved = String(format: "%.2f", actualTotal)
+                let formattedEntry = String(format: "%.2f", entryScalar)
+                print("[ManagementCalculator] WARNING: incomplete players_points for matchup; using entry.points as authoritative. week=\(week) team=\(team.name) roster=\(team.id) unresolvedStarterIds=\(unresolvedStarterIds) sumResolved=\(formattedResolved) entry.points=\(formattedEntry)")
+                // Replace actualTotal with the authoritative entry scalar
+                let previousActualTotal = actualTotal
+                actualTotal = entryScalar
+
+                // To preserve the offensive/defensive split as best-effort:
+                // - If we have any resolved actualOff/actualDef we will scale them proportionally
+                //   such that actualOff + actualDef == actualTotal while preserving known ratio.
+                let knownSplit = actualOff + actualDef
+                if knownSplit > 0 {
+                    let scale = actualTotal / knownSplit
+                    actualOff *= scale
+                    actualDef *= scale
+                } else {
+                    // No resolved split information (all starters missing positions/scores). Best-effort default:
+                    // assign entire actualTotal to actualOff (conservative) then actualDef = 0 (will be corrected later by consumers if needed)
+                    actualOff = actualTotal
+                    actualDef = 0.0
+                }
+
+                // Log the adjustment
+                let fmtOff = String(format: "%.2f", actualOff)
+                let fmtDef = String(format: "%.2f", actualDef)
+                print("[ManagementCalculator] INFO: adjusted actualOff=\(fmtOff) actualDef=\(fmtDef) to match authoritative total")
+            }
+        }
+
         for slot in optimalOrder {
             let allowed = allowedPositions(for: slot)
             let pool = candidates.filter { c in !used.contains(c.id) && (allowed.contains(c.basePos) || !allowed.intersection(Set(c.altPos)).isEmpty) }
