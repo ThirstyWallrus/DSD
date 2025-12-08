@@ -61,7 +61,8 @@ struct ManagementCalculator {
                             for p in seasonTeam.roster {
                                 if augmented[p.id] == nil {
                                     // If player marked IR/TAXI and NOT a starter, skip augmenting them for max eligibility.
-                                    let isIRorTaxi = explicitIrorTaxiFromRoster(player: p, entry: entry, league: lg, leagueManager: leagueManager)
+                                    // => USE NEW explicitIRorTaxiFromRoster helper so IR and TAXI detection are distinct and explicit
+                                    let isIRorTaxi = explicitIRorTaxiFromRoster(player: p, entry: entry, league: lg, leagueManager: leagueManager)
                                     if isIRorTaxi && !startersSet.contains(p.id) { continue }
                                     if let ws = p.weeklyScores.first(where: { $0.week == week }) {
                                         augmented[p.id] = ws.points_half_ppr ?? ws.points
@@ -82,7 +83,7 @@ struct ManagementCalculator {
                             let startersSet = Set(entry.starters ?? [])
                             for p in seasonTeam.roster {
                                 // Exclude IR/TAXI players from fallback unless they are starters
-                                let isIRorTaxi = explicitIrorTaxiFromRoster(player: p, entry: entry, league: lg, leagueManager: leagueManager)
+                                let isIRorTaxi = explicitIRorTaxiFromRoster(player: p, entry: entry, league: lg, leagueManager: leagueManager)
                                 if isIRorTaxi && !startersSet.contains(p.id) { continue }
                                 if let ws = p.weeklyScores.first(where: { $0.week == week }) {
                                     fallback[p.id] = ws.points_half_ppr ?? ws.points
@@ -129,7 +130,7 @@ struct ManagementCalculator {
                 let startersSet = Set(entry.starters ?? [])
                 for p in seasonTeam.roster {
                     // Exclude IR/TAXI unless starter
-                    let isIRorTaxi = explicitIrorTaxiFromRoster(player: p, entry: entry, league: lg, leagueManager: leagueManager)
+                    let isIRorTaxi = explicitIRorTaxiFromRoster(player: p, entry: entry, league: lg, leagueManager: leagueManager)
                     if isIRorTaxi && !startersSet.contains(p.id) { continue }
                     if playersPoints[p.id] == nil, let s = p.weeklyScores.first(where: { $0.week == week }) {
                         playersPoints[p.id] = s.points_half_ppr ?? s.points
@@ -310,7 +311,7 @@ struct ManagementCalculator {
             for p in sTeam.roster {
                 if idSet.contains(p.id), mutablePlayersPoints[p.id] == nil {
                     // Skip augment for Taxi/IR players unless they are starters (policy)
-                    if explicitIrorTaxiFromRoster(player: p, entry: entry, league: league, leagueManager: leagueManager) && !startersSet.contains(p.id) {
+                    if explicitIRorTaxiFromRoster(player: p, entry: entry, league: league, leagueManager: leagueManager) && !startersSet.contains(p.id) {
                         continue
                     }
                     if let ws = p.weeklyScores.first(where: { $0.week == week }) {
@@ -331,7 +332,7 @@ struct ManagementCalculator {
         let candidates: [(id: String, basePos: String, altPos: [String], score: Double)] = idSet.compactMap { pid in
             // Exclude IR/TAXI players from candidates unless they are starters (this preserves earlier policy)
             let startersSet = Set(entry.starters ?? [])
-            if explicitIrorTaxi(pid: pid, entry: entry, seasonTeam: seasonTeam, league: league, leagueManager: leagueManager) && !startersSet.contains(pid) {
+            if explicitIRorTaxi(pid: pid, entry: entry, seasonTeam: seasonTeam, league: league, leagueManager: leagueManager) && !startersSet.contains(pid) {
                 return nil
             }
 
@@ -559,43 +560,104 @@ struct ManagementCalculator {
         return nil
     }
 
-    /// Conservative check: determine if an explicit IR/TAXI token exists for a player using approximate provenance
-    /// used to exclude IR/TAXI from Max candidates (unless starter).
-    private static func explicitIrorTaxiFromRoster(player: Player, entry: MatchupEntry, league: LeagueData?, leagueManager: SleeperLeagueManager) -> Bool {
-        // Check explicit players_slots in entry if available
+    // ---- NEW: Explicit IR / TAXI detection helpers ----
+    // These helpers intentionally distinguish IR and TAXI tokens so callers can treat them differently.
+    // They search (in order):
+    //   1) entry.players_slots mapping (if present) — most authoritative for a given matchup
+    //   2) player's altPositions / position tokens (roster snapshot)
+    //   3) compact league caches and teamHistoricalPlayers as a last resort
+    //
+    // All token checks are case-insensitive. They look for substring matches ("IR", "INJ", "TAXI") to be robust.
+
+    /// Detect if a Player (roster snapshot) is an IR-designated player for this matchup entry.
+    private static func explicitIRFromRoster(player: Player, entry: MatchupEntry, league: LeagueData?, leagueManager: SleeperLeagueManager) -> Bool {
+        // 1) entry.players_slots
         if let rawMap = entry.players_slots, let token = rawMap[player.id] {
             let up = token.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
-            if up.contains("IR") || up.contains("TAXI") { return true }
+            if up.contains("IR") || up.contains("INJ") { return true }
         }
-        // Check player's own altPositions / position tokens
+        // 2) player's own altPositions / position tokens
         let checks = ([player.position] + (player.altPositions ?? [])).compactMap { $0 }.map { $0.uppercased() }
         for c in checks {
-            if c.contains("IR") || c.contains("TAXI") { return true }
+            if c.contains("IR") || c.contains("INJ") { return true }
         }
-        // Per-league ownedPlayers or teamHistorical not needed here because we are operating strictly from roster snapshot
+        // 3) fallthrough to caches is not performed here because we operate strictly from roster snapshot
         return false
     }
 
-    /// Slightly more general check by id (used when we only have id and not Player)
-    private static func explicitIrorTaxi(pid: String, entry: MatchupEntry, seasonTeam: TeamStanding?, league: LeagueData?, leagueManager: SleeperLeagueManager) -> Bool {
+    /// Detect if a Player (roster snapshot) is a TAXI-designated (taxi squad) player for this matchup entry.
+    private static func explicitTaxiFromRoster(player: Player, entry: MatchupEntry, league: LeagueData?, leagueManager: SleeperLeagueManager) -> Bool {
+        // 1) entry.players_slots
+        if let rawMap = entry.players_slots, let token = rawMap[player.id] {
+            let up = token.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+            if up.contains("TAXI") || up.contains("TAX") { return true }
+        }
+        // 2) player's own altPositions / position tokens
+        let checks = ([player.position] + (player.altPositions ?? [])).compactMap { $0 }.map { $0.uppercased() }
+        for c in checks {
+            if c.contains("TAXI") || c.contains("TAX") { return true }
+        }
+        return false
+    }
+
+    /// Wrapper: returns true if player is IR or TAXI according to roster snapshot / entry mapping.
+    private static func explicitIRorTaxiFromRoster(player: Player, entry: MatchupEntry, league: LeagueData?, leagueManager: SleeperLeagueManager) -> Bool {
+        return explicitIRFromRoster(player: player, entry: entry, league: league, leagueManager: leagueManager)
+            || explicitTaxiFromRoster(player: player, entry: entry, league: league, leagueManager: leagueManager)
+    }
+
+    /// Slightly more general check by id (used when we only have id and not Player).
+    /// Checks (in order):
+    ///   1) entry.players_slots mapping
+    ///   2) seasonTeam roster altPositions
+    ///   3) league compact caches
+    ///   4) global player cache
+    private static func explicitIR(pid: String, entry: MatchupEntry, seasonTeam: TeamStanding?, league: LeagueData?, leagueManager: SleeperLeagueManager) -> Bool {
         // 1) entry.players_slots
         if let map = entry.players_slots, let raw = map[pid] {
             let up = raw.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
-            if up.contains("IR") || up.contains("TAXI") { return true }
+            if up.contains("IR") || up.contains("INJ") { return true }
         }
         // 2) seasonTeam roster altPositions
         if let sTeam = seasonTeam, let p = sTeam.roster.first(where: { $0.id == pid }) {
             let checks = ([p.position] + (p.altPositions ?? [])).compactMap { $0 }.map { $0.uppercased() }
-            for c in checks { if c.contains("IR") || c.contains("TAXI") { return true } }
+            for c in checks { if c.contains("IR") || c.contains("INJ") { return true } }
         }
-        // 3) league compact caches (safe, but we will still later restrict eligibility to roster)
+        // 3) league compact caches
         if let lg = league {
-            if let comp = lg.ownedPlayers?[pid], let pos = comp.position?.uppercased(), pos.contains("IR") { return true }
-            if let th = lg.teamHistoricalPlayers?[String(entry.roster_id)]?[pid], let pos = th.lastKnownPosition?.uppercased(), (pos.contains("IR") || pos.contains("TAXI")) { return true }
+            if let comp = lg.ownedPlayers?[pid], let pos = comp.position?.uppercased(), pos.contains("IR") || pos.contains("INJ") { return true }
+            if let th = lg.teamHistoricalPlayers?[String(entry.roster_id)]?[pid], let pos = th.lastKnownPosition?.uppercased(), (pos.contains("IR") || pos.contains("INJ")) { return true }
         }
-        // 4) global player cache (leagueManager is non-optional; access directly)
-        if let raw = leagueManager.playerCache?[pid], let pos = raw.position?.uppercased(), pos.contains("IR") { return true }
+        // 4) global player cache
+        if let raw = leagueManager.playerCache?[pid], let pos = raw.position?.uppercased(), pos.contains("IR") || pos.contains("INJ") { return true }
         return false
+    }
+
+    private static func explicitTaxi(pid: String, entry: MatchupEntry, seasonTeam: TeamStanding?, league: LeagueData?, leagueManager: SleeperLeagueManager) -> Bool {
+        // 1) entry.players_slots
+        if let map = entry.players_slots, let raw = map[pid] {
+            let up = raw.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+            if up.contains("TAXI") || up.contains("TAX") { return true }
+        }
+        // 2) seasonTeam roster altPositions
+        if let sTeam = seasonTeam, let p = sTeam.roster.first(where: { $0.id == pid }) {
+            let checks = ([p.position] + (p.altPositions ?? [])).compactMap { $0 }.map { $0.uppercased() }
+            for c in checks { if c.contains("TAXI") || c.contains("TAX") { return true } }
+        }
+        // 3) league compact caches
+        if let lg = league {
+            if let comp = lg.ownedPlayers?[pid], let pos = comp.position?.uppercased(), pos.contains("TAXI") || pos.contains("TAX") { return true }
+            if let th = lg.teamHistoricalPlayers?[String(entry.roster_id)]?[pid], let pos = th.lastKnownPosition?.uppercased(), (pos.contains("TAXI") || pos.contains("TAX")) { return true }
+        }
+        // 4) global player cache
+        if let raw = leagueManager.playerCache?[pid], let pos = raw.position?.uppercased(), pos.contains("TAXI") || pos.contains("TAX") { return true }
+        return false
+    }
+
+    /// Wrapper: true if pid is either IR or TAXI using the id-based checks
+    private static func explicitIRorTaxi(pid: String, entry: MatchupEntry, seasonTeam: TeamStanding?, league: LeagueData?, leagueManager: SleeperLeagueManager) -> Bool {
+        return explicitIR(pid: pid, entry: entry, seasonTeam: seasonTeam, league: league, leagueManager: leagueManager)
+            || explicitTaxi(pid: pid, entry: entry, seasonTeam: seasonTeam, league: league, leagueManager: leagueManager)
     }
 
     // Small util helpers duplicated/embedded to avoid coupling
