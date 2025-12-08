@@ -783,6 +783,8 @@ class SleeperLeagueManager: ObservableObject {
         }()
 
         // Ensure each roster has an entry for every week up to effectiveLastWeek
+        var totalPlaceholders = 0
+        var totalEntriesWithEmptyPlayersPoints = 0
         for wk in 1...effectiveLastWeek {
             var completedEntries = out[wk] ?? []
             let existingIds = Set(completedEntries.map { $0.roster_id })
@@ -803,8 +805,29 @@ class SleeperLeagueManager: ObservableObject {
                         players_slots: nil // set to nil so populatePlayersSlots can inject only when appropriate
                     )
                 )
+                totalPlaceholders += 1
             }
             out[wk] = completedEntries
+
+            // Count how many entries for this week have no players_points (possible placeholders or empty API responses)
+            let empties = (out[wk] ?? []).filter { $0.players_points == nil || $0.players_points?.isEmpty == true }.count
+            if empties > 0 { totalEntriesWithEmptyPlayersPoints += empties }
+        }
+
+        // Diagnostic summary print (non-destructive)
+        print("[Diagnostics][fetchMatchupsByWeek] league=\(leagueId) heuristicCurrentWeek=\(heuristicCurrentWeek) effectiveLastWeek=\(effectiveLastWeek) totalPlaceholders=\(totalPlaceholders) totalEntriesWithEmptyPlayersPoints=\(totalEntriesWithEmptyPlayersPoints)")
+
+        // Also print up to 5 sample weeks that had empties for quicker triage
+        var sampleWeeks: [Int] = []
+        for (wk, entries) in out.sorted(by: { $0.key < $1.key }) {
+            let empties = entries.filter { $0.players_points == nil || $0.players_points?.isEmpty == true }.count
+            if empties > 0 {
+                sampleWeeks.append(wk)
+                if sampleWeeks.count >= 5 { break }
+            }
+        }
+        if !sampleWeeks.isEmpty {
+            print("[Diagnostics][fetchMatchupsByWeek] sampleWeeksWithEmptyPlayersPoints=\(sampleWeeks)")
         }
 
         return out
@@ -1138,7 +1161,11 @@ class SleeperLeagueManager: ObservableObject {
         var scores: [PlayerWeeklyScore] = []
         for (week, entries) in matchups {
             guard let me = entries.first(where: { $0.roster_id == rosterId }),
-                  let pts = me.players_points?[playerId] else { continue }
+                  let pts = me.players_points?[playerId] else {
+                // Diagnostic: log missing weekly score for player/week (non-fatal)
+                print("[Diagnostics][weeklyScores] missing players_points for player=\(playerId) roster=\(rosterId) week=\(week)")
+                continue
+            }
             scores.append(PlayerWeeklyScore(
                 week: week,
                 points: pts,

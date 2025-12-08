@@ -545,7 +545,7 @@ struct ManagementCalculator {
         return (actualTotal, maxTotal, actualOff, maxOff, actualDef, maxDef)
     }
 
-    // MARK: Helper utilities used above
+    // MARK: - Helper utilities used above
 
     /// Return the SeasonData.team snapshot that contains `entry` if available
     private static func seasonTeamFor(entry: MatchupEntry, league: LeagueData?) -> TeamStanding? {

@@ -485,6 +485,7 @@ struct AllTimeAggregator {
                 if let starters = entry.starters { idSet.formUnion(starters) }
                 idSet.formUnion(playersPoints.keys)
                 for p in roster { idSet.insert(p.id) }
+                print("[Diagnostics][computeMaxForEntry] idSet was empty after roster intersection — using permissive fallback rosterCount=\(roster.count) wk=\(week ?? -1)")
             }
         } else {
             // No roster available: preserve previous permissive idSet behavior
@@ -542,6 +543,10 @@ struct AllTimeAggregator {
                 return (id: id, basePos: PositionNormalizer.normalize("UNK"), fantasy: [], points: pts)
             }
         }
+
+        // Diagnostics: report key counts so we can trace missing candidates/scores that reduce computed max
+        let nonZeroCandidates = candidates.filter { $0.points > 0.0 }.count
+        print("[Diagnostics][computeMaxForEntry] week=\(week ?? -1) rosterCount=\(teamRoster?.count ?? 0) playersPointsCount=\(playersPoints.count) idSetCount=\(idSet.count) candidatesCount=\(candidates.count) nonZeroCandidates=\(nonZeroCandidates) mutablePlayersPointsCount=\(mutablePlayersPoints.count)")
 
         var expandedSlots: [String] = []
         if !sanitizedConfig.isEmpty {
