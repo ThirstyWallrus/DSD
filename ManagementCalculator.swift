@@ -15,10 +15,6 @@ import Foundation
 @MainActor
 struct ManagementCalculator {
 
-    // Diagnostic toggle: set to `true` only when debugging mismatched Max calculations.
-    // Default = false to avoid noisy logs / performance impact in normal runs.
-    public static var diagnosticEnabled: Bool = true
-
     /// Compute actual/max/off/def totals for a TeamStanding for a given week.
     /// Mirrors the logic previously embedded in MatchupView.computeManagementForWeek.
     /// - Parameters:
@@ -253,115 +249,6 @@ struct ManagementCalculator {
             }
         }
 
-        // DIAGNOSTIC: if enabled, print the candidate pool, augmented points, exclusion reasons, and greedy picks
-        if ManagementCalculator.diagnosticEnabled {
-            var diag = "[ManagementCalculator::DIAG] team=\(team.name) rosterId=\(team.id) week=\(week) entryRosterId=\(entry.roster_id)\n"
-
-            // eligible roster snapshot, seasonTeam, idSet, playersPoints keys
-            let seasonContaining = league.flatMap { lg in
-                lg.seasons.first(where: { season in
-                    season.matchupsByWeek?[week]?.contains(where: { $0.roster_id == entry.roster_id }) ?? false
-                })
-            }
-            let seasonTeam = seasonContaining?.teams.first(where: { $0.id == String(entry.roster_id) })
-            let eligibleRosterIds: Set<String> = {
-                if let sTeam = seasonTeam { return Set(sTeam.roster.map { $0.id }) }
-                return Set(team.roster.map { $0.id })
-            }()
-
-            diag += " eligibleRosterIdsCount=\(eligibleRosterIds.count) sample=\(Array(eligibleRosterIds.prefix(10)))\n"
-            diag += " initialPlayersPointsKeysCount=\(playersPoints.keys.count) keysSample=\(Array(playersPoints.keys.prefix(20)))\n"
-
-            // compute idSet as used above (recompute here to be explicit)
-            var diagIdSet = eligibleRosterIds
-            if let starters = entry.starters {
-                diagIdSet.formUnion(starters.filter { eligibleRosterIds.contains($0) })
-            }
-            if let players = entry.players {
-                diagIdSet.formUnion(players.filter { eligibleRosterIds.contains($0) })
-            }
-            diagIdSet.formUnion(Set(playersPoints.keys).intersection(eligibleRosterIds))
-            diag += " idSetCount=\(diagIdSet.count) ids=\(Array(diagIdSet).sorted())\n"
-
-            // show which players were excluded due to not being on roster or IR/TAXI (non-starter)
-            var excludedNotOnRoster: [String] = []
-            var excludedIRorTaxi: [String] = []
-            // playersPoints keys that are not in diagIdSet are effectively excluded
-            let excludedBecausePPKeys = Set(playersPoints.keys).subtracting(diagIdSet)
-            excludedNotOnRoster.append(contentsOf: excludedBecausePPKeys)
-            // check roster players that were explicitly skipped due to IR/TAXI during augmentation
-            if let sTeam = seasonTeam {
-                let startersSet = Set(entry.starters ?? [])
-                for p in sTeam.roster {
-                    if !diagIdSet.contains(p.id) {
-                        // if roster id not included in diagIdSet it was excluded; determine if IR/TAXI
-                        let isIR = explicitIrorTaxiFromRoster(player: p, entry: entry, league: league, leagueManager: leagueManager)
-                        if isIR && !startersSet.contains(p.id) {
-                            excludedIRorTaxi.append(p.id)
-                        } else {
-                            excludedNotOnRoster.append(p.id)
-                        }
-                    }
-                }
-            }
-            diag += " excludedBecausePlayersPointsKeysNotInRosterCount=\(excludedBecausePPKeys.count) sample=\(Array(excludedBecausePPKeys.prefix(10)))\n"
-            diag += " excludedIRorTaxiFromRosterCount=\(excludedIRorTaxi.count) sample=\(Array(excludedIRorTaxi.prefix(10)))\n"
-
-            // show augmented mutablePlayersPoints for ids in idSet
-            diag += " augmented playersPoints (id -> score) for idSet:\n"
-            let sortedMutableIds = Set(mutablePlayersPoints.keys).intersection(diagIdSet).sorted()
-            for pid in sortedMutableIds {
-                diag += "  - \(pid): \(String(format: \"%.2f\", mutablePlayersPoints[pid] ?? 0.0))\n"
-            }
-
-            // Candidate list (as built below)
-            diag += " Candidates (id, basePos, altPos, score):\n"
-            for c in candidates.sorted(by: { $0.id < $1.id }) {
-                diag += "  - \(c.id) | base:\(c.basePos) | alt:\(c.altPos) | score:\(String(format: \"%.2f\", c.score))\n"
-            }
-
-            // Greedy selection trace (re-run selection deterministically and log picks)
-            var diagUsed = Set<String>()
-            var diagPicks: [(slot: String, id: String, base: String, alts: [String], score: Double)] = []
-            for slot in optimalOrder {
-                let allowed = allowedPositions(for: slot)
-                let pool = candidates.filter { c in !diagUsed.contains(c.id) && (allowed.contains(c.basePos) || !allowed.intersection(Set(c.altPos)).isEmpty) }
-                if let pick = pool.max(by: { $0.score < $1.score }) {
-                    diagUsed.insert(pick.id)
-                    diagPicks.append((slot: slot, id: pick.id, base: pick.basePos, alts: pick.altPos, score: pick.score))
-                } else {
-                    diagPicks.append((slot: slot, id: "nil", base: "nil", alts: [], score: 0.0))
-                }
-            }
-            diag += " Greedy picks per slot (slot -> id -> score):\n"
-            for p in diagPicks {
-                diag += "  - \(p.slot) -> \(p.id) -> \(String(format: \"%.2f\", p.score)) [base:\(p.base) alts:\(p.alts)]\n"
-            }
-
-            // starters and unresolved starters
-            diag += " Starters listed in entry: \(entry.starters ?? [])\n"
-            diag += " unresolvedStarterIds: \(unresolvedStarterIds)\n"
-            // determine starters that were excluded from candidates (e.g., IR/TAXI or not in roster)
-            var startersExcluded: [String: String] = [:]
-            for sid in entry.starters ?? [] where sid != "0" {
-                if !diagIdSet.contains(sid) {
-                    startersExcluded[sid] = "not_in_diagram_idSet"
-                } else if !candidates.contains(where: { $0.id == sid }) {
-                    // check reason: IR/TAXI or other
-                    let reason = explicitIrorTaxi(pid: sid, entry: entry, seasonTeam: seasonTeam, league: league, leagueManager: leagueManager) ? "explicitIRorTaxi" : "unknown"
-                    startersExcluded[sid] = reason
-                }
-            }
-            diag += " Starters excluded from candidate pool (id: reason): \(startersExcluded)\n"
-
-            // print summary of totals
-            // compute diagMax from diagPicks sum
-            let diagMax = diagPicks.reduce(0.0) { $0 + $1.score }
-            diag += " Diagnostic computed maxTotal (greedy picks) = \(String(format: \"%.2f\", diagMax))\n"
-            diag += " actualTotal computed = \(String(format: \"%.2f\", actualTotal))\n"
-            print(diag)
-        }
-
         for slot in optimalOrder {
             let allowed = allowedPositions(for: slot)
             let pool = candidates.filter { c in !used.contains(c.id) && (allowed.contains(c.basePos) || !allowed.intersection(Set(c.altPos)).isEmpty) }
@@ -566,57 +453,6 @@ struct ManagementCalculator {
             }
         }
 
-        // DIAGNOSTIC: print candidates and picks for computeUsingMatchupEntry when enabled
-        if ManagementCalculator.diagnosticEnabled {
-            var diag = "[ManagementCalculator::DIAG-CME] team=\(team.name) rosterId=\(team.id) week=\(week) entryRosterId=\(entry.roster_id)\n"
-            diag += " eligibleRosterIdsCount=\(eligibleRosterIds.count) sample=\(Array(eligibleRosterIds.prefix(10)))\n"
-            diag += " idSetCount=\(idSet.count) idsSample=\(Array(idSet.prefix(40)))\n"
-            diag += " mutablePlayersPoints(for idSet):\n"
-            let idsForDiag = Array(idSet).sorted()
-            for pid in idsForDiag {
-                let val = mutablePlayersPoints[pid] ?? 0.0
-                diag += "  - \(pid): \(String(format: \"%.2f\", val)) (source: \(scoreSourceForDiagnostic(pid: pid, team: team, seasonTeam: seasonTeam, league: league, leagueManager: leagueManager)))\n"
-            }
-            diag += " Candidates (pre-selection):\n"
-            for c in candidates.sorted(by: { $0.score > $1.score }) {
-                diag += "  - \(c.id) | base:\(c.basePos) | alts:\(c.altPos) | score:\(String(format: \"%.2f\", c.score))\n"
-            }
-            // Simulate greedy picks and record picks
-            var diagUsed = Set<String>()
-            var diagPicks: [(slot: String, id: String, base: String, alts: [String], score: Double)] = []
-            var diagMaxOff = 0.0
-            var diagMaxDef = 0.0
-            var diagMaxTotal = 0.0
-            for slot in optimalOrder {
-                let allowed = allowedPositions(for: slot)
-                let pool = candidates.filter { c in !diagUsed.contains(c.id) && (allowed.contains(c.basePos) || !allowed.intersection(Set(c.altPos)).isEmpty) }
-                if let pick = pool.max(by: { $0.score < $1.score }) {
-                    diagUsed.insert(pick.id)
-                    diagPicks.append((slot: slot, id: pick.id, base: pick.basePos, alts: pick.altPos, score: pick.score))
-                    diagMaxTotal += pick.score
-                    if ["QB","RB","WR","TE","K"].contains(pick.basePos) { diagMaxOff += pick.score }
-                    else if ["DL","LB","DB"].contains(pick.basePos) { diagMaxDef += pick.score }
-                } else {
-                    diagPicks.append((slot: slot, id: "nil", base: "nil", alts: [], score: 0.0))
-                }
-            }
-            diag += " Greedy selection trace:\n"
-            for p in diagPicks {
-                diag += "  - slot:\(p.slot) -> id:\(p.id) -> score:\(String(format: \"%.2f\", p.score)) base:\(p.base) alts:\(p.alts)\n"
-            }
-            diag += " diagMaxTotal=\(String(format: \"%.2f\", diagMaxTotal)) diagMaxOff=\(String(format: \"%.2f\", diagMaxOff)) diagMaxDef=\(String(format: \"%.2f\", diagMaxDef))\n"
-            diag += " actualTotal=\(String(format: \"%.2f\", actualTotal)) actualOff=\(String(format: \"%.2f\", actualOff)) actualDef=\(String(format: \"%.2f\", actualDef))\n"
-            // identify starters that were excluded entirely from candidates
-            var startersExcluded: [String] = []
-            for s in entry.starters ?? [] where s != "0" {
-                if !candidates.contains(where: { $0.id == s }) {
-                    startersExcluded.append(s)
-                }
-            }
-            diag += " unresolvedStarterIds=\(unresolvedStarterIds) startersExcludedFromCandidates=\(startersExcluded)\n"
-            print(diag)
-        }
-
         for slot in optimalOrder {
             let allowed = allowedPositions(for: slot)
             let pool = candidates.filter { c in !used.contains(c.id) && (allowed.contains(c.basePos) || !allowed.intersection(Set(c.altPos)).isEmpty) }
@@ -629,29 +465,6 @@ struct ManagementCalculator {
         }
 
         return (actualTotal, maxTotal, actualOff, maxOff, actualDef, maxDef)
-    }
-
-    private static func scoreSourceForDiagnostic(pid: String, team: TeamStanding, seasonTeam: TeamStanding?, league: LeagueData?, leagueManager: SleeperLeagueManager) -> String {
-        // Mirrors MatchupView.scoreSourceFor but lightweight for diagnostics
-        if let entrySeason = seasonTeam?.league?.seasons.first(where: { _ in true }) { _ = entrySeason } // placeholder to avoid unused warning
-        // 1) seasonTeam roster weekly scores
-        if let sTeam = seasonTeam, let p = sTeam.roster.first(where: { $0.id == pid }), let _ = p.weeklyScores.first(where: { _ in true }) {
-            return "season.roster"
-        }
-        // 2) team roster weeklyScores
-        if let p = team.roster.first(where: { $0.id == pid }), let _ = p.weeklyScores.first(where: { _ in true }) {
-            return "team.roster"
-        }
-        // 3) players_points (handled outside)
-        if let _ = team.weeklyActualLineupPoints {
-            // generic fallback
-            return "entry/other"
-        }
-        // 4) caches
-        if let _ = league?.ownedPlayers?[pid] { return "ownedPlayers" }
-        if let _ = league?.teamHistoricalPlayers?[team.id]?[pid] { return "teamHistorical" }
-        if let _ = leagueManager.playerCache?[pid] { return "playerCache" }
-        return "unknown"
     }
 
     private static func legacyRosterBasedManagement(team: TeamStanding, week: Int, league: LeagueData?, leagueManager: SleeperLeagueManager) -> (Double, Double, Double, Double, Double, Double) {
@@ -780,7 +593,7 @@ struct ManagementCalculator {
             if let comp = lg.ownedPlayers?[pid], let pos = comp.position?.uppercased(), pos.contains("IR") { return true }
             if let th = lg.teamHistoricalPlayers?[String(entry.roster_id)]?[pid], let pos = th.lastKnownPosition?.uppercased(), (pos.contains("IR") || pos.contains("TAXI")) { return true }
         }
-        // 4) global player cache
+        // 4) global player cache (leagueManager is non-optional; access directly)
         if let raw = leagueManager.playerCache?[pid], let pos = raw.position?.uppercased(), pos.contains("IR") { return true }
         return false
     }
