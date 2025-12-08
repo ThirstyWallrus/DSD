@@ -311,7 +311,7 @@ struct ManagementCalculator {
             for p in sTeam.roster {
                 if idSet.contains(p.id), mutablePlayersPoints[p.id] == nil {
                     // Skip augment for Taxi/IR players unless they are starters (policy)
-                    if explicitIRorTaxiFromRoster(player: p, entry: entry, league: league, leagueManager: leagueManager) && !startersSet.contains(p.id) {
+                    if explicitIRorTaxi(pid: p.id, entry: entry, seasonTeam: seasonTeam, league: league, leagueManager: leagueManager) && !startersSet.contains(p.id) {
                         continue
                     }
                     if let ws = p.weeklyScores.first(where: { $0.week == week }) {
@@ -426,9 +426,6 @@ struct ManagementCalculator {
             let epsilon = 0.01
             let diff = abs(entryScalar - actualTotal)
             if diff > epsilon {
-                let formattedResolved = String(format: "%.2f", actualTotal)
-                let formattedEntry = String(format: "%.2f", entryScalar)
-                print("[ManagementCalculator] WARNING: incomplete players_points for matchup; using entry.points as authoritative. week=\(week) team=\(team.name) roster=\(team.id) unresolvedStarterIds=\(unresolvedStarterIds) sumResolved=\(formattedResolved) entry.points=\(formattedEntry)")
                 // Replace actualTotal with the authoritative entry scalar
                 actualTotal = entryScalar
 
@@ -446,11 +443,6 @@ struct ManagementCalculator {
                     actualOff = actualTotal
                     actualDef = 0.0
                 }
-
-                // Log the adjustment
-                let fmtOff = String(format: "%.2f", actualOff)
-                let fmtDef = String(format: "%.2f", actualDef)
-                print("[ManagementCalculator] INFO: adjusted actualOff=\(fmtOff) actualDef=\(fmtDef) to match authoritative total")
             }
         }
 

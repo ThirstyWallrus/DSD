@@ -4,26 +4,6 @@
 //
 //  Aggregates multi-season stats per current franchise (ownerId).
 //
-//  NOTES:
-//  - Populates both aggregated H2H summary stats (headToHeadVs) and a per-opponent
-//    chronological list of H2H match details (headToHeadDetails).
-//  - Deduplicates matchup processing by matchupId+week so each pairing/week is counted once.
-//  - Uses opponent lineupConfig for opponent max calculation.
-//  - Adds champion recompute helpers and debug logging hooks.
-//
-//  CHANGES IN THIS VERSION (summary):
-//  - Removed duplicated function blocks that caused "invalid redeclaration" compile errors.
-//  - Ensured helper functions are declared exactly once and in sensible order.
-//  - Added computeSeasonChampion (used by recomputeAllChampionships).
-//  - Ensured allPlayoffMatchupsForOwner exists and is used by buildAllTime.
-//  - Normalized position handling via PositionNormalizer and SlotPositionAssigner usage where appropriate.
-//  - Conservative/fault-tolerant computeMaxForEntry implementation to avoid under-counting max totals.
-//  - Kept all public APIs & types unchanged to preserve app continuity.
-//
-//  If you'd like me to instead apply a smaller targeted patch (e.g., only remove duplicates)
-//  or to run through specific lines that changed, tell me and I'll proceed carefully.
-//
-
 import Foundation
 
 @MainActor
@@ -485,7 +465,6 @@ struct AllTimeAggregator {
                 if let starters = entry.starters { idSet.formUnion(starters) }
                 idSet.formUnion(playersPoints.keys)
                 for p in roster { idSet.insert(p.id) }
-                print("[Diagnostics][computeMaxForEntry] idSet was empty after roster intersection — using permissive fallback rosterCount=\(roster.count) wk=\(week ?? -1)")
             }
         } else {
             // No roster available: preserve previous permissive idSet behavior
@@ -519,7 +498,6 @@ struct AllTimeAggregator {
             // no roster available: try to augment from playerCache for ids missing a value (best-effort)
             for pid in idSet where mutablePlayersPoints[pid] == nil {
                 if let raw = playerCache[pid] {
-                    // No weeklyScores in playerCache; leave as missing (0.0)
                     _ = raw
                 }
             }
@@ -541,10 +519,6 @@ struct AllTimeAggregator {
                 return (id: id, basePos: PositionNormalizer.normalize("UNK"), fantasy: [], points: pts)
             }
         }
-
-        // Diagnostics: report key counts so we can trace missing candidates/scores that reduce computed max
-        let nonZeroCandidates = candidates.filter { $0.points > 0.0 }.count
-        print("[Diagnostics][computeMaxForEntry] week=\(week ?? -1) rosterCount=\(teamRoster?.count ?? 0) playersPointsCount=\(playersPoints.count) idSetCount=\(idSet.count) candidatesCount=\(candidates.count) nonZeroCandidates=\(nonZeroCandidates) mutablePlayersPointsCount=\(mutablePlayersPoints.count)")
 
         var expandedSlots: [String] = []
         if !sanitizedConfig.isEmpty {
@@ -752,12 +726,10 @@ struct AllTimeAggregator {
         let playoffWeeks = Set(playoffStart..<(playoffStart + rounds))
 
         guard let map = season.matchupsByWeek else {
-            print("[ChampionDetect] season=\(season.id) no matchupsByWeek")
             return (nil, nil)
         }
         let presentWeeks = Set(map.keys).intersection(playoffWeeks)
         guard let finalWeek = presentWeeks.max() else {
-            print("[ChampionDetect] season=\(season.id) no playoff weeks present")
             return (nil, nil)
         }
 
@@ -781,15 +753,12 @@ struct AllTimeAggregator {
             guard ptsA != ptsB else { continue }
             let winnerRosterId = ptsA > ptsB ? a.roster_id : b.roster_id
             if let team = season.teams.first(where: { $0.id == String(winnerRosterId) }) {
-                print("[ChampionDetect] season=\(season.id) winnerRoster=\(winnerRosterId) ownerId=\(team.ownerId)")
                 return (winnerRosterId, team.ownerId)
             } else {
-                print("[ChampionDetect] season=\(season.id) winnerRoster=\(winnerRosterId) ownerId=nil (lookup failed)")
                 return (winnerRosterId, nil)
             }
         }
 
-        print("[ChampionDetect] season=\(season.id) no valid final pairing")
         return (nil, nil)
     }
 
@@ -804,12 +773,6 @@ struct AllTimeAggregator {
             if let oid = ownerOpt { aggregated[oid, default: 0] += 1 }
         }
 
-        for (sid, oid) in seasonChampions.sorted(by: { $0.key < $1.key }) {
-            print("[ChampionRecompute] season=\(sid) computedChampionOwnerId=\(oid ?? "null")")
-        }
-        for (owner, cnt) in aggregated {
-            print("[ChampionRecompute] owner=\(owner) computedChampionships=\(cnt)")
-        }
         return (seasonChampions, aggregated)
     }
 
