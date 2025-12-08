@@ -503,9 +503,7 @@ struct AllTimeAggregator {
                 if idSet.contains(p.id) && mutablePlayersPoints[p.id] == nil {
                     // Skip augment for Taxi/IR players unless they appear as starters (we rely on explicit roster tokens elsewhere)
                     // Use the roster snapshot to determine IR/TAXI token when available
-                    let isIRorTaxi = explicitIrorTaxiFromRoster(player: p, entry: entry, league: nil, leagueManager: SleeperLeagueManager()) // league/manager not needed here, pass dummy
-                    // Note: explicitIrorTaxiFromRoster expects a non-optional league param in original; to preserve behavior here we check only roster tokens
-                    // If using the actual league would be desired, callers can supply playersPoints up-front.
+                    let isIRorTaxi = isIRorTaxiFromRoster(player: p, entry: entry)
                     if isIRorTaxi, let starters = entry.starters, !starters.contains(p.id) {
                         continue
                     }
@@ -835,6 +833,24 @@ struct AllTimeAggregator {
         let myPoints = myEntry.points
         let oppPoints = oppEntry.points
         return (myPoints ?? 0.0) < (oppPoints ?? 0.0)
+    }
+
+    // MARK: - Local helper: detect IR/TAXI from roster snapshot & matchup entry
+    // This is intentionally self-contained to avoid cross-file/private-static dependency issues.
+    private static func isIRorTaxiFromRoster(player: Player, entry: MatchupEntry) -> Bool {
+        // 1) Check explicit players_slots mapping on the matchup entry (most authoritative)
+        if let map = entry.players_slots, let token = map[player.id] {
+            let up = token.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+            if up.contains("IR") || up.contains("INJ") || up.contains("TAXI") || up.contains("TAX") {
+                return true
+            }
+        }
+        // 2) Inspect player's own altPositions/position tokens from roster snapshot
+        let checks = ([player.position] + (player.altPositions ?? [])).compactMap { $0 }.map { $0.uppercased() }
+        for c in checks {
+            if c.contains("IR") || c.contains("INJ") || c.contains("TAXI") || c.contains("TAX") { return true }
+        }
+        return false
     }
 }
 
