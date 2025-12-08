@@ -39,6 +39,7 @@ struct MatchupView: View {
     // MARK: - Utility Models
     struct LineupPlayer: Identifiable {
         let id: String
+        let name: String
         let displaySlot: String
         let creditedPosition: String
         let position: String
@@ -262,20 +263,23 @@ struct MatchupView: View {
         }
 
         // Updated lookup: prefer team roster, then league.ownedPlayers, then league.teamHistoricalPlayers, then global playerCache.
-        func lookupPlayerInfo(_ pid: String) -> (id: String, position: String, altPositions: [String]?) {
-            if let p = team.roster.first(where: { $0.id == pid }) {
-                return (p.id, p.position, p.altPositions)
-            }
+        func lookupPlayerInfo(_ pid: String) -> (id: String, name: String, position: String, altPositions: [String]?) {
+            // team roster entries don't include name; try compact caches first for name resolution
             if let compact = league?.ownedPlayers?[pid] {
-                return (compact.id, compact.position ?? "UNK", compact.fantasyPositions)
+                return (compact.id, compact.fullName ?? compact.id, compact.position ?? "UNK", compact.fantasyPositions)
             }
             if let th = league?.teamHistoricalPlayers?[team.id]?[pid] {
-                return (th.playerId, th.lastKnownPosition ?? "UNK", nil)
+                return (th.playerId, th.lastKnownName ?? th.playerId, th.lastKnownPosition ?? "UNK", nil)
+            }
+            if let p = team.roster.first(where: { $0.id == pid }) {
+                // roster player has no stored full name; fallback to compact/global caches if available
+                let rawName = league?.ownedPlayers?[pid]?.fullName ?? leagueManager.playerCache?[pid]?.full_name ?? pid
+                return (p.id, rawName, p.position, p.altPositions)
             }
             if let raw = leagueManager.playerCache?[pid] {
-                return (raw.player_id, raw.position ?? "UNK", raw.fantasy_positions)
+                return (raw.player_id, raw.full_name ?? raw.player_id, raw.position ?? "UNK", raw.fantasy_positions)
             }
-            return (pid, "UNK", nil)
+            return (pid, pid, "UNK", nil)
         }
 
         var lineup: [LineupPlayer] = []
@@ -343,13 +347,16 @@ struct MatchupView: View {
             // If not present but resolvable from player cache / matchup data, annotate displaySlot
             // as " (Traded/Released)" to indicate a historical starter that is not on the current roster.
             let wasInRoster = team.roster.contains(where: { $0.id == pid })
+            var finalDisplaySlot = displaySlot
             if !wasInRoster {
-                displaySlot += " (NLOT)"
+                finalDisplaySlot += " (NLOT)"
+                // prefer a neutral color for NLOT when absent
                 slotColor = slotColor ?? .gray
             }
             lineup.append(LineupPlayer(
                 id: pid,
-                displaySlot: displaySlot,
+                name: info.name,
+                displaySlot: finalDisplaySlot,
                 creditedPosition: creditedPosition,
                 position: normPos,
                 slot: slot,
@@ -417,6 +424,15 @@ struct MatchupView: View {
             }
         }
         let benchPlayers = team.roster.filter { !startersSet.contains($0.id) }
+
+        func playerDisplayName(pid: String, team: TeamStanding) -> String {
+            if let compact = league?.ownedPlayers?[pid], let n = compact.fullName, !n.isEmpty { return n }
+            if let th = league?.teamHistoricalPlayers?[team.id]?[pid], let n = th.lastKnownName, !n.isEmpty { return n }
+            if let raw = leagueManager.playerCache?[pid], let n = raw.full_name, !n.isEmpty { return n }
+            // fallback id
+            return pid
+        }
+
         var bench: [LineupPlayer] = benchPlayers.map { player in
             let normPos = PositionNormalizer.normalize(player.position)
             let eligiblePositions: [String] = {
@@ -439,8 +455,10 @@ struct MatchupView: View {
                     }
                 }
             }
+            let name = playerDisplayName(pid: player.id, team: team)
             return LineupPlayer(
                 id: player.id,
+                name: name,
                 displaySlot: displaySlot,
                 creditedPosition: normPos,
                 position: normPos,
@@ -992,6 +1010,12 @@ struct MatchupView: View {
                                     .minimumScaleFactor(0.7)
                             }
                         }
+                        // Player name (new): truncated to avoid overflow
+                        Text(player.name)
+                            .foregroundColor(.white)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                            .font(.caption)
                         Spacer()
                         Text(String(format: "%.2f", player.points))
                             .foregroundColor(.green)
@@ -1017,6 +1041,11 @@ struct MatchupView: View {
                             .frame(width: slotLabelWidth, alignment: .leading)
                             .lineLimit(1)
                             .minimumScaleFactor(0.7)
+                        Text(player.name)
+                            .foregroundColor(.white.opacity(0.9))
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                            .font(.caption)
                         Spacer()
                         Text(String(format: "%.2f", player.points))
                             .foregroundColor(.green.opacity(0.7))

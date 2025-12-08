@@ -44,7 +44,7 @@ struct ManagementCalculator {
                         // Found a matchup entry -> compute using entry.players_points preferentially
                         if let playersPoints = entry.players_points, !playersPoints.isEmpty {
                             // AUGMENT playersPoints but ONLY using the season-team roster for that matchup/week.
-                            // ENFORCE: Only include players that were on this roster snapshot during this season/week.
+                            // ENFORCE: Only include players that were on this roster during this season/week.
                             var augmented = playersPoints // copy to mutate
 
                             // Determine the seasonTeam snapshot corresponding to this team in this season
@@ -90,6 +90,7 @@ struct ManagementCalculator {
                                 }
                             }
                             if !fallback.isEmpty {
+                                // Before returning, attempt a conservative boxscore-cache augmentation if some starters or roster players are still missing
                                 return computeUsingMatchupEntry(team: team, entry: entry, playersPoints: fallback, league: lg, leagueManager: leagueManager, week: week)
                             }
                         }
@@ -135,6 +136,22 @@ struct ManagementCalculator {
                     if playersPoints[p.id] == nil, let s = p.weeklyScores.first(where: { $0.week == week }) {
                         playersPoints[p.id] = s.points_half_ppr ?? s.points
                     }
+                }
+            }
+        }
+
+        // If still empty, try to consult any previously-populated boxscore cache in the manager (read-only, no network)
+        if playersPoints.isEmpty, let lg = league, let perWeek = leagueManager.boxscoreForWeekCached(leagueId: lg.id, week: week) {
+            // try to find roster-level map for this entry.roster_id
+            if let rosterMap = perWeek[entry.roster_id], !rosterMap.isEmpty {
+                // Only adopt ids that are part of the seasonTeam roster if seasonTeam available; otherwise adopt all
+                if let sTeam = seasonTeam {
+                    let rosterIds = Set(sTeam.roster.map { $0.id })
+                    for (pid, pts) in rosterMap {
+                        if rosterIds.contains(pid) { playersPoints[pid] = pts }
+                    }
+                } else {
+                    for (pid, pts) in rosterMap { playersPoints[pid] = pts }
                 }
             }
         }
@@ -235,6 +252,13 @@ struct ManagementCalculator {
                             }
                         }
                     }
+                    // As a last try, consult the manager's cached boxscore (non-blocking, read-only)
+                    if !found, let lg = league, let perWeek = leagueManager.boxscoreForWeekCached(leagueId: lg.id, week: week),
+                       let rosterMap = perWeek[entry.roster_id], let pts = rosterMap[pid] {
+                        mutablePlayersPoints[pid] = pts
+                        actualTotal += pts
+                        found = true
+                    }
                     if !found { unresolvedStarterIds.append(pid) }
                 }
             }
@@ -328,6 +352,17 @@ struct ManagementCalculator {
             }
         }
 
+        // NEW: If some ids remain missing and a boxscore cache exists in the manager, try to augment from it (read-only)
+        if let lg = league, let perWeek = leagueManager.boxscoreForWeekCached(leagueId: lg.id, week: week) {
+            if let rosterMap = perWeek[entry.roster_id] {
+                for pid in idSet where mutablePlayersPoints[pid] == nil {
+                    if let pts = rosterMap[pid] {
+                        mutablePlayersPoints[pid] = pts
+                    }
+                }
+            }
+        }
+
         // Build candidates using compact cache-aware lookup order, but only for ids in idSet
         let candidates: [(id: String, basePos: String, altPos: [String], score: Double)] = idSet.compactMap { pid in
             // Exclude IR/TAXI players from candidates unless they are starters (this preserves earlier policy)
@@ -414,6 +449,25 @@ struct ManagementCalculator {
                         else if ["DL","LB","DB"].contains(norm) { actualDef += v }
                         found = true
                     }
+                }
+                // As final local attempt, consult manager cache (non-network)
+                if !found, let lg = league, let perWeek = leagueManager.boxscoreForWeekCached(leagueId: lg.id, week: week),
+                   let rosterMap = perWeek[entry.roster_id], let pts = rosterMap[pid] {
+                    mutablePlayersPoints[pid] = pts
+                    actualTotal += pts
+                    // Best-effort position guess from caches
+                    let pPos: String = {
+                        if let p = seasonTeam?.roster.first(where: { $0.id == pid }) { return p.position }
+                        if let p = team.roster.first(where: { $0.id == pid }) { return p.position }
+                        if let compact = league?.ownedPlayers?[pid], let pos = compact.position { return pos }
+                        if let th = league?.teamHistoricalPlayers?[team.id]?[pid], let pos = th.lastKnownPosition { return pos }
+                        if let raw = playerCache[pid], let pos = raw.position { return pos }
+                        return "UNK"
+                    }()
+                    let norm = PositionNormalizer.normalize(pPos)
+                    if ["QB","RB","WR","TE","K"].contains(norm) { actualOff += pts }
+                    else if ["DL","LB","DB"].contains(norm) { actualDef += pts }
+                    found = true
                 }
                 if !found {
                     unresolvedStarterIds.append(pid)

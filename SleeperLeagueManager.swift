@@ -2265,4 +2265,16 @@ class SleeperLeagueManager: ObservableObject {
         boxscoreDebugSaveEnabled = enabled
         print("[BoxscoreFill][debug] boxscore debug saving \(enabled ? "ENABLED" : "DISABLED")")
     }
+
+    // ---------------------------
+    // NEW: Convenience player name resolver (synchronous, cache-only)
+    // ---------------------------
+    /// Returns the player's display name from caches if available (playerCache or allPlayers).
+    /// Note: This is a cache-only synchronous helper intended for UI. It will not perform network requests.
+    /// Returns nil if the name could not be resolved from available caches.
+    func playerDisplayName(for playerId: String) -> String? {
+        if let p = playerCache?[playerId], let name = p.full_name, !name.isEmpty { return name }
+        if let p = allPlayers[playerId], let name = p.full_name, !name.isEmpty { return name }
+        return nil
+    }
 }
