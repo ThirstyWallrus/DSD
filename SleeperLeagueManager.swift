@@ -1191,18 +1191,23 @@ class SleeperLeagueManager: ObservableObject {
             let ownerId = roster.owner_id ?? ""
             let teamName = userDisplay[ownerId] ?? "Owner \(ownerId)"
 
+            // Build players asynchronously so weeklyScores can fetch boxscore data when needed.
             let rawPlayers = try await fetchPlayers(ids: roster.players ?? [])
-            let players: [Player] = rawPlayers.map {
-                Player(
-                    id: $0.player_id,
-                    position: $0.position ?? "UNK",
-                    altPositions: $0.fantasy_positions,
-                    weeklyScores: weeklyScores(
-                        playerId: $0.player_id,
-                        rosterId: roster.roster_id,
-                        matchups: matchupsByWeek
-                    )
+            var players: [Player] = []
+            players.reserveCapacity(rawPlayers.count)
+            for raw in rawPlayers {
+                let weekly = await weeklyScores(
+                    playerId: raw.player_id,
+                    rosterId: roster.roster_id,
+                    matchups: matchupsByWeek,
+                    leagueId: leagueId
                 )
+                players.append(Player(
+                    id: raw.player_id,
+                    position: raw.position ?? "UNK",
+                    altPositions: raw.fantasy_positions,
+                    weeklyScores: weekly
+                ))
             }
 
             let settings = roster.settings ?? [:]
@@ -1442,28 +1447,53 @@ class SleeperLeagueManager: ObservableObject {
         return results
     }
 
+    /// Asynchronously attempt to resolve per-player weekly score timeline for a player.
+    /// If the matchup entry already contains players_points the value is used.
+    /// Otherwise we attempt fetchBoxscoreForWeek (cached) for that league/week and use any roster->player->points map discovered.
     private func weeklyScores(
         playerId: String,
         rosterId: Int,
-        matchups: [Int: [MatchupEntry]]
-    ) -> [PlayerWeeklyScore] {
+        matchups: [Int: [MatchupEntry]],
+        leagueId: String
+    ) async -> [PlayerWeeklyScore] {
         var scores: [PlayerWeeklyScore] = []
         for (week, entries) in matchups {
-            guard let me = entries.first(where: { $0.roster_id == rosterId }),
-                  let pts = me.players_points?[playerId] else {
-                // Diagnostic: log missing weekly score for player/week (non-fatal)
-                print("[Diagnostics][weeklyScores] missing players_points for player=\(playerId) roster=\(rosterId) week=\(week)")
+            guard let me = entries.first(where: { $0.roster_id == rosterId }) else {
+                // no entry for this roster this week
                 continue
             }
-            scores.append(PlayerWeeklyScore(
-                week: week,
-                points: pts,
-                player_id: playerId,
-                points_half_ppr: pts,
-                matchup_id: me.matchup_id ?? 0,
-                points_ppr: pts,
-                points_standard: pts
-            ))
+
+            // Try direct players_points first
+            if let pts = me.players_points?[playerId] {
+                scores.append(PlayerWeeklyScore(
+                    week: week,
+                    points: pts,
+                    player_id: playerId,
+                    points_half_ppr: pts,
+                    matchup_id: me.matchup_id ?? 0,
+                    points_ppr: pts,
+                    points_standard: pts
+                ))
+                continue
+            }
+
+            // If players_points missing or empty, attempt boxscore fetch (best-effort) for this week
+            let boxForWeek = await fetchBoxscoreForWeek(leagueId: leagueId, week: week)
+            if let rosterMap = boxForWeek[rosterId], let pts = rosterMap[playerId] {
+                scores.append(PlayerWeeklyScore(
+                    week: week,
+                    points: pts,
+                    player_id: playerId,
+                    points_half_ppr: pts,
+                    matchup_id: me.matchup_id ?? 0,
+                    points_ppr: pts,
+                    points_standard: pts
+                ))
+                continue
+            }
+
+            // No players_points and boxscore had nothing for this roster/player — emit diagnostic as before
+            print("[Diagnostics][weeklyScores] missing players_points for player=\(playerId) roster=\(rosterId) week=\(week)")
         }
         return scores.sorted { $0.week < $1.week }
     }
