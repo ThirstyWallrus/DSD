@@ -282,6 +282,27 @@ struct MatchupView: View {
             return (pid, pid, "UNK", nil)
         }
 
+        // Helper: convert "Joe Burrow" -> "J. Burrow"
+        func shortName(_ fullName: String?) -> String {
+            guard let fullName = fullName?.trimmingCharacters(in: .whitespacesAndNewlines), !fullName.isEmpty else { return "" }
+            let parts = fullName.split(separator: " ").map(String.init)
+            if parts.count == 1 { return parts[0] }
+            // Use first initial + last token (handles multi-part last names reasonably)
+            let first = parts.first?.first.map { String($0) + "." } ?? ""
+            let last = parts.last ?? parts[0]
+            return "\(first) \(last)"
+        }
+
+        // Helper: format short name + normalized position (e.g., "J. Burrow QB")
+        func nameWithPosition(fullName: String?, position: String?) -> String {
+            let short = shortName(fullName)
+            let posNorm = PositionNormalizer.normalize(position ?? "")
+            if posNorm.isEmpty || posNorm == "UNK" {
+                return short.isEmpty ? (fullName ?? "") : short
+            }
+            return short.isEmpty ? "\(fullName ?? "") \(posNorm)" : "\(short) \(posNorm)"
+        }
+
         var lineup: [LineupPlayer] = []
         var usedPlayers: Set<String> = []
         var availableStarters = paddedStarters
@@ -353,9 +374,13 @@ struct MatchupView: View {
                 // prefer a neutral color for NLOT when absent
                 slotColor = slotColor ?? .gray
             }
+
+            // Format display name as "ShortName POS" (e.g., "J. Burrow QB")
+            let finalName = nameWithPosition(fullName: info.name, position: info.position)
+
             lineup.append(LineupPlayer(
                 id: pid,
-                name: info.name,
+                name: finalName,
                 displaySlot: finalDisplaySlot,
                 creditedPosition: creditedPosition,
                 position: normPos,
@@ -455,10 +480,26 @@ struct MatchupView: View {
                     }
                 }
             }
-            let name = playerDisplayName(pid: player.id, team: team)
+            let nameRaw = playerDisplayName(pid: player.id, team: team)
+            // Format bench display name as "ShortName POS" (e.g., "J. Burrow QB")
+            let finalBenchName: String = {
+                let short: String = {
+                    let parts = nameRaw.split(separator: " ").map(String.init)
+                    if parts.isEmpty { return nameRaw }
+                    if parts.count == 1 { return parts[0] }
+                    let firstInitial = parts.first?.first.map { String($0) + "." } ?? ""
+                    let last = parts.last ?? parts[0]
+                    return "\(firstInitial) \(last)"
+                }()
+                if normPos.isEmpty || normPos == "UNK" {
+                    return short.isEmpty ? nameRaw : short
+                } else {
+                    return short.isEmpty ? "\(nameRaw) \(normPos)" : "\(short) \(normPos)"
+                }
+            }()
             return LineupPlayer(
                 id: player.id,
-                name: name,
+                name: finalBenchName,
                 displaySlot: displaySlot,
                 creditedPosition: normPos,
                 position: normPos,
