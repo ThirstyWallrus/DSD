@@ -451,6 +451,7 @@ struct AllTimeAggregator {
         let sanitizedConfig = SlotUtils.sanitizeStartingLineupConfig(lineupConfig)
 
         var playersPoints: [String: Double] = entry.players_points ?? [:]
+        // If playersPoints isn't provided, and we have a roster + week, build from that roster's weeklyScores
         if playersPoints.isEmpty, let roster = teamRoster, let wk = week {
             for p in roster {
                 if let ws = p.weeklyScores.first(where: { $0.week == wk }) {
@@ -459,13 +460,75 @@ struct AllTimeAggregator {
             }
         }
 
-        var idSet = Set<String>(entry.players ?? [])
-        if let starters = entry.starters { idSet.formUnion(starters) }
-        idSet.formUnion(playersPoints.keys)
-        if let roster = teamRoster { for p in roster { idSet.insert(p.id) } }
+        // Build idSet strictly limited to the provided teamRoster (if available).
+        // Rule: Only consider players that were on that roster snapshot during that week.
+        var idSet: Set<String> = []
 
+        if let roster = teamRoster {
+            let rosterIds = Set(roster.map { $0.id })
+            // Include roster players
+            idSet.formUnion(rosterIds)
+            // Include starters and entry.players only if they are present in roster for that week
+            if let starters = entry.starters {
+                idSet.formUnion(Set(starters).intersection(rosterIds))
+            }
+            if let players = entry.players {
+                idSet.formUnion(Set(players).intersection(rosterIds))
+            }
+            // Include any playersPoints keys only if they are in the roster snapshot
+            idSet.formUnion(Set(playersPoints.keys).intersection(rosterIds))
+
+            // Defensive: if idSet somehow ends up empty (unexpected), fall back to prior permissive behavior
+            if idSet.isEmpty {
+                // Fallback preserves previous behavior to avoid dropping candidates entirely.
+                idSet = Set(entry.players ?? [])
+                if let starters = entry.starters { idSet.formUnion(starters) }
+                idSet.formUnion(playersPoints.keys)
+                for p in roster { idSet.insert(p.id) }
+            }
+        } else {
+            // No roster available: preserve previous permissive idSet behavior
+            idSet = Set(entry.players ?? [])
+            if let starters = entry.starters { idSet.formUnion(starters) }
+            idSet.formUnion(playersPoints.keys)
+        }
+
+        // Local mutable copy we may augment for missing ids in idSet (only those ids)
+        var mutablePlayersPoints = playersPoints
+
+        // AUGMENT playersPoints for any ids in idSet that are missing a score by scanning the provided teamRoster only
+        if let roster = teamRoster, let wk = week {
+            for p in roster {
+                if idSet.contains(p.id) && mutablePlayersPoints[p.id] == nil {
+                    // Skip augment for Taxi/IR players unless they appear as starters (we rely on explicit roster tokens elsewhere)
+                    // Use the roster snapshot to determine IR/TAXI token when available
+                    let isIRorTaxi = explicitIrorTaxiFromRoster(player: p, entry: entry, league: nil, leagueManager: SleeperLeagueManager()) // league/manager not needed here, pass dummy
+                    // Note: explicitIrorTaxiFromRoster expects a non-optional league param in original; to preserve behavior here we check only roster tokens
+                    // If using the actual league would be desired, callers can supply playersPoints up-front.
+                    if isIRorTaxi, let starters = entry.starters, !starters.contains(p.id) {
+                        continue
+                    }
+                    if let ws = p.weeklyScores.first(where: { $0.week == wk }) {
+                        mutablePlayersPoints[p.id] = ws.points_half_ppr ?? ws.points
+                    }
+                }
+            }
+        } else if let roster = teamRoster {
+            // week not provided: we cannot augment weeklyScores, but we still keep playersPoints as-is for ids in idSet
+            // nothing to do here
+        } else {
+            // no roster available: try to augment from playerCache for ids missing a value (best-effort)
+            for pid in idSet where mutablePlayersPoints[pid] == nil {
+                if let raw = playerCache[pid] {
+                    // No weeklyScores in playerCache; leave as missing (0.0)
+                    _ = raw
+                }
+            }
+        }
+
+        // Build candidates using compact cache-aware lookup order, but only for ids in idSet
         let candidates: [(id: String, basePos: String, fantasy: [String], points: Double)] = idSet.compactMap { id in
-            let pts = playersPoints[id] ?? 0.0
+            let pts = mutablePlayersPoints[id] ?? 0.0
             if let raw = playerCache[id] {
                 let normBase = PositionNormalizer.normalize(raw.position)
                 let fantasy = (raw.fantasy_positions ?? []).map { PositionNormalizer.normalize($0) }
@@ -475,6 +538,7 @@ struct AllTimeAggregator {
                 let fantasy = (player.altPositions ?? []).map { PositionNormalizer.normalize($0) }
                 return (id: id, basePos: normBase, fantasy: fantasy, points: pts)
             } else {
+                // Defensive fallback: include unknown candidate with 0.0 points
                 return (id: id, basePos: PositionNormalizer.normalize("UNK"), fantasy: [], points: pts)
             }
         }
