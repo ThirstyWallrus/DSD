@@ -5,6 +5,7 @@
 //  FULL FILE — PATCHED: Robust week/team matchup data population for per-week views.
 //  Change: fetchMatchupsByWeek now ensures all teams have a MatchupEntry for every week.
 //  ADDITION: Best-effort boxscore fallback to fill missing per-player players_points when matchups payload lacks them.
+//  ADDITION (diagnostic): Optional raw-response debug dumps for boxscore endpoints when extractor finds no players_points.
 //  Add: per-season playoff overrides persisted and exposed to import UI.
 //  Add: recompute championships helpers that populate computedChampionOwnerId / computedChampionships container.
 //  ADDITION: Version B — per-league compact ownedPlayers and per-team teamHistoricalPlayers caches.
@@ -167,6 +168,10 @@ class SleeperLeagueManager: ObservableObject {
     // NEW: in-memory cache for boxscore fallback results:
     // Shape: [leagueId: [week: [rosterId: [playerId: points]]]]
     private var boxscoreCache: [String: [Int: [Int: [String: Double]]]] = [:]
+
+    // NEW DIAGNOSTIC: toggle saving raw boxscore responses to disk for analysis
+    // Default: false (opt-in)
+    private var boxscoreDebugSaveEnabled: Bool = false
 
     private let offensivePositions: Set<String> = ["QB","RB","WR","TE","K"]
     private let defensivePositions: Set<String> = ["DL","LB","DB"]
@@ -912,7 +917,7 @@ class SleeperLeagueManager: ObservableObject {
                 let (data, resp) = try await URLSession.shared.data(from: url)
                 // If status is 404 or 204, skip
                 if let http = resp as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
-                    // continue to next
+                    print("[BoxscoreFill][fetch] league=\(leagueId) week=\(week) endpoint=\(raw) returned HTTP \(http.statusCode)")
                     continue
                 }
                 // Try to parse generically using JSONSerialization and recursively extract any players_points fields
@@ -935,11 +940,17 @@ class SleeperLeagueManager: ObservableObject {
                     print("[BoxscoreFill][fetch] league=\(leagueId) week=\(week) endpoint=\(raw) successFoundEntries=\(extracted.count)")
                     break
                 } else {
-                    // no players_points found here, continue to next candidate
+                    // no players_points found here, log and optionally save raw response when debug enabled
+                    if boxscoreDebugSaveEnabled {
+                        saveBoxscoreDebugResponseIfPossible(data: data, endpoint: raw, leagueId: leagueId, week: week)
+                    }
                     continue
                 }
             } catch {
-                // network / parse errors are expected sometimes; continue to next endpoint
+                // network / parse errors are expected sometimes; if debug enabled save error info
+                if boxscoreDebugSaveEnabled {
+                    saveBoxscoreDebugError(endpoint: raw, leagueId: leagueId, week: week, error: error)
+                }
                 continue
             }
         }
@@ -960,6 +971,51 @@ class SleeperLeagueManager: ObservableObject {
 
         // Convert to expected return shape [Int: [String:Double]] (already correct)
         return result
+    }
+
+    /// When debug saving is enabled, write raw response bytes to a file for inspection.
+    private func saveBoxscoreDebugResponseIfPossible(data: Data, endpoint: String, leagueId: String, week: Int) {
+        ensureUserDir()
+        let dir = userRootDir(activeUsername).appendingPathComponent("boxscore_debug", isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            let ts = formatter.string(from: Date()).replacingOccurrences(of: ":", with: "-")
+            let short = UUID().uuidString.prefix(8)
+            let filename = "boxscore_debug_\(leagueId)_wk\(week)_\(ts)_\(short).json"
+            let fileURL = dir.appendingPathComponent(filename)
+            try data.write(to: fileURL, options: .atomic)
+            print("[BoxscoreFill][debug] saved raw response for league=\(leagueId) week=\(week) endpoint=\(endpoint) to \(fileURL.path)")
+        } catch {
+            print("[BoxscoreFill][debug] failed to save raw response: \(error)")
+        }
+    }
+
+    /// Save a small text file describing the error encountered when fetching a candidate endpoint.
+    private func saveBoxscoreDebugError(endpoint: String, leagueId: String, week: Int, error: Error) {
+        ensureUserDir()
+        let dir = userRootDir(activeUsername).appendingPathComponent("boxscore_debug", isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            let ts = formatter.string(from: Date()).replacingOccurrences(of: ":", with: "-")
+            let short = UUID().uuidString.prefix(8)
+            let filename = "boxscore_debug_error_\(leagueId)_wk\(week)_\(ts)_\(short).txt"
+            let fileURL = dir.appendingPathComponent(filename)
+            let body = """
+            endpoint: \(endpoint)
+            league: \(leagueId)
+            week: \(week)
+            time: \(ts)
+            error: \(error)
+            """
+            try body.data(using: .utf8)?.write(to: fileURL, options: .atomic)
+            print("[BoxscoreFill][debug] saved error info for league=\(leagueId) week=\(week) endpoint=\(endpoint) to \(fileURL.path)")
+        } catch {
+            print("[BoxscoreFill][debug] failed to save error info: \(error)")
+        }
     }
 
     /// Recursive JSON extractor that searches for any occurrence of a "players_points" dictionary
@@ -2170,5 +2226,13 @@ class SleeperLeagueManager: ObservableObject {
         } catch {
             print("[GlobalWeekRefresh] league=\(leagueId) failed to refresh global week: \(error)")
         }
+    }
+
+    // MARK: - Diagnostic control
+    /// Toggle saving raw candidate endpoint responses to disk when the extractor finds no usable players_points.
+    /// Default: false. Enable temporarily while debugging and disable afterwards.
+    func setBoxscoreDebugSaveEnabled(_ enabled: Bool) {
+        boxscoreDebugSaveEnabled = enabled
+        print("[BoxscoreFill][debug] boxscore debug saving \(enabled ? "ENABLED" : "DISABLED")")
     }
 }
