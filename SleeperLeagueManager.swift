@@ -4,6 +4,7 @@
 //
 //  FULL FILE — PATCHED: Robust week/team matchup data population for per-week views.
 //  Change: fetchMatchupsByWeek now ensures all teams have a MatchupEntry for every week.
+//  ADDITION: Best-effort boxscore fallback to fill missing per-player players_points when matchups payload lacks them.
 //  Add: per-season playoff overrides persisted and exposed to import UI.
 //  Add: recompute championships helpers that populate computedChampionOwnerId / computedChampionships container.
 //  ADDITION: Version B — per-league compact ownedPlayers and per-team teamHistoricalPlayers caches.
@@ -163,6 +164,10 @@ class SleeperLeagueManager: ObservableObject {
     private var usersCache: [String: [SleeperUser]] = [:]
     private var rostersCache: [String: [SleeperRoster]] = [:]
 
+    // NEW: in-memory cache for boxscore fallback results:
+    // Shape: [leagueId: [week: [rosterId: [playerId: points]]]]
+    private var boxscoreCache: [String: [Int: [Int: [String: Double]]]] = [:]
+
     private let offensivePositions: Set<String> = ["QB","RB","WR","TE","K"]
     private let defensivePositions: Set<String> = ["DL","LB","DB"]
     private let offensiveFlexSlots: Set<String> = [
@@ -219,6 +224,7 @@ class SleeperLeagueManager: ObservableObject {
         transactionsCache = [:]
         usersCache = [:]
         rostersCache = [:]
+        boxscoreCache = [:]
     }
 
     private func leagueFileURL(_ leagueId: String) -> URL {
@@ -814,6 +820,55 @@ class SleeperLeagueManager: ObservableObject {
             if empties > 0 { totalEntriesWithEmptyPlayersPoints += empties }
         }
 
+        // If there are weeks with empties, attempt to fetch boxscore data for those weeks (best-effort)
+        if totalEntriesWithEmptyPlayersPoints > 0 {
+            // Identify weeks that had at least one empty players_points
+            var weeksToAttempt: [Int] = []
+            for (wk, entries) in out {
+                let empties = entries.filter { $0.players_points == nil || $0.players_points?.isEmpty == true }.count
+                if empties > 0 {
+                    weeksToAttempt.append(wk)
+                }
+            }
+
+            // Limit attempts to a reasonable count to avoid excessive network calls during import
+            // but in practice weeksToAttempt is usually small. We will process them sequentially for now.
+            for wk in weeksToAttempt {
+                // Attempt to fetch boxscore-derived players_points for this week (best-effort)
+                let filledMap = await fetchBoxscoreForWeek(leagueId: leagueId, week: wk)
+
+                if !filledMap.isEmpty {
+                    var modifiedCount = 0
+                    var entries = out[wk] ?? []
+                    for i in 0..<entries.count {
+                        let rid = entries[i].roster_id
+                        // If entry has no players_points (or empty), and we have boxscore data for that roster, fill it
+                        if (entries[i].players_points == nil || entries[i].players_points?.isEmpty == true),
+                           let found = filledMap[rid], !found.isEmpty {
+                            let newEntry = MatchupEntry(
+                                roster_id: entries[i].roster_id,
+                                matchup_id: entries[i].matchup_id,
+                                points: entries[i].points,
+                                players_points: found,
+                                players_projected_points: entries[i].players_projected_points,
+                                starters: entries[i].starters,
+                                players: entries[i].players,
+                                players_slots: entries[i].players_slots
+                            )
+                            entries[i] = newEntry
+                            modifiedCount += 1
+                        }
+                    }
+                    if modifiedCount > 0 {
+                        out[wk] = entries
+                        print("[BoxscoreFill][merge] league=\(leagueId) week=\(wk) filledEntries=\(modifiedCount)")
+                    }
+                } else {
+                    print("[BoxscoreFill][merge] league=\(leagueId) week=\(wk) no boxscore data found")
+                }
+            }
+        }
+
         // Diagnostic summary print (non-destructive)
         print("[Diagnostics][fetchMatchupsByWeek] league=\(leagueId) heuristicCurrentWeek=\(heuristicCurrentWeek) effectiveLastWeek=\(effectiveLastWeek) totalPlaceholders=\(totalPlaceholders) totalEntriesWithEmptyPlayersPoints=\(totalEntriesWithEmptyPlayersPoints)")
 
@@ -830,6 +885,184 @@ class SleeperLeagueManager: ObservableObject {
             print("[Diagnostics][fetchMatchupsByWeek] sampleWeeksWithEmptyPlayersPoints=\(sampleWeeks)")
         }
 
+        return out
+    }
+
+    /// Best-effort fetch of boxscore / per-player scoring data for a given league/week.
+    /// Returns a map: roster_id -> [playerId: points]. Uses an in-memory cache to avoid repeated calls.
+    /// This function is intentionally defensive: it will try several heuristic endpoints, parse any JSON it receives,
+    /// and extract per-roster players_points maps if present. It will not throw — failures are logged and an empty map returned.
+    private func fetchBoxscoreForWeek(leagueId: String, week: Int) async -> [Int: [String: Double]] {
+        // Check cache
+        if let perLeague = boxscoreCache[leagueId], let cached = perLeague[week] {
+            return cached
+        }
+
+        var result: [Int: [String: Double]] = [:]
+        // Candidate endpoints (best-effort). Some may 404; we catch and continue.
+        let candidateUrls: [String] = [
+            "https://api.sleeper.app/v1/league/\(leagueId)/boxscore/\(week)",
+            "https://api.sleeper.app/v1/league/\(leagueId)/matchups/\(week)/boxscore",
+            "https://api.sleeper.app/v1/league/\(leagueId)/matchups/\(week)" // fallback re-request; sometimes different shape
+        ]
+
+        for raw in candidateUrls {
+            guard let url = URL(string: raw) else { continue }
+            do {
+                let (data, resp) = try await URLSession.shared.data(from: url)
+                // If status is 404 or 204, skip
+                if let http = resp as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+                    // continue to next
+                    continue
+                }
+                // Try to parse generically using JSONSerialization and recursively extract any players_points fields
+                let json = try JSONSerialization.jsonObject(with: data, options: [.mutableLeaves, .fragmentsAllowed])
+                let extracted = extractPlayersPoints(from: json)
+                if !extracted.isEmpty {
+                    // Merge into result (do not overwrite if already present)
+                    for (rid, map) in extracted {
+                        if result[rid] == nil { result[rid] = map }
+                        else {
+                            // merge player-level keys, prefer numeric non-zero values from extracted
+                            for (pid, pts) in map {
+                                if result[rid]?[pid] == nil || (result[rid]?[pid] ?? 0.0) == 0.0 {
+                                    result[rid]?[pid] = pts
+                                }
+                            }
+                        }
+                    }
+                    // If we found useful data, stop trying further endpoints to avoid extra calls
+                    print("[BoxscoreFill][fetch] league=\(leagueId) week=\(week) endpoint=\(raw) successFoundEntries=\(extracted.count)")
+                    break
+                } else {
+                    // no players_points found here, continue to next candidate
+                    continue
+                }
+            } catch {
+                // network / parse errors are expected sometimes; continue to next endpoint
+                continue
+            }
+        }
+
+        // Normalize (ensure numeric) - already handled in extractor, but ensure non-empty result map keys
+        if result.isEmpty {
+            // store empty cache to avoid repeated futile attempts in same import run
+            var per = boxscoreCache[leagueId] ?? [:]
+            per[week] = [:]
+            boxscoreCache[leagueId] = per
+            return [:]
+        }
+
+        // Save into cache under simple shape: [leagueId: [week: [rosterId: [playerId:Double]]]]
+        var per = boxscoreCache[leagueId] ?? [:]
+        per[week] = result
+        boxscoreCache[leagueId] = per
+
+        // Convert to expected return shape [Int: [String:Double]] (already correct)
+        return result
+    }
+
+    /// Recursive JSON extractor that searches for any occurrence of a "players_points" dictionary
+    /// and returns a map of roster_id -> [playerId:points]. This is intentionally loose because different
+    /// Sleeper endpoints / community endpoints may return different shapes.
+    private func extractPlayersPoints(from json: Any) -> [Int: [String: Double]] {
+        var out: [Int: [String: Double]] = [:]
+
+        if let arr = json as? [[String: Any]] {
+            for item in arr {
+                if let rid = (item["roster_id"] as? Int) ?? (item["rosterId"] as? Int) {
+                    if let pp = item["players_points"] as? [String: Any] {
+                        var map: [String: Double] = [:]
+                        for (k,v) in pp {
+                            if let num = v as? NSNumber { map[k] = num.doubleValue }
+                            else if let d = v as? Double { map[k] = d }
+                            else if let i = v as? Int { map[k] = Double(i) }
+                            else if let s = v as? String, let d = Double(s) { map[k] = d }
+                        }
+                        if !map.isEmpty { out[rid] = map }
+                    } else if let pp = item["players_points"] as? [String: Double] {
+                        out[rid] = pp
+                    } else if let players = item["players"] as? [[String: Any]] {
+                        // Some boxscore-like shapes list players with scores individually
+                        var map: [String: Double] = [:]
+                        for p in players {
+                            if let pid = p["player_id"] as? String ?? p["playerId"] as? String {
+                                if let num = p["points"] as? NSNumber { map[pid] = num.doubleValue }
+                                else if let d = p["points"] as? Double { map[pid] = d }
+                                else if let i = p["points"] as? Int { map[pid] = Double(i) }
+                                else if let s = p["points"] as? String, let d = Double(s) { map[pid] = d }
+                            }
+                            // also check alt keys
+                            if let pid = p["player_id"] as? String, map[pid] == nil {
+                                if let ns = p["players_points"] as? NSNumber { map[pid] = ns.doubleValue }
+                            }
+                        }
+                        if !map.isEmpty { out[rid] = map }
+                    }
+                } else {
+                    // no roster_id at this level — still inspect nested items
+                    for (_, v) in item {
+                        let nested = extractPlayersPoints(from: v)
+                        for (k,m) in nested { out[k] = m }
+                    }
+                }
+            }
+        } else if let dict = json as? [String: Any] {
+            // direct players_points at the dict root keyed by roster id strings?
+            // e.g., { "1": { "123": 12.3, ... }, "2": {...} }
+            var maybeRosterKeyed: Bool = true
+            for (k, v) in dict {
+                if let nested = v as? [String: Any] {
+                    // check if nested keys look like playerIds -> numeric
+                    var looksLikePlayers = false
+                    for (_, vv) in nested {
+                        if vv is NSNumber || vv is Double || vv is Int || (vv is String && Double(vv as! String) != nil) {
+                            looksLikePlayers = true
+                            break
+                        }
+                    }
+                    if looksLikePlayers {
+                        // interpret k as roster id if numeric
+                        if let rid = Int(k) {
+                            var map: [String: Double] = [:]
+                            for (pid, vv) in nested {
+                                if let num = vv as? NSNumber { map[pid] = num.doubleValue }
+                                else if let d = vv as? Double { map[pid] = d }
+                                else if let i = vv as? Int { map[pid] = Double(i) }
+                                else if let s = vv as? String, let d = Double(s) { map[pid] = d }
+                            }
+                            if !map.isEmpty { out[rid] = map }
+                        } else {
+                            // nested dict but key not numeric; recurse further
+                            let nestedExtract = extractPlayersPoints(from: nested)
+                            for (k2,m) in nestedExtract { out[k2] = m }
+                        }
+                    } else {
+                        // nested not players map, recurse
+                        let nestedExtract = extractPlayersPoints(from: nested)
+                        for (k2,m) in nestedExtract { out[k2] = m }
+                    }
+                } else if let arr = v as? [[String: Any]] {
+                    let nestedExtract = extractPlayersPoints(from: arr)
+                    for (k2,m) in nestedExtract { out[k2] = m }
+                } else {
+                    maybeRosterKeyed = false
+                }
+            }
+
+            // If nothing found yet, scan all nested values recursively
+            if out.isEmpty {
+                for (_, v) in dict {
+                    let nested = extractPlayersPoints(from: v)
+                    for (k,m) in nested { out[k] = m }
+                }
+            }
+        } else if let arrAny = json as? [Any] {
+            for v in arrAny {
+                let nested = extractPlayersPoints(from: v)
+                for (k,m) in nested { out[k] = m }
+            }
+        }
         return out
     }
 
@@ -1475,7 +1708,7 @@ class SleeperLeagueManager: ObservableObject {
     ///   - overwriteTeamStanding: if true, also overwrite TeamStanding.championships (destructive). Default: false.
     /// - Returns: per-season report and aggregated computed counts
     ///
-    /// This method makes a timestamped backup of the current league file before writing.
+    /// This method makes a timestamped backup of the current league JSON file before writing.
     func recomputeAndPersistChampionships(
         for leagueId: String,
         persistComputedContainer: Bool = true,
