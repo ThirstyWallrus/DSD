@@ -1033,6 +1033,14 @@ class SleeperLeagueManager: ObservableObject {
         return result
     }
 
+    /// Public read-only accessor for any previously-populated in-memory boxscore cache.
+    /// Returns rosterId -> [playerId: points] map for the requested week or nil if no cached entry exists.
+    /// - This does NOT perform a network call; it simply reads the manager's in-memory cache.
+    @MainActor
+    func boxscoreForWeekCached(leagueId: String, week: Int) -> [Int: [String: Double]]? {
+        return boxscoreCache[leagueId]?[week]
+    }
+
     /// When debug saving is enabled, write raw response bytes to a file for inspection.
     private func saveBoxscoreDebugResponseIfPossible(data: Data, endpoint: String, leagueId: String, week: Int) {
         ensureUserDir()
