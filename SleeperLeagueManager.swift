@@ -509,9 +509,10 @@ class SleeperLeagueManager: ObservableObject {
     // Scans seasons and matchups to build:
     //  - ownedPlayers: minimal CompactPlayer metadata for players that were rostered or appeared in matchups
     //  - teamHistoricalPlayers: per-team compact records keyed by teamId (TeamStanding.id which is roster_id as String)
+    //  - fullPlayers: canonical FullPlayerRecord including weeklyPoints keyed by "seasonId-week"
     //
     // This method is intentionally conservative and best-effort — failures do not abort imports.
-    private func buildPlayerCaches(from seasons: [SeasonData]) async throws -> (owned: [String: CompactPlayer], teamHistorical: [String: [String: TeamHistoricalPlayer]]) {
+    private func buildPlayerCaches(from seasons: [SeasonData]) async throws -> (owned: [String: CompactPlayer], teamHistorical: [String: [String: TeamHistoricalPlayer]], fullPlayers: [String: FullPlayerRecord]) {
         var ownedIds = Set<String>()
         // per-player timeline
         var firstSeenSeason: [String: String] = [:]
@@ -522,6 +523,9 @@ class SleeperLeagueManager: ObservableObject {
 
         // per-team historical map: teamId -> (playerId -> TeamHistoricalPlayer)
         var teamHistorical: [String: [String: TeamHistoricalPlayer]] = [:]
+
+        // per-player weekly points map (canonical): playerId -> [ "season-week" : points ]
+        var fullWeeklyPoints: [String: [String: Double]] = [:]
 
         // iterate seasons/weeks/matchups
         for season in seasons.sorted(by: { $0.id < $1.id }) {
@@ -556,6 +560,16 @@ class SleeperLeagueManager: ObservableObject {
                     )
                     map[pid] = th
                     teamHistorical[teamId] = map
+
+                    // Capture weeklyScores from roster snapshot into fullWeeklyPoints where available
+                    for ws in p.weeklyScores {
+                        let key = "\(sid)-\(ws.week)"
+                        var mapPoints = fullWeeklyPoints[pid] ?? [:]
+                        if mapPoints[key] == nil {
+                            mapPoints[key] = ws.points_half_ppr ?? ws.points
+                            fullWeeklyPoints[pid] = mapPoints
+                        }
+                    }
                 }
             }
 
@@ -578,6 +592,7 @@ class SleeperLeagueManager: ObservableObject {
                                 lastSeenWeek[pid] = week
                                 lastKnownRosterId[pid] = rosterId
 
+                                // teamHistorical update
                                 var map = teamHistorical[teamKey] ?? [:]
                                 let existing = map[pid]
                                 let th = TeamHistoricalPlayer(
@@ -597,9 +612,9 @@ class SleeperLeagueManager: ObservableObject {
                                 teamHistorical[teamKey] = map
                             }
                         }
-                        // starters
-                        if let starters = entry.starters {
-                            for pid in starters {
+                        // players_points: authoritative per-player points for this matchup entry
+                        if let playersPoints = entry.players_points {
+                            for (pid, pts) in playersPoints {
                                 ownedIds.insert(pid)
                                 if firstSeenSeason[pid] == nil {
                                     firstSeenSeason[pid] = sid
@@ -609,6 +624,28 @@ class SleeperLeagueManager: ObservableObject {
                                 lastSeenWeek[pid] = week
                                 lastKnownRosterId[pid] = rosterId
 
+                                var map = fullWeeklyPoints[pid] ?? [:]
+                                let key = "\(sid)-\(week)"
+                                // prefer numeric non-zero values if not present
+                                if map[key] == nil || (map[key] ?? 0.0) == 0.0 {
+                                    map[key] = pts
+                                    fullWeeklyPoints[pid] = map
+                                }
+                            }
+                        }
+                        // starters (we don't need to duplicate players_points above)
+                        if let starters = entry.starters {
+                            for pid in starters {
+                                // ensure seen
+                                ownedIds.insert(pid)
+                                if firstSeenSeason[pid] == nil {
+                                    firstSeenSeason[pid] = sid
+                                    firstSeenWeek[pid] = week
+                                }
+                                lastSeenSeason[pid] = sid
+                                lastSeenWeek[pid] = week
+                                lastKnownRosterId[pid] = rosterId
+                                // teamHistorical update
                                 var map = teamHistorical[teamKey] ?? [:]
                                 let existing = map[pid]
                                 let th = TeamHistoricalPlayer(
@@ -700,7 +737,29 @@ class SleeperLeagueManager: ObservableObject {
             }
         }
 
-        return (owned: compact, teamHistorical: teamHistorical)
+        // Build FullPlayerRecord map (metadata + weeklyPoints)
+        var fullRecords: [String: FullPlayerRecord] = [:]
+        for pid in ids {
+            let raw = rawMap[pid]
+            let weekly = fullWeeklyPoints[pid]
+            let rec = FullPlayerRecord(
+                playerId: pid,
+                fullName: raw?.full_name,
+                position: raw?.position,
+                fantasyPositions: raw?.fantasy_positions,
+                weeklyPoints: weekly,
+                firstSeenSeason: firstSeenSeason[pid],
+                firstSeenWeek: firstSeenWeek[pid],
+                lastSeenSeason: lastSeenSeason[pid],
+                lastSeenWeek: lastSeenWeek[pid],
+                lastKnownRosterId: lastKnownRosterId[pid],
+                nlot: !currentRosterPlayers.contains(pid),
+                notes: nil
+            )
+            fullRecords[pid] = rec
+        }
+
+        return (owned: compact, teamHistorical: teamHistorical, fullPlayers: fullRecords)
     }
 
     // Public wrapper: rebuild caches for an already-imported leagueId by reading persisted seasons
@@ -717,6 +776,7 @@ class SleeperLeagueManager: ObservableObject {
         var updatedLeague = league
         updatedLeague.ownedPlayers = caches.owned
         updatedLeague.teamHistoricalPlayers = caches.teamHistorical
+        updatedLeague.fullPlayers = caches.fullPlayers
 
         // Recompute all-time cache using available in-memory allPlayers (best-effort)
         let finalLeague = AllTimeAggregator.buildAllTime(for: updatedLeague, playerCache: allPlayers)
@@ -726,7 +786,7 @@ class SleeperLeagueManager: ObservableObject {
         saveIndex()
         DatabaseManager.shared.saveLeague(finalLeague)
 
-        print("[CachesRebuild] Rebuilt player caches for league \(leagueId) — ownedPlayers=\(caches.owned.count) teamHistoricalTeams=\(caches.teamHistorical.count)")
+        print("[CachesRebuild] Rebuilt player caches for league \(leagueId) — ownedPlayers=\(caches.owned.count) teamHistoricalTeams=\(caches.teamHistorical.count) fullPlayers=\(caches.fullPlayers.count)")
     }
 
     // NOTE: fetchMatchupsByWeek and other functions remain below (unchanged), except where we call buildPlayerCaches/attach caches.
@@ -1239,6 +1299,9 @@ class SleeperLeagueManager: ObservableObject {
             var actualPosStartCounts: [String: Int] = [:]
             var actualPosWeeks: [String: Set<Int>] = [:]
 
+            var totalOffPF = 0.0
+            var totalDefPF = 0.0
+
             // --- MAIN PATCHED SECTION: Use robust credited position for per-week actual lineup ---
             for week in weeksToUse {
                 guard let allEntries = matchupsByWeek[week],
@@ -1306,6 +1369,8 @@ class SleeperLeagueManager: ObservableObject {
                     }
                     actualOff += weekOff
                     actualDef += weekDef
+                    totalOffPF += weekOff
+                    totalDefPF += weekDef
                 }
 
                 // --- OPTIMAL LINEUP: Use the weekly player pool from the matchup entry ---
@@ -1665,13 +1730,14 @@ class SleeperLeagueManager: ObservableObject {
             startingLineup: league.roster_positions ?? []
         )
 
-        // Attempt to build compact caches (ownedPlayers & teamHistoricalPlayers).
+        // Attempt to build compact caches (ownedPlayers & teamHistoricalPlayers & fullPlayers).
         // Best-effort: failures logged but do not abort import.
         do {
             let caches = try await buildPlayerCaches(from: seasonData)
             leagueData.ownedPlayers = caches.owned
             leagueData.teamHistoricalPlayers = caches.teamHistorical
-            print("[CachesAttach] built compact player caches for league \(league.league_id): owned=\(caches.owned.count) teamHistoricalTeams=\(caches.teamHistorical.count)")
+            leagueData.fullPlayers = caches.fullPlayers
+            print("[CachesAttach] built compact player caches for league \(league.league_id): owned=\(caches.owned.count) teamHistoricalTeams=\(caches.teamHistorical.count) fullPlayers=\(caches.fullPlayers.count)")
         } catch {
             print("[CachesAttach] Failed to build compact caches for league \(league.league_id): \(error)")
             // continue without caches
@@ -1869,6 +1935,7 @@ class SleeperLeagueManager: ObservableObject {
             seasons: newSeasons,
             startingLineup: league.startingLineup
         )
+
         updatedLeague.computedChampionships = aggregated
 
         // Optionally overwrite TeamStanding.championships (destructive) — NOT recommended by default
@@ -2099,6 +2166,7 @@ class SleeperLeagueManager: ObservableObject {
             let caches = try await buildPlayerCaches(from: newSeasons)
             updated.ownedPlayers = caches.owned
             updated.teamHistoricalPlayers = caches.teamHistorical
+            updated.fullPlayers = caches.fullPlayers
             print("[RefreshCaches] rebuilt compact caches for league \(league.id) after refresh")
         } catch {
             print("[RefreshCaches] failed to rebuild caches for league \(league.id): \(error)")

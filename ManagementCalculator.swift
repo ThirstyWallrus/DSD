@@ -15,6 +15,20 @@ import Foundation
 @MainActor
 struct ManagementCalculator {
 
+    /// Utility: build the canonical season-week key used by LeagueData.fullPlayers weeklyPoints map.
+    /// e.g., seasonId "2024" and week 3 -> "2024-3"
+    private static func seasonWeekKey(seasonId: String, week: Int) -> String {
+        return "\(seasonId)-\(week)"
+    }
+
+    /// Look up a weekly point value from the global fullPlayers canonical cache (if present).
+    /// - Returns optional Double if found.
+    private static func weeklyPointsFromFullPlayers(pid: String, seasonId: String?, week: Int, league: LeagueData?) -> Double? {
+        guard let lg = league, let sid = seasonId, let full = lg.fullPlayers?[pid], let map = full.weeklyPoints else { return nil }
+        let key = seasonWeekKey(seasonId: sid, week: week)
+        return map[key]
+    }
+
     /// Compute actual/max/off/def totals for a TeamStanding for a given week.
     /// Mirrors the logic previously embedded in MatchupView.computeManagementForWeek.
     /// - Parameters:
@@ -66,6 +80,11 @@ struct ManagementCalculator {
                                     if isIRorTaxi && !startersSet.contains(p.id) { continue }
                                     if let ws = p.weeklyScores.first(where: { $0.week == week }) {
                                         augmented[p.id] = ws.points_half_ppr ?? ws.points
+                                    } else {
+                                        // Try the new global fullPlayers canonical cache as a fallback for roster-week points
+                                        if let val = weeklyPointsFromFullPlayers(pid: p.id, seasonId: season.id, week: week, league: lg) {
+                                            augmented[p.id] = val
+                                        }
                                     }
                                 }
                             }
@@ -87,6 +106,9 @@ struct ManagementCalculator {
                                 if isIRorTaxi && !startersSet.contains(p.id) { continue }
                                 if let ws = p.weeklyScores.first(where: { $0.week == week }) {
                                     fallback[p.id] = ws.points_half_ppr ?? ws.points
+                                } else if let val = weeklyPointsFromFullPlayers(pid: p.id, seasonId: season.id, week: week, league: lg) {
+                                    // consult canonical map if roster snapshot lacks the week
+                                    fallback[p.id] = val
                                 }
                             }
                             if !fallback.isEmpty {
@@ -135,6 +157,11 @@ struct ManagementCalculator {
                     if isIRorTaxi && !startersSet.contains(p.id) { continue }
                     if playersPoints[p.id] == nil, let s = p.weeklyScores.first(where: { $0.week == week }) {
                         playersPoints[p.id] = s.points_half_ppr ?? s.points
+                    } else if playersPoints[p.id] == nil {
+                        // Try the canonical fullPlayers weeklyPoints as a fallback
+                        if let val = weeklyPointsFromFullPlayers(pid: p.id, seasonId: seasonContaining.id, week: week, league: lg) {
+                            playersPoints[p.id] = val
+                        }
                     }
                 }
             }
@@ -249,6 +276,11 @@ struct ManagementCalculator {
                                 mutablePlayersPoints[pid] = v
                                 actualTotal += v
                                 found = true
+                            } else if let val = weeklyPointsFromFullPlayers(pid: pid, seasonId: seasonContaining.id, week: week, league: lg) {
+                                // NEW: consult the canonical map for missing starter score
+                                mutablePlayersPoints[pid] = val
+                                actualTotal += val
+                                found = true
                             }
                         }
                     }
@@ -340,6 +372,9 @@ struct ManagementCalculator {
                     }
                     if let ws = p.weeklyScores.first(where: { $0.week == week }) {
                         mutablePlayersPoints[p.id] = ws.points_half_ppr ?? ws.points
+                    } else if let val = weeklyPointsFromFullPlayers(pid: p.id, seasonId: seasonContaining?.id, week: week, league: league) {
+                        // NEW: consult canonical fullPlayers map when roster weeklyScores missing
+                        mutablePlayersPoints[p.id] = val
                     }
                 }
             }
@@ -348,6 +383,8 @@ struct ManagementCalculator {
             for p in team.roster where idSet.contains(p.id) {
                 if mutablePlayersPoints[p.id] == nil, let ws = p.weeklyScores.first(where: { $0.week == week }) {
                     mutablePlayersPoints[p.id] = ws.points_half_ppr ?? ws.points
+                } else if mutablePlayersPoints[p.id] == nil, let val = weeklyPointsFromFullPlayers(pid: p.id, seasonId: seasonContaining?.id, week: week, league: league) {
+                    mutablePlayersPoints[p.id] = val
                 }
             }
         }
@@ -448,6 +485,23 @@ struct ManagementCalculator {
                         if ["QB","RB","WR","TE","K"].contains(norm) { actualOff += v }
                         else if ["DL","LB","DB"].contains(norm) { actualDef += v }
                         found = true
+                    } else if let val = weeklyPointsFromFullPlayers(pid: pid, seasonId: seasonContaining?.id, week: week, league: league) {
+                        // NEW: canonical fallback for starters
+                        mutablePlayersPoints[pid] = val
+                        actualTotal += val
+                        // Attempt to guess position for offensive/defensive split as best-effort from caches
+                        let pPos: String = {
+                            if let p = seasonTeam?.roster.first(where: { $0.id == pid }) { return p.position }
+                            if let p = team.roster.first(where: { $0.id == pid }) { return p.position }
+                            if let compact = league?.ownedPlayers?[pid], let pos = compact.position { return pos }
+                            if let th = league?.teamHistoricalPlayers?[team.id]?[pid], let pos = th.lastKnownPosition { return pos }
+                            if let raw = playerCache[pid], let pos = raw.position { return pos }
+                            return "UNK"
+                        }()
+                        let norm = PositionNormalizer.normalize(pPos)
+                        if ["QB","RB","WR","TE","K"].contains(norm) { actualOff += val }
+                        else if ["DL","LB","DB"].contains(norm) { actualDef += val }
+                        found = true
                     }
                 }
                 // As final local attempt, consult manager cache (non-network)
@@ -520,6 +574,9 @@ struct ManagementCalculator {
         for p in team.roster {
             if let s = p.weeklyScores.first(where: { $0.week == week }) {
                 playerScores[p.id] = s.points_half_ppr ?? s.points
+            } else if let val = weeklyPointsFromFullPlayers(pid: p.id, seasonId: nil, week: week, league: league) {
+                // conservative: if roster weeklyScores missing, allow canonical map (season unknown fallback)
+                playerScores[p.id] = val
             }
         }
         let actualStarters = team.actualStartersByWeek?[week] ?? []
@@ -710,11 +767,11 @@ struct ManagementCalculator {
     private static func allowedPositions(for slot: String) -> Set<String> {
         switch slot.uppercased() {
         case "QB","RB","WR","TE","K","DL","LB","DB": return Set([PositionNormalizer.normalize(slot)])
-        case "FLEX","WRRB","WRRBTE","WRRB_TE","RBWR","RBWRTE": return Set(["RB","WR","TE"].map(PositionNormalizer.normalize))
-        case "SUPER_FLEX","QBRBWRTE","QBRBWR","QBSF","SFLX": return Set(["QB","RB","WR","TE"].map(PositionNormalizer.normalize))
+        case "FLEX","WRRB","WRRBTE","WRRB_TE","RBWR","RBWRTE": return Set(["RB","WR","TE"].map { PositionNormalizer.normalize($0) })
+        case "SUPER_FLEX","QBRBWRTE","QBRBWR","QBSF","SFLX": return Set(["QB","RB","WR","TE"].map { PositionNormalizer.normalize($0) })
         case "IDP": return Set(["DL","LB","DB"])
         default:
-            if slot.uppercased().contains("IDP") { return Set(["DL","LB","DB"]) }
+            if slot.uppercased().contains("IDP") { return Set(["DL","LB","DB"].map { PositionNormalizer.normalize($0) }) }
             return Set([PositionNormalizer.normalize(slot)])
         }
     }

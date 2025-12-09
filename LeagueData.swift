@@ -127,6 +127,28 @@ public struct TeamHistoricalPlayer: Codable, Equatable {
     let notes: String?
 }
 
+// MARK: - Full per-player canonical record (Option A)
+// Purpose: single source of truth for per-player weekly points across the league context.
+// weeklyPoints keys are encoded as "<seasonId>-<week>" (e.g., "2024-3").
+// Stored in LeagueData.fullPlayers (optional).
+public struct FullPlayerRecord: Codable, Equatable {
+    let playerId: String
+    let fullName: String?
+    let position: String?
+    let fantasyPositions: [String]?
+
+    // keyed by "\(seasonId)-\(week)" -> Double
+    var weeklyPoints: [String: Double]?
+
+    let firstSeenSeason: String?
+    let firstSeenWeek: Int?
+    let lastSeenSeason: String?
+    let lastSeenWeek: Int?
+    let lastKnownRosterId: Int?
+    let nlot: Bool?
+    let notes: String?
+}
+
 // Optional: persisted lightweight free-agent snapshot (minimal fields + timestamp).
 // Keep optional and compact (only populated if feature enabled).
 public struct FreeAgentSnapshot: Codable, Equatable {
@@ -168,6 +190,11 @@ struct LeagueData: Identifiable, Codable, Equatable {
     // Per-team historical player records (teamId -> playerId -> TeamHistoricalPlayer)
     // teamId corresponds to TeamStanding.id (which is roster_id as a String).
     var teamHistoricalPlayers: [String: [String: TeamHistoricalPlayer]]? = nil
+
+    // NEW (Option A): Canonical full per-player record including weeklyPoints
+    // Key: playerId -> FullPlayerRecord
+    // Optional: missing on older imports; built gradually by rebuildCachesForLeague / imports.
+    var fullPlayers: [String: FullPlayerRecord]? = nil
 
     // Optional persisted minimal free-agent snapshot for this league (if feature enabled)
     var freeAgentsSnapshot: FreeAgentSnapshot? = nil
