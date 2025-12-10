@@ -1171,100 +1171,11 @@ struct MatchupView: View {
                         .frame(maxWidth: .infinity)
                         .multilineTextAlignment(.center)
 
-                    // Build simple dictionary snapshots (HeadToHeadStatsSection currently accepts Any? snapshot params)
-                    let userSnap: [String: Any]? = {
-                        if let td = userTeam {
-                            return [
-                                "rosterId": td.id,
-                                "ownerId": td.teamStanding.ownerId,
-                                "name": td.name,
-                                "totalPoints": td.totalPoints,
-                                "maxPoints": td.maxPoints,
-                                "managementPercent": td.managementPercent
-                            ]
-                        }
-                        return nil
-                    }()
-
-                    let oppSnap: [String: Any]? = {
-                        if let td = opponentTeam {
-                            return [
-                                "rosterId": td.id,
-                                "ownerId": td.teamStanding.ownerId,
-                                "name": td.name,
-                                "totalPoints": td.totalPoints,
-                                "maxPoints": td.maxPoints,
-                                "managementPercent": td.managementPercent
-                            ]
-                        }
-                        return nil
-                    }()
-
-                    // Build historical match snapshots as array of dictionaries
-                    let matchSnapshots: [[String: Any]] = {
-                        var accum: [[String: Any]] = []
-                        guard let league = lg as LeagueData? else { return [] }
-                        var userRosterIdStr: Int? = Int(user.id)
-                        var oppRosterIdStr: Int? = Int(opp.id)
-
-                        for season in league.seasons {
-                            guard let byWeek = season.matchupsByWeek else { continue }
-                            for wk in byWeek.keys.sorted() {
-                                let entries = byWeek[wk] ?? []
-                                let seasonUserRosterId = season.teams.first(where: { $0.ownerId == user.ownerId }) .flatMap { Int($0.id) } ?? userRosterIdStr
-                                let seasonOppRosterId = season.teams.first(where: { $0.ownerId == opp.ownerId }) .flatMap { Int($0.id) } ?? oppRosterIdStr
-                                guard let uRid = seasonUserRosterId, let oRid = seasonOppRosterId else { continue }
-                                guard let uEntry = entries.first(where: { $0.roster_id == uRid }) else { continue }
-                                guard let oEntry = entries.first(where: { $0.roster_id == oRid }) else { continue }
-                                let seasonUserTeam = season.teams.first(where: { $0.id == String(uRid) })
-                                let seasonOppTeam = season.teams.first(where: { $0.id == String(oRid) })
-                                if let sut = seasonUserTeam {
-                                    let tdUser = teamDisplay(for: sut, week: wk)
-                                    if let sot = seasonOppTeam {
-                                        let tdOpp = teamDisplay(for: sot, week: wk)
-                                        let snapshot: [String: Any] = [
-                                            "seasonId": season.id,
-                                            "week": wk,
-                                            "matchupId": uEntry.matchup_id as Any,
-                                            "userRosterId": uRid,
-                                            "oppRosterId": oRid,
-                                            "userPoints": tdUser.totalPoints,
-                                            "oppPoints": tdOpp.totalPoints,
-                                            "userMgmtPct": tdUser.managementPercent,
-                                            "oppMgmtPct": tdOpp.managementPercent
-                                        ]
-                                        accum.append(snapshot)
-                                    } else {
-                                        let ptsUser = uEntry.points ?? (uEntry.players_points?.values.reduce(0.0, +) ?? 0.0)
-                                        let ptsOpp = oEntry.points ?? (oEntry.players_points?.values.reduce(0.0, +) ?? 0.0)
-                                        let snapshot: [String: Any] = [
-                                            "seasonId": season.id,
-                                            "week": wk,
-                                            "matchupId": uEntry.matchup_id as Any,
-                                            "userRosterId": uRid,
-                                            "oppRosterId": oRid,
-                                            "userPoints": ptsUser,
-                                            "oppPoints": ptsOpp,
-                                            "userMgmtPct": NSNull(),
-                                            "oppMgmtPct": NSNull()
-                                        ]
-                                        accum.append(snapshot)
-                                    }
-                                }
-                            }
-                        }
-                        return accum
-                    }()
-
+                    // Use the simplified initializer (HeadToHeadStatsSection has optional snapshot params with defaults)
                     HeadToHeadStatsSection(
                         user: user,
                         opp: opp,
-                        league: lg,
-                        userSnapshot: userSnap,
-                        oppSnapshot: oppSnap,
-                        matchSnapshots: matchSnapshots,
-                        currentSeasonId: appSelection.selectedSeason.isEmpty ? currentSeasonId : appSelection.selectedSeason,
-                        currentWeekNumber: currentWeekNumber
+                        league: lg
                     )
                 }
             } else {
