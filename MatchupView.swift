@@ -238,6 +238,12 @@ struct MatchupView: View {
 
     // MARK: - Lineup ordering & helpers
 
+    // Small helper to expand lineupConfig dict -> ordered slot list (keeps parity with other files)
+    private func expandSlots(_ config: [String: Int]) -> [String] {
+        let sanitized = SlotUtils.sanitizeStartingLineupConfig(config)
+        return sanitized.flatMap { Array(repeating: $0.key, count: $0.value) }
+    }
+
     // Formats a player's display name as "F. Lastname" using playerCache if available.
     private func formatPlayerDisplayName(pid: String, team: TeamStanding?) -> String {
         if let raw = leagueManager.playerCache?[pid], let full = raw.full_name, !full.isEmpty {
@@ -450,7 +456,7 @@ struct MatchupView: View {
         // Determine starters set
         let startersSet = Set(myEntry?.starters ?? team.actualStartersByWeek?[week] ?? [])
 
-        var benchPlayers: [Player] = team.roster.filter { !startersSet.contains($0.id) }
+        let benchPlayers: [Player] = team.roster.filter { !startersSet.contains($0.id) }
 
         var benchList: [LineupPlayer] = []
         var irList: [LineupPlayer] = []
@@ -1165,37 +1171,38 @@ struct MatchupView: View {
                         .frame(maxWidth: .infinity)
                         .multilineTextAlignment(.center)
 
-                    let userSnap: H2HTeamSnapshot? = {
+                    // Build simple dictionary snapshots (HeadToHeadStatsSection currently accepts Any? snapshot params)
+                    let userSnap: [String: Any]? = {
                         if let td = userTeam {
-                            return H2HTeamSnapshot(
-                                rosterId: td.id,
-                                ownerId: td.teamStanding.ownerId,
-                                name: td.name,
-                                totalPoints: td.totalPoints,
-                                maxPoints: td.maxPoints,
-                                managementPercent: td.managementPercent
-                            )
+                            return [
+                                "rosterId": td.id,
+                                "ownerId": td.teamStanding.ownerId,
+                                "name": td.name,
+                                "totalPoints": td.totalPoints,
+                                "maxPoints": td.maxPoints,
+                                "managementPercent": td.managementPercent
+                            ]
                         }
                         return nil
                     }()
 
-                    let oppSnap: H2HTeamSnapshot? = {
+                    let oppSnap: [String: Any]? = {
                         if let td = opponentTeam {
-                            return H2HTeamSnapshot(
-                                rosterId: td.id,
-                                ownerId: td.teamStanding.ownerId,
-                                name: td.name,
-                                totalPoints: td.totalPoints,
-                                maxPoints: td.maxPoints,
-                                managementPercent: td.managementPercent
-                            )
+                            return [
+                                "rosterId": td.id,
+                                "ownerId": td.teamStanding.ownerId,
+                                "name": td.name,
+                                "totalPoints": td.totalPoints,
+                                "maxPoints": td.maxPoints,
+                                "managementPercent": td.managementPercent
+                            ]
                         }
                         return nil
                     }()
 
-                    // Build historical match snapshots for seasons where these two rosters faced each other.
-                    let matchSnapshots: [H2HMatchSnapshot] = {
-                        var accum: [H2HMatchSnapshot] = []
+                    // Build historical match snapshots as array of dictionaries
+                    let matchSnapshots: [[String: Any]] = {
+                        var accum: [[String: Any]] = []
                         guard let league = lg as LeagueData? else { return [] }
                         var userRosterIdStr: Int? = Int(user.id)
                         var oppRosterIdStr: Int? = Int(opp.id)
@@ -1215,34 +1222,32 @@ struct MatchupView: View {
                                     let tdUser = teamDisplay(for: sut, week: wk)
                                     if let sot = seasonOppTeam {
                                         let tdOpp = teamDisplay(for: sot, week: wk)
-                                        let snapshot = H2HMatchSnapshot(
-                                            seasonId: season.id,
-                                            week: wk,
-                                            matchupId: uEntry.matchup_id ?? oEntry.matchup_id,
-                                            userRosterId: uRid,
-                                            oppRosterId: oRid,
-                                            userPoints: tdUser.totalPoints,
-                                            oppPoints: tdOpp.totalPoints,
-                                            userMgmtPct: tdUser.managementPercent,
-                                            oppMgmtPct: tdOpp.managementPercent,
-                                            missingPlayerIds: []
-                                        )
+                                        let snapshot: [String: Any] = [
+                                            "seasonId": season.id,
+                                            "week": wk,
+                                            "matchupId": uEntry.matchup_id as Any,
+                                            "userRosterId": uRid,
+                                            "oppRosterId": oRid,
+                                            "userPoints": tdUser.totalPoints,
+                                            "oppPoints": tdOpp.totalPoints,
+                                            "userMgmtPct": tdUser.managementPercent,
+                                            "oppMgmtPct": tdOpp.managementPercent
+                                        ]
                                         accum.append(snapshot)
                                     } else {
                                         let ptsUser = uEntry.points ?? (uEntry.players_points?.values.reduce(0.0, +) ?? 0.0)
                                         let ptsOpp = oEntry.points ?? (oEntry.players_points?.values.reduce(0.0, +) ?? 0.0)
-                                        let snapshot = H2HMatchSnapshot(
-                                            seasonId: season.id,
-                                            week: wk,
-                                            matchupId: uEntry.matchup_id ?? oEntry.matchup_id,
-                                            userRosterId: uRid,
-                                            oppRosterId: oRid,
-                                            userPoints: ptsUser,
-                                            oppPoints: ptsOpp,
-                                            userMgmtPct: nil,
-                                            oppMgmtPct: nil,
-                                            missingPlayerIds: []
-                                        )
+                                        let snapshot: [String: Any] = [
+                                            "seasonId": season.id,
+                                            "week": wk,
+                                            "matchupId": uEntry.matchup_id as Any,
+                                            "userRosterId": uRid,
+                                            "oppRosterId": oRid,
+                                            "userPoints": ptsUser,
+                                            "oppPoints": ptsOpp,
+                                            "userMgmtPct": NSNull(),
+                                            "oppMgmtPct": NSNull()
+                                        ]
                                         accum.append(snapshot)
                                     }
                                 }
