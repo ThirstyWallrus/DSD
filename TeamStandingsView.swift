@@ -52,8 +52,6 @@ enum StatCategory: String, CaseIterable {
 
 struct TeamStandingsView: View {
     @EnvironmentObject var appSelection: AppSelection
-    // NEW: leagueManager required to compute runtime ManagementCalculator values (and to access globalCurrentWeek)
-    @EnvironmentObject var leagueManager: SleeperLeagueManager
 
     @State private var selectedTeam: String = ""
     @State private var selectedSeason = "All Time"
@@ -167,36 +165,10 @@ struct TeamStandingsView: View {
         .padding(.top, 20)
     }
 
-    /// Return the numeric stat value used for sorting and display in the standings table.
-    /// NOTE: For maxPointsFor we now attempt to prefer the persisted TeamStanding value, and if missing/zero,
-    /// compute a run-time max for a representative week (the latest meaningful week for the season) using
-    /// ManagementCalculator.computeManagementForWeek(...).
     private func statValue(_ team: TeamStanding, _ category: StatCategory) -> Double {
         switch category {
         case .pointsFor: return team.pointsFor
-        case .maxPointsFor:
-            // Prefer persisted value if present to avoid expensive recompute for every row,
-            // but if it's zero or missing attempt a runtime compute for the most-relevant week.
-            if team.maxPointsFor > 0 {
-                return team.maxPointsFor
-            }
-            // Attempt to determine a reasonable week to compute for:
-            if let lg = league {
-                // Prefer the selectedSeason if set; otherwise use the latest season in `league`.
-                let seasonToUse = (selectedSeason != "All Time") ? (lg.seasons.first(where: { $0.id == selectedSeason }) ?? lg.seasons.sorted(by: { $0.id < $1.id }).last) : lg.seasons.sorted(by: { $0.id < $1.id }).last
-                // Choose a sensible week: try the latest week key in matchupsByWeek, otherwise fall back to leagueManager.globalCurrentWeek.
-                let weekToUse: Int = {
-                    if let wkKeys = seasonToUse?.matchupsByWeek?.keys, !wkKeys.isEmpty {
-                        // Prefer the most-recent meaningful week (max key)
-                        return wkKeys.max() ?? max(1, leagueManager.globalCurrentWeek)
-                    }
-                    return max(1, leagueManager.globalCurrentWeek)
-                }()
-                // Compute using ManagementCalculator. This is conservative & best-effort.
-                let (_, computedMax, _, _, _, _) = ManagementCalculator.computeManagementForWeek(team: team, week: weekToUse, league: lg, leagueManager: leagueManager)
-                return computedMax
-            }
-            return team.maxPointsFor
+        case .maxPointsFor: return team.maxPointsFor
         case .managementPercentTeam: return team.managementPercent
         case .teamPointsPerWeek: return team.teamPointsPerWeek
         default: return 0

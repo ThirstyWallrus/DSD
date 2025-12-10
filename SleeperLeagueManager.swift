@@ -4,12 +4,8 @@
 //
 //  FULL FILE — PATCHED: Robust week/team matchup data population for per-week views.
 //  Change: fetchMatchupsByWeek now ensures all teams have a MatchupEntry for every week.
-//  ADDITION: Best-effort boxscore fallback to fill missing per-player players_points when matchups payload lacks them.
-//  ADDITION (diagnostic): Optional raw-response debug dumps for boxscore endpoints when extractor finds no players_points.
 //  Add: per-season playoff overrides persisted and exposed to import UI.
 //  Add: recompute championships helpers that populate computedChampionOwnerId / computedChampionships container.
-//  ADDITION: Version B — per-league compact ownedPlayers and per-team teamHistoricalPlayers caches.
-//            These caches are embedded inside LeagueData and persisted as single-file storage.
 //
 
 import Foundation
@@ -165,14 +161,6 @@ class SleeperLeagueManager: ObservableObject {
     private var usersCache: [String: [SleeperUser]] = [:]
     private var rostersCache: [String: [SleeperRoster]] = [:]
 
-    // NEW: in-memory cache for boxscore fallback results:
-    // Shape: [leagueId: [week: [rosterId: [playerId: points]]]]
-    private var boxscoreCache: [String: [Int: [Int: [String: Double]]]] = [:]
-
-    // NEW DIAGNOSTIC: toggle saving raw boxscore responses to disk for analysis
-    // Default: false (opt-in)
-    private var boxscoreDebugSaveEnabled: Bool = false
-
     private let offensivePositions: Set<String> = ["QB","RB","WR","TE","K"]
     private let defensivePositions: Set<String> = ["DL","LB","DB"]
     private let offensiveFlexSlots: Set<String> = [
@@ -182,6 +170,8 @@ class SleeperLeagueManager: ObservableObject {
 
     private static var _lastRefresh: [String: Date] = [:]
     private var refreshThrottleInterval: TimeInterval { 10 * 60 } // 10 minutes
+
+    var weekRosterMatchupMap: [Int: [Int: Int]] = [:]
 
     init(autoLoad: Bool = false) {
         if autoLoad {
@@ -229,7 +219,6 @@ class SleeperLeagueManager: ObservableObject {
         transactionsCache = [:]
         usersCache = [:]
         rostersCache = [:]
-        boxscoreCache = [:]
     }
 
     private func leagueFileURL(_ leagueId: String) -> URL {
@@ -495,301 +484,12 @@ class SleeperLeagueManager: ObservableObject {
         return playerCache ?? [:]
     }
 
-    // Fetch players by id using cached allPlayers / playerCache. If missing, fetch players/nfl once and return requested subset.
-    // Note: This is still the canonical per-id resolver. The compact caches (ownedPlayers) are constructed from returned RawSleeperPlayer metadata.
     private func fetchPlayers(ids: [String]) async throws -> [RawSleeperPlayer] {
         if allPlayers.isEmpty {
             allPlayers = try await fetchPlayersDict()
         }
         return ids.compactMap { allPlayers[$0] }
     }
-
-    // --- NEW: Build compact per-league and per-team caches (Version B)
-    //
-    // Scans seasons and matchups to build:
-    //  - ownedPlayers: minimal CompactPlayer metadata for players that were rostered or appeared in matchups
-    //  - teamHistoricalPlayers: per-team compact records keyed by teamId (TeamStanding.id which is roster_id as String)
-    //  - fullPlayers: canonical FullPlayerRecord including weeklyPoints keyed by "seasonId-week"
-    //
-    // This method is intentionally conservative and best-effort — failures do not abort imports.
-    private func buildPlayerCaches(from seasons: [SeasonData]) async throws -> (owned: [String: CompactPlayer], teamHistorical: [String: [String: TeamHistoricalPlayer]], fullPlayers: [String: FullPlayerRecord]) {
-        var ownedIds = Set<String>()
-        // per-player timeline
-        var firstSeenSeason: [String: String] = [:]
-        var firstSeenWeek: [String: Int] = [:]
-        var lastSeenSeason: [String: String] = [:]
-        var lastSeenWeek: [String: Int] = [:]
-        var lastKnownRosterId: [String: Int] = [:]
-
-        // per-team historical map: teamId -> (playerId -> TeamHistoricalPlayer)
-        var teamHistorical: [String: [String: TeamHistoricalPlayer]] = [:]
-
-        // per-player weekly points map (canonical): playerId -> [ "season-week" : points ]
-        var fullWeeklyPoints: [String: [String: Double]] = [:]
-
-        // iterate seasons/weeks/matchups
-        for season in seasons.sorted(by: { $0.id < $1.id }) {
-            let sid = season.id
-            // gather roster-based appearances from season.teams
-            for team in season.teams {
-                let teamId = team.id
-                for p in team.roster {
-                    let pid = p.id
-                    ownedIds.insert(pid)
-                    if firstSeenSeason[pid] == nil || (firstSeenSeason[pid]! > sid) {
-                        firstSeenSeason[pid] = sid
-                    }
-                    // weekly-level data not available here; keep nil for week if not found in matchups
-                    lastSeenSeason[pid] = sid
-                    lastKnownRosterId[pid] = Int(teamId) ?? lastKnownRosterId[pid]
-                    // teamHistorical update
-                    var map = teamHistorical[teamId] ?? [:]
-                    let existing = map[pid]
-                    let th = TeamHistoricalPlayer(
-                        playerId: pid,
-                        firstSeenSeason: existing?.firstSeenSeason ?? firstSeenSeason[pid],
-                        firstSeenWeek: existing?.firstSeenWeek ?? nil,
-                        lastSeenSeason: sid,
-                        lastSeenWeek: existing?.lastSeenWeek,
-                        lastKnownPosition: p.position,
-                        lastKnownName: nil,
-                        lastKnownRosterId: Int(teamId),
-                        nlot: false,
-                        appearancesCount: (existing?.appearancesCount ?? 0) + 1,
-                        notes: nil
-                    )
-                    map[pid] = th
-                    teamHistorical[teamId] = map
-
-                    // Capture weeklyScores from roster snapshot into fullWeeklyPoints where available
-                    for ws in p.weeklyScores {
-                        let key = "\(sid)-\(ws.week)"
-                        var mapPoints = fullWeeklyPoints[pid] ?? [:]
-                        if mapPoints[key] == nil {
-                            mapPoints[key] = ws.points_half_ppr ?? ws.points
-                            fullWeeklyPoints[pid] = mapPoints
-                        }
-                    }
-                }
-            }
-
-            // matchups: week-level appearances & starters
-            if let map = season.matchupsByWeek {
-                for (week, entries) in map {
-                    for entry in entries {
-                        let rosterId = entry.roster_id
-                        let teamKey = String(rosterId)
-                        // players list
-                        if let players = entry.players {
-                            for pid in players {
-                                ownedIds.insert(pid)
-                                if firstSeenSeason[pid] == nil {
-                                    firstSeenSeason[pid] = sid
-                                    firstSeenWeek[pid] = week
-                                }
-                                // last seen update
-                                lastSeenSeason[pid] = sid
-                                lastSeenWeek[pid] = week
-                                lastKnownRosterId[pid] = rosterId
-
-                                // teamHistorical update
-                                var map = teamHistorical[teamKey] ?? [:]
-                                let existing = map[pid]
-                                let th = TeamHistoricalPlayer(
-                                    playerId: pid,
-                                    firstSeenSeason: existing?.firstSeenSeason ?? firstSeenSeason[pid],
-                                    firstSeenWeek: existing?.firstSeenWeek ?? firstSeenWeek[pid],
-                                    lastSeenSeason: sid,
-                                    lastSeenWeek: week,
-                                    lastKnownPosition: existing?.lastKnownPosition,
-                                    lastKnownName: existing?.lastKnownName,
-                                    lastKnownRosterId: rosterId,
-                                    nlot: false,
-                                    appearancesCount: (existing?.appearancesCount ?? 0) + 1,
-                                    notes: nil
-                                )
-                                map[pid] = th
-                                teamHistorical[teamKey] = map
-                            }
-                        }
-                        // players_points: authoritative per-player points for this matchup entry
-                        if let playersPoints = entry.players_points {
-                            for (pid, pts) in playersPoints {
-                                ownedIds.insert(pid)
-                                if firstSeenSeason[pid] == nil {
-                                    firstSeenSeason[pid] = sid
-                                    firstSeenWeek[pid] = week
-                                }
-                                lastSeenSeason[pid] = sid
-                                lastSeenWeek[pid] = week
-                                lastKnownRosterId[pid] = rosterId
-
-                                var map = fullWeeklyPoints[pid] ?? [:]
-                                let key = "\(sid)-\(week)"
-                                // prefer numeric non-zero values if not present
-                                if map[key] == nil || (map[key] ?? 0.0) == 0.0 {
-                                    map[key] = pts
-                                    fullWeeklyPoints[pid] = map
-                                }
-                            }
-                        }
-                        // starters (we don't need to duplicate players_points above)
-                        if let starters = entry.starters {
-                            for pid in starters {
-                                // ensure seen
-                                ownedIds.insert(pid)
-                                if firstSeenSeason[pid] == nil {
-                                    firstSeenSeason[pid] = sid
-                                    firstSeenWeek[pid] = week
-                                }
-                                lastSeenSeason[pid] = sid
-                                lastSeenWeek[pid] = week
-                                lastKnownRosterId[pid] = rosterId
-                                // teamHistorical update
-                                var map = teamHistorical[teamKey] ?? [:]
-                                let existing = map[pid]
-                                let th = TeamHistoricalPlayer(
-                                    playerId: pid,
-                                    firstSeenSeason: existing?.firstSeenSeason ?? firstSeenSeason[pid],
-                                    firstSeenWeek: existing?.firstSeenWeek ?? firstSeenWeek[pid],
-                                    lastSeenSeason: sid,
-                                    lastSeenWeek: week,
-                                    lastKnownPosition: existing?.lastKnownPosition,
-                                    lastKnownName: existing?.lastKnownName,
-                                    lastKnownRosterId: rosterId,
-                                    nlot: false,
-                                    appearancesCount: (existing?.appearancesCount ?? 0) + 1,
-                                    notes: nil
-                                )
-                                map[pid] = th
-                                teamHistorical[teamKey] = map
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Resolve minimal RawSleeperPlayer metadata for ownedIds
-        let ids = Array(ownedIds)
-        let rawPlayers = (try? await fetchPlayers(ids: ids)) ?? []
-        var rawMap: [String: RawSleeperPlayer] = [:]
-        for r in rawPlayers { rawMap[r.player_id] = r }
-
-        // Determine latest-season roster players for NLOT detection
-        var currentRosterPlayers = Set<String>()
-        if let latest = seasons.sorted(by: { $0.id < $1.id }).last {
-            for team in latest.teams {
-                for p in team.roster { currentRosterPlayers.insert(p.id) }
-            }
-        }
-
-        // Build CompactPlayer map
-        var compact: [String: CompactPlayer] = [:]
-        for pid in ids {
-            let raw = rawMap[pid]
-            let cp = CompactPlayer(
-                id: pid,
-                fullName: raw?.full_name,
-                position: raw?.position,
-                fantasyPositions: raw?.fantasy_positions,
-                firstSeenSeason: firstSeenSeason[pid],
-                firstSeenWeek: firstSeenWeek[pid],
-                lastSeenSeason: lastSeenSeason[pid],
-                lastSeenWeek: lastSeenWeek[pid],
-                lastKnownRosterId: lastKnownRosterId[pid],
-                nlot: !currentRosterPlayers.contains(pid),
-                notes: nil
-            )
-            compact[pid] = cp
-        }
-
-        // Also mark teamHistorical.nlot flags based on latest roster membership per team
-        if let latest = seasons.sorted(by: { $0.id < $1.id }).last {
-            // latestTeamMembers: teamId -> set of playerIds
-            var latestTeamMembers: [String: Set<String>] = [:]
-            for team in latest.teams {
-                let tid = team.id
-                var s = Set<String>()
-                for p in team.roster { s.insert(p.id) }
-                latestTeamMembers[tid] = s
-            }
-            for (teamId, players) in teamHistorical {
-                var updatedMap: [String: TeamHistoricalPlayer] = [:]
-                for (pid, rec) in players {
-                    let nlot = !(latestTeamMembers[teamId]?.contains(pid) ?? false)
-                    let updated = TeamHistoricalPlayer(
-                        playerId: rec.playerId,
-                        firstSeenSeason: rec.firstSeenSeason,
-                        firstSeenWeek: rec.firstSeenWeek,
-                        lastSeenSeason: rec.lastSeenSeason,
-                        lastSeenWeek: rec.lastSeenWeek,
-                        lastKnownPosition: rec.lastKnownPosition,
-                        lastKnownName: rec.lastKnownName,
-                        lastKnownRosterId: rec.lastKnownRosterId,
-                        nlot: nlot,
-                        appearancesCount: rec.appearancesCount,
-                        notes: rec.notes
-                    )
-                    updatedMap[pid] = updated
-                }
-                teamHistorical[teamId] = updatedMap
-            }
-        }
-
-        // Build FullPlayerRecord map (metadata + weeklyPoints)
-        var fullRecords: [String: FullPlayerRecord] = [:]
-        for pid in ids {
-            let raw = rawMap[pid]
-            let weekly = fullWeeklyPoints[pid]
-            let rec = FullPlayerRecord(
-                playerId: pid,
-                fullName: raw?.full_name,
-                position: raw?.position,
-                fantasyPositions: raw?.fantasy_positions,
-                weeklyPoints: weekly,
-                firstSeenSeason: firstSeenSeason[pid],
-                firstSeenWeek: firstSeenWeek[pid],
-                lastSeenSeason: lastSeenSeason[pid],
-                lastSeenWeek: lastSeenWeek[pid],
-                lastKnownRosterId: lastKnownRosterId[pid],
-                nlot: !currentRosterPlayers.contains(pid),
-                notes: nil
-            )
-            fullRecords[pid] = rec
-        }
-
-        return (owned: compact, teamHistorical: teamHistorical, fullPlayers: fullRecords)
-    }
-
-    // Public wrapper: rebuild caches for an already-imported leagueId by reading persisted seasons
-    func rebuildCachesForLeague(leagueId: String) async throws {
-        // Load persisted league file
-        guard let league = loadLeagueFile(id: leagueId) else {
-            throw NSError(domain: "SleeperLeagueManager", code: 1, userInfo: [NSLocalizedDescriptionKey: "League not found on disk: \(leagueId)"])
-        }
-
-        // Build caches from the league seasons
-        let seasons = league.seasons
-        let caches = try await buildPlayerCaches(from: seasons)
-
-        var updatedLeague = league
-        updatedLeague.ownedPlayers = caches.owned
-        updatedLeague.teamHistoricalPlayers = caches.teamHistorical
-        updatedLeague.fullPlayers = caches.fullPlayers
-
-        // Recompute all-time cache using available in-memory allPlayers (best-effort)
-        let finalLeague = AllTimeAggregator.buildAllTime(for: updatedLeague, playerCache: allPlayers)
-
-        // Persist updated league file
-        persistLeagueFile(finalLeague)
-        saveIndex()
-        DatabaseManager.shared.saveLeague(finalLeague)
-
-        print("[CachesRebuild] Rebuilt player caches for league \(leagueId) — ownedPlayers=\(caches.owned.count) teamHistoricalTeams=\(caches.teamHistorical.count) fullPlayers=\(caches.fullPlayers.count)")
-    }
-
-    // NOTE: fetchMatchupsByWeek and other functions remain below (unchanged), except where we call buildPlayerCaches/attach caches.
 
     // --- PATCHED: Ensure every team has a matchup entry for every week played ---
     private func fetchMatchupsByWeek(leagueId: String) async throws -> [Int: [MatchupEntry]] {
@@ -854,8 +554,6 @@ class SleeperLeagueManager: ObservableObject {
         }()
 
         // Ensure each roster has an entry for every week up to effectiveLastWeek
-        var totalPlaceholders = 0
-        var totalEntriesWithEmptyPlayersPoints = 0
         for wk in 1...effectiveLastWeek {
             var completedEntries = out[wk] ?? []
             let existingIds = Set(completedEntries.map { $0.roster_id })
@@ -876,317 +574,10 @@ class SleeperLeagueManager: ObservableObject {
                         players_slots: nil // set to nil so populatePlayersSlots can inject only when appropriate
                     )
                 )
-                totalPlaceholders += 1
             }
             out[wk] = completedEntries
-
-            // Count how many entries for this week have no players_points (possible placeholders or empty API responses)
-            let empties = (out[wk] ?? []).filter { $0.players_points == nil || $0.players_points?.isEmpty == true }.count
-            if empties > 0 { totalEntriesWithEmptyPlayersPoints += empties }
         }
 
-        // If there are weeks with empties, attempt to fetch boxscore data for those weeks (best-effort)
-        if totalEntriesWithEmptyPlayersPoints > 0 {
-            // Identify weeks that had at least one empty players_points
-            var weeksToAttempt: [Int] = []
-            for (wk, entries) in out {
-                let empties = entries.filter { $0.players_points == nil || $0.players_points?.isEmpty == true }.count
-                if empties > 0 {
-                    weeksToAttempt.append(wk)
-                }
-            }
-
-            // Limit attempts to a reasonable count to avoid excessive network calls during import
-            // but in practice weeksToAttempt is usually small. We will process them sequentially for now.
-            for wk in weeksToAttempt {
-                // Attempt to fetch boxscore-derived players_points for this week (best-effort)
-                let filledMap = await fetchBoxscoreForWeek(leagueId: leagueId, week: wk)
-
-                if !filledMap.isEmpty {
-                    var modifiedCount = 0
-                    var entries = out[wk] ?? []
-                    for i in 0..<entries.count {
-                        let rid = entries[i].roster_id
-                        // If entry has no players_points (or empty), and we have boxscore data for that roster, fill it
-                        if (entries[i].players_points == nil || entries[i].players_points?.isEmpty == true),
-                           let found = filledMap[rid], !found.isEmpty {
-                            let newEntry = MatchupEntry(
-                                roster_id: entries[i].roster_id,
-                                matchup_id: entries[i].matchup_id,
-                                points: entries[i].points,
-                                players_points: found,
-                                players_projected_points: entries[i].players_projected_points,
-                                starters: entries[i].starters,
-                                players: entries[i].players,
-                                players_slots: entries[i].players_slots
-                            )
-                            entries[i] = newEntry
-                            modifiedCount += 1
-                        }
-                    }
-                    if modifiedCount > 0 {
-                        out[wk] = entries
-                        print("[BoxscoreFill][merge] league=\(leagueId) week=\(wk) filledEntries=\(modifiedCount)")
-                    }
-                } else {
-                    print("[BoxscoreFill][merge] league=\(leagueId) week=\(wk) no boxscore data found")
-                }
-            }
-        }
-
-        // Diagnostic summary print (non-destructive)
-        print("[Diagnostics][fetchMatchupsByWeek] league=\(leagueId) heuristicCurrentWeek=\(heuristicCurrentWeek) effectiveLastWeek=\(effectiveLastWeek) totalPlaceholders=\(totalPlaceholders) totalEntriesWithEmptyPlayersPoints=\(totalEntriesWithEmptyPlayersPoints)")
-
-        // Also print up to 5 sample weeks that had empties for quicker triage
-        var sampleWeeks: [Int] = []
-        for (wk, entries) in out.sorted(by: { $0.key < $1.key }) {
-            let empties = entries.filter { $0.players_points == nil || $0.players_points?.isEmpty == true }.count
-            if empties > 0 {
-                sampleWeeks.append(wk)
-                if sampleWeeks.count >= 5 { break }
-            }
-        }
-        if !sampleWeeks.isEmpty {
-            print("[Diagnostics][fetchMatchupsByWeek] sampleWeeksWithEmptyPlayersPoints=\(sampleWeeks)")
-        }
-
-        return out
-    }
-
-    /// Best-effort fetch of boxscore / per-player scoring data for a given league/week.
-    /// Returns a map: roster_id -> [playerId: points]. Uses an in-memory cache to avoid repeated calls.
-    /// This function is intentionally defensive: it will try several heuristic endpoints, parse any JSON it receives,
-    /// and extract per-roster players_points maps if present. It will not throw — failures are logged and an empty map returned.
-    private func fetchBoxscoreForWeek(leagueId: String, week: Int) async -> [Int: [String: Double]] {
-        // Check cache
-        if let perLeague = boxscoreCache[leagueId], let cached = perLeague[week] {
-            return cached
-        }
-
-        var result: [Int: [String: Double]] = [:]
-        // Candidate endpoints (best-effort). Some may 404; we catch and continue.
-        let candidateUrls: [String] = [
-            "https://api.sleeper.app/v1/league/\(leagueId)/boxscore/\(week)",
-            "https://api.sleeper.app/v1/league/\(leagueId)/matchups/\(week)/boxscore",
-            "https://api.sleeper.app/v1/league/\(leagueId)/matchups/\(week)" // fallback re-request; sometimes different shape
-        ]
-
-        for raw in candidateUrls {
-            guard let url = URL(string: raw) else { continue }
-            do {
-                let (data, resp) = try await URLSession.shared.data(from: url)
-                // If status is 404 or 204, skip
-                if let http = resp as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
-                    print("[BoxscoreFill][fetch] league=\(leagueId) week=\(week) endpoint=\(raw) returned HTTP \(http.statusCode)")
-                    continue
-                }
-                // Try to parse generically using JSONSerialization and recursively extract any players_points fields
-                let json = try JSONSerialization.jsonObject(with: data, options: [.mutableLeaves, .fragmentsAllowed])
-                let extracted = extractPlayersPoints(from: json)
-                if !extracted.isEmpty {
-                    // Merge into result (do not overwrite if already present)
-                    for (rid, map) in extracted {
-                        if result[rid] == nil { result[rid] = map }
-                        else {
-                            // merge player-level keys, prefer numeric non-zero values from extracted
-                            for (pid, pts) in map {
-                                if result[rid]?[pid] == nil || (result[rid]?[pid] ?? 0.0) == 0.0 {
-                                    result[rid]?[pid] = pts
-                                }
-                            }
-                        }
-                    }
-                    // If we found useful data, stop trying further endpoints to avoid extra calls
-                    print("[BoxscoreFill][fetch] league=\(leagueId) week=\(week) endpoint=\(raw) successFoundEntries=\(extracted.count)")
-                    break
-                } else {
-                    // no players_points found here, log and optionally save raw response when debug enabled
-                    if boxscoreDebugSaveEnabled {
-                        saveBoxscoreDebugResponseIfPossible(data: data, endpoint: raw, leagueId: leagueId, week: week)
-                    }
-                    continue
-                }
-            } catch {
-                // network / parse errors are expected sometimes; if debug enabled save error info
-                if boxscoreDebugSaveEnabled {
-                    saveBoxscoreDebugError(endpoint: raw, leagueId: leagueId, week: week, error: error)
-                }
-                continue
-            }
-        }
-
-        // Normalize (ensure numeric) - already handled in extractor, but ensure non-empty result map keys
-        if result.isEmpty {
-            // store empty cache to avoid repeated futile attempts in same import run
-            var per = boxscoreCache[leagueId] ?? [:]
-            per[week] = [:]
-            boxscoreCache[leagueId] = per
-            return [:]
-        }
-
-        // Save into cache under simple shape: [leagueId: [week: [rosterId: [playerId:Double]]]]
-        var per = boxscoreCache[leagueId] ?? [:]
-        per[week] = result
-        boxscoreCache[leagueId] = per
-
-        // Convert to expected return shape [Int: [String:Double]] (already correct)
-        return result
-    }
-
-    /// Public read-only accessor for any previously-populated in-memory boxscore cache.
-    /// Returns rosterId -> [playerId: points] map for the requested week or nil if no cached entry exists.
-    /// - This does NOT perform a network call; it simply reads the manager's in-memory cache.
-    @MainActor
-    func boxscoreForWeekCached(leagueId: String, week: Int) -> [Int: [String: Double]]? {
-        return boxscoreCache[leagueId]?[week]
-    }
-
-    /// When debug saving is enabled, write raw response bytes to a file for inspection.
-    private func saveBoxscoreDebugResponseIfPossible(data: Data, endpoint: String, leagueId: String, week: Int) {
-        ensureUserDir()
-        let dir = userRootDir(activeUsername).appendingPathComponent("boxscore_debug", isDirectory: true)
-        do {
-            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-            let formatter = ISO8601DateFormatter()
-            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-            let ts = formatter.string(from: Date()).replacingOccurrences(of: ":", with: "-")
-            let short = UUID().uuidString.prefix(8)
-            let filename = "boxscore_debug_\(leagueId)_wk\(week)_\(ts)_\(short).json"
-            let fileURL = dir.appendingPathComponent(filename)
-            try data.write(to: fileURL, options: .atomic)
-            print("[BoxscoreFill][debug] saved raw response for league=\(leagueId) week=\(week) endpoint=\(endpoint) to \(fileURL.path)")
-        } catch {
-            print("[BoxscoreFill][debug] failed to save raw response: \(error)")
-        }
-    }
-
-    /// Save a small text file describing the error encountered when fetching a candidate endpoint.
-    private func saveBoxscoreDebugError(endpoint: String, leagueId: String, week: Int, error: Error) {
-        ensureUserDir()
-        let dir = userRootDir(activeUsername).appendingPathComponent("boxscore_debug", isDirectory: true)
-        do {
-            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-            let formatter = ISO8601DateFormatter()
-            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-            let ts = formatter.string(from: Date()).replacingOccurrences(of: ":", with: "-")
-            let short = UUID().uuidString.prefix(8)
-            let filename = "boxscore_debug_error_\(leagueId)_wk\(week)_\(ts)_\(short).txt"
-            let fileURL = dir.appendingPathComponent(filename)
-            let body = """
-            endpoint: \(endpoint)
-            league: \(leagueId)
-            week: \(week)
-            time: \(ts)
-            error: \(error)
-            """
-            try body.data(using: .utf8)?.write(to: fileURL, options: .atomic)
-            print("[BoxscoreFill][debug] saved error info for league=\(leagueId) week=\(week) endpoint=\(endpoint) to \(fileURL.path)")
-        } catch {
-            print("[BoxscoreFill][debug] failed to save error info: \(error)")
-        }
-    }
-
-    /// Recursive JSON extractor that searches for any occurrence of a "players_points" dictionary
-    /// and returns a map of roster_id -> [playerId:points]. This is intentionally loose because different
-    /// Sleeper endpoints / community endpoints may return different shapes.
-    private func extractPlayersPoints(from json: Any) -> [Int: [String: Double]] {
-        var out: [Int: [String: Double]] = [:]
-
-        if let arr = json as? [[String: Any]] {
-            for item in arr {
-                if let rid = (item["roster_id"] as? Int) ?? (item["rosterId"] as? Int) {
-                    if let pp = item["players_points"] as? [String: Any] {
-                        var map: [String: Double] = [:]
-                        for (k,v) in pp {
-                            if let num = v as? NSNumber { map[k] = num.doubleValue }
-                            else if let d = v as? Double { map[k] = d }
-                            else if let i = v as? Int { map[k] = Double(i) }
-                            else if let s = v as? String, let d = Double(s) { map[k] = d }
-                        }
-                        if !map.isEmpty { out[rid] = map }
-                    } else if let pp = item["players_points"] as? [String: Double] {
-                        out[rid] = pp
-                    } else if let players = item["players"] as? [[String: Any]] {
-                        // Some boxscore-like shapes list players with scores individually
-                        var map: [String: Double] = [:]
-                        for p in players {
-                            if let pid = p["player_id"] as? String ?? p["playerId"] as? String {
-                                if let num = p["points"] as? NSNumber { map[pid] = num.doubleValue }
-                                else if let d = p["points"] as? Double { map[pid] = d }
-                                else if let i = p["points"] as? Int { map[pid] = Double(i) }
-                                else if let s = p["points"] as? String, let d = Double(s) { map[pid] = d }
-                            }
-                            // also check alt keys
-                            if let pid = p["player_id"] as? String, map[pid] == nil {
-                                if let ns = p["players_points"] as? NSNumber { map[pid] = ns.doubleValue }
-                            }
-                        }
-                        if !map.isEmpty { out[rid] = map }
-                    }
-                } else {
-                    // no roster_id at this level — still inspect nested items
-                    for (_, v) in item {
-                        let nested = extractPlayersPoints(from: v)
-                        for (k,m) in nested { out[k] = m }
-                    }
-                }
-            }
-        } else if let dict = json as? [String: Any] {
-            // direct players_points at the dict root keyed by roster id strings?
-            // e.g., { "1": { "123": 12.3, ... }, "2": {...} }
-            var maybeRosterKeyed: Bool = true
-            for (k, v) in dict {
-                if let nested = v as? [String: Any] {
-                    // check if nested keys look like playerIds -> numeric
-                    var looksLikePlayers = false
-                    for (_, vv) in nested {
-                        if vv is NSNumber || vv is Double || vv is Int || (vv is String && Double(vv as! String) != nil) {
-                            looksLikePlayers = true
-                            break
-                        }
-                    }
-                    if looksLikePlayers {
-                        // interpret k as roster id if numeric
-                        if let rid = Int(k) {
-                            var map: [String: Double] = [:]
-                            for (pid, vv) in nested {
-                                if let num = vv as? NSNumber { map[pid] = num.doubleValue }
-                                else if let d = vv as? Double { map[pid] = d }
-                                else if let i = vv as? Int { map[pid] = Double(i) }
-                                else if let s = vv as? String, let d = Double(s) { map[pid] = d }
-                            }
-                            if !map.isEmpty { out[rid] = map }
-                        } else {
-                            // nested dict but key not numeric; recurse further
-                            let nestedExtract = extractPlayersPoints(from: nested)
-                            for (k2,m) in nestedExtract { out[k2] = m }
-                        }
-                    } else {
-                        // nested not players map, recurse
-                        let nestedExtract = extractPlayersPoints(from: nested)
-                        for (k2,m) in nestedExtract { out[k2] = m }
-                    }
-                } else if let arr = v as? [[String: Any]] {
-                    let nestedExtract = extractPlayersPoints(from: arr)
-                    for (k2,m) in nestedExtract { out[k2] = m }
-                } else {
-                    maybeRosterKeyed = false
-                }
-            }
-
-            // If nothing found yet, scan all nested values recursively
-            if out.isEmpty {
-                for (_, v) in dict {
-                    let nested = extractPlayersPoints(from: v)
-                    for (k,m) in nested { out[k] = m }
-                }
-            }
-        } else if let arrAny = json as? [Any] {
-            for v in arrAny {
-                let nested = extractPlayersPoints(from: v)
-                for (k,m) in nested { out[k] = m }
-            }
-        }
         return out
     }
 
@@ -1259,23 +650,18 @@ class SleeperLeagueManager: ObservableObject {
             let ownerId = roster.owner_id ?? ""
             let teamName = userDisplay[ownerId] ?? "Owner \(ownerId)"
 
-            // Build players asynchronously so weeklyScores can fetch boxscore data when needed.
             let rawPlayers = try await fetchPlayers(ids: roster.players ?? [])
-            var players: [Player] = []
-            players.reserveCapacity(rawPlayers.count)
-            for raw in rawPlayers {
-                let weekly = await weeklyScores(
-                    playerId: raw.player_id,
-                    rosterId: roster.roster_id,
-                    matchups: matchupsByWeek,
-                    leagueId: leagueId
+            let players: [Player] = rawPlayers.map {
+                Player(
+                    id: $0.player_id,
+                    position: $0.position ?? "UNK",
+                    altPositions: $0.fantasy_positions,
+                    weeklyScores: weeklyScores(
+                        playerId: $0.player_id,
+                        rosterId: roster.roster_id,
+                        matchups: matchupsByWeek
+                    )
                 )
-                players.append(Player(
-                    id: raw.player_id,
-                    position: raw.position ?? "UNK",
-                    altPositions: raw.fantasy_positions,
-                    weeklyScores: weekly
-                ))
             }
 
             let settings = roster.settings ?? [:]
@@ -1306,9 +692,6 @@ class SleeperLeagueManager: ObservableObject {
             var actualPosTotals: [String: Double] = [:]
             var actualPosStartCounts: [String: Int] = [:]
             var actualPosWeeks: [String: Set<Int>] = [:]
-
-            var totalOffPF = 0.0
-            var totalDefPF = 0.0
 
             // --- MAIN PATCHED SECTION: Use robust credited position for per-week actual lineup ---
             for week in weeksToUse {
@@ -1377,8 +760,6 @@ class SleeperLeagueManager: ObservableObject {
                     }
                     actualOff += weekOff
                     actualDef += weekDef
-                    totalOffPF += weekOff
-                    totalDefPF += weekDef
                 }
 
                 // --- OPTIMAL LINEUP: Use the weekly player pool from the matchup entry ---
@@ -1520,53 +901,24 @@ class SleeperLeagueManager: ObservableObject {
         return results
     }
 
-    /// Asynchronously attempt to resolve per-player weekly score timeline for a player.
-    /// If the matchup entry already contains players_points the value is used.
-    /// Otherwise we attempt fetchBoxscoreForWeek (cached) for that league/week and use any roster->player->points map discovered.
     private func weeklyScores(
         playerId: String,
         rosterId: Int,
-        matchups: [Int: [MatchupEntry]],
-        leagueId: String
-    ) async -> [PlayerWeeklyScore] {
+        matchups: [Int: [MatchupEntry]]
+    ) -> [PlayerWeeklyScore] {
         var scores: [PlayerWeeklyScore] = []
         for (week, entries) in matchups {
-            guard let me = entries.first(where: { $0.roster_id == rosterId }) else {
-                // no entry for this roster this week
-                continue
-            }
-
-            // Try direct players_points first
-            if let pts = me.players_points?[playerId] {
-                scores.append(PlayerWeeklyScore(
-                    week: week,
-                    points: pts,
-                    player_id: playerId,
-                    points_half_ppr: pts,
-                    matchup_id: me.matchup_id ?? 0,
-                    points_ppr: pts,
-                    points_standard: pts
-                ))
-                continue
-            }
-
-            // If players_points missing or empty, attempt boxscore fetch (best-effort) for this week
-            let boxForWeek = await fetchBoxscoreForWeek(leagueId: leagueId, week: week)
-            if let rosterMap = boxForWeek[rosterId], let pts = rosterMap[playerId] {
-                scores.append(PlayerWeeklyScore(
-                    week: week,
-                    points: pts,
-                    player_id: playerId,
-                    points_half_ppr: pts,
-                    matchup_id: me.matchup_id ?? 0,
-                    points_ppr: pts,
-                    points_standard: pts
-                ))
-                continue
-            }
-
-            // No players_points and boxscore had nothing for this roster/player — emit diagnostic as before
-            print("[Diagnostics][weeklyScores] missing players_points for player=\(playerId) roster=\(rosterId) week=\(week)")
+            guard let me = entries.first(where: { $0.roster_id == rosterId }),
+                  let pts = me.players_points?[playerId] else { continue }
+            scores.append(PlayerWeeklyScore(
+                week: week,
+                points: pts,
+                player_id: playerId,
+                points_half_ppr: pts,
+                matchup_id: me.matchup_id ?? 0,
+                points_ppr: pts,
+                points_standard: pts
+            ))
         }
         return scores.sorted { $0.week < $1.week }
     }
@@ -1729,7 +1081,7 @@ class SleeperLeagueManager: ObservableObject {
         let latestSeason = seasonData.last?.season ?? league.season ?? "\(currentYear)"
         let latestTeams = seasonData.last?.teams ?? []
 
-        var leagueData = LeagueData(
+        return LeagueData(
             id: league.league_id,
             name: league.name ?? "Unnamed League",
             season: latestSeason,
@@ -1737,21 +1089,6 @@ class SleeperLeagueManager: ObservableObject {
             seasons: seasonData,
             startingLineup: league.roster_positions ?? []
         )
-
-        // Attempt to build compact caches (ownedPlayers & teamHistoricalPlayers & fullPlayers).
-        // Best-effort: failures logged but do not abort import.
-        do {
-            let caches = try await buildPlayerCaches(from: seasonData)
-            leagueData.ownedPlayers = caches.owned
-            leagueData.teamHistoricalPlayers = caches.teamHistorical
-            leagueData.fullPlayers = caches.fullPlayers
-            print("[CachesAttach] built compact player caches for league \(league.league_id): owned=\(caches.owned.count) teamHistoricalTeams=\(caches.teamHistorical.count) fullPlayers=\(caches.fullPlayers.count)")
-        } catch {
-            print("[CachesAttach] Failed to build compact caches for league \(league.league_id): \(error)")
-            // continue without caches
-        }
-
-        return leagueData
     }
 
     // New helper: populate players_slots in matchupsByWeek using any per-roster settings that contain per-player mappings.
@@ -1868,7 +1205,7 @@ class SleeperLeagueManager: ObservableObject {
     ///   - overwriteTeamStanding: if true, also overwrite TeamStanding.championships (destructive). Default: false.
     /// - Returns: per-season report and aggregated computed counts
     ///
-    /// This method makes a timestamped backup of the current league JSON file before writing.
+    /// This method makes a timestamped backup of the current league file before writing.
     func recomputeAndPersistChampionships(
         for leagueId: String,
         persistComputedContainer: Bool = true,
@@ -1943,7 +1280,6 @@ class SleeperLeagueManager: ObservableObject {
             seasons: newSeasons,
             startingLineup: league.startingLineup
         )
-
         updatedLeague.computedChampionships = aggregated
 
         // Optionally overwrite TeamStanding.championships (destructive) — NOT recommended by default
@@ -2160,7 +1496,7 @@ class SleeperLeagueManager: ObservableObject {
             newSeasons[i] = SeasonData(id: latestSeason.id, season: latestSeason.season, teams: teams, playoffStartWeek: playoffStart, playoffTeamsCount: nil, matchups: matchups, matchupsByWeek: matchupsByWeek)
         }
 
-        var updated = LeagueData(
+        let updated = LeagueData(
             id: league.id,
             name: league.name,
             season: league.season,
@@ -2168,17 +1504,6 @@ class SleeperLeagueManager: ObservableObject {
             seasons: newSeasons,
             startingLineup: league.startingLineup
         )
-
-        // Rebuild compact caches for updated league (best-effort)
-        do {
-            let caches = try await buildPlayerCaches(from: newSeasons)
-            updated.ownedPlayers = caches.owned
-            updated.teamHistoricalPlayers = caches.teamHistorical
-            updated.fullPlayers = caches.fullPlayers
-            print("[RefreshCaches] rebuilt compact caches for league \(league.id) after refresh")
-        } catch {
-            print("[RefreshCaches] failed to rebuild caches for league \(league.id): \(error)")
-        }
 
         return AllTimeAggregator.buildAllTime(for: updated, playerCache: allPlayers)
     }
@@ -2332,25 +1657,5 @@ class SleeperLeagueManager: ObservableObject {
         } catch {
             print("[GlobalWeekRefresh] league=\(leagueId) failed to refresh global week: \(error)")
         }
-    }
-
-    // MARK: - Diagnostic control
-    /// Toggle saving raw candidate endpoint responses to disk when the extractor finds no usable players_points.
-    /// Default: false. Enable temporarily while debugging and disable afterwards.
-    func setBoxscoreDebugSaveEnabled(_ enabled: Bool=true) {
-        boxscoreDebugSaveEnabled = enabled
-        print("[BoxscoreFill][debug] boxscore debug saving \(enabled ? "ENABLED" : "DISABLED")")
-    }
-
-    // ---------------------------
-    // NEW: Convenience player name resolver (synchronous, cache-only)
-    // ---------------------------
-    /// Returns the player's display name from caches if available (playerCache or allPlayers).
-    /// Note: This is a cache-only synchronous helper intended for UI. It will not perform network requests.
-    /// Returns nil if the name could not be resolved from available caches.
-    func playerDisplayName(for playerId: String) -> String? {
-        if let p = playerCache?[playerId], let name = p.full_name, !name.isEmpty { return name }
-        if let p = allPlayers[playerId], let name = p.full_name, !name.isEmpty { return name }
-        return nil
     }
 }

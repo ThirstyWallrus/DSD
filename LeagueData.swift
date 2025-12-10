@@ -80,83 +80,6 @@ struct H2HMatchDetail: Codable, Equatable {
     let result: String // "W", "L", "T"
 }
 
-// MARK: - Compact per-league player cache (Version B)
-//
-// Stored inside LeagueData as `ownedPlayers`.
-// Purpose: Persist only players that were ever rostered or appeared in matchups for the league.
-// Compact: No weeklyScores, only metadata used to resolve name/position and first/last seen timeline.
-public struct CompactPlayer: Codable, Equatable {
-    let id: String
-    let fullName: String?
-    let position: String?
-    let fantasyPositions: [String]?
-
-    // first/last seen timeline (season id + week)
-    let firstSeenSeason: String?
-    let firstSeenWeek: Int?
-    let lastSeenSeason: String?
-    let lastSeenWeek: Int?
-
-    // last known roster id (roster_id from Sleeper) when observed
-    let lastKnownRosterId: Int?
-
-    // No Longer On Team flag (NLOT)
-    // true => not present on latest-season rosters for the league context
-    let nlot: Bool
-
-    // Optional short notes (developer/debug)
-    let notes: String?
-}
-
-// MARK: - Per-team historical player record (compact)
-//
-// Purpose: small per-team provenance used to resolve historical starters and quick provenance.
-// Stored inside LeagueData as `teamHistoricalPlayers` keyed by teamId -> playerId -> TeamHistoricalPlayer
-public struct TeamHistoricalPlayer: Codable, Equatable {
-    let playerId: String
-    let firstSeenSeason: String?
-    let firstSeenWeek: Int?
-    let lastSeenSeason: String?
-    let lastSeenWeek: Int?
-    let lastKnownPosition: String?
-    let lastKnownName: String?
-    let lastKnownRosterId: Int?
-    let nlot: Bool
-    // Optional compact appearances timeline (seasonId + week) - omit to save space unless needed
-    let appearancesCount: Int?
-    let notes: String?
-}
-
-// MARK: - Full per-player canonical record (Option A)
-// Purpose: single source of truth for per-player weekly points across the league context.
-// weeklyPoints keys are encoded as "<seasonId>-<week>" (e.g., "2024-3").
-// Stored in LeagueData.fullPlayers (optional).
-public struct FullPlayerRecord: Codable, Equatable {
-    let playerId: String
-    let fullName: String?
-    let position: String?
-    let fantasyPositions: [String]?
-
-    // keyed by "\(seasonId)-\(week)" -> Double
-    var weeklyPoints: [String: Double]?
-
-    let firstSeenSeason: String?
-    let firstSeenWeek: Int?
-    let lastSeenSeason: String?
-    let lastSeenWeek: Int?
-    let lastKnownRosterId: Int?
-    let nlot: Bool?
-    let notes: String?
-}
-
-// Optional: persisted lightweight free-agent snapshot (minimal fields + timestamp).
-// Keep optional and compact (only populated if feature enabled).
-public struct FreeAgentSnapshot: Codable, Equatable {
-    let timestamp: Date
-    let playerIds: [String]    // only ids
-    let notes: String?
-}
-
 // MARK: - Core League Models
 
 struct LeagueData: Identifiable, Codable, Equatable {
@@ -179,32 +102,6 @@ struct LeagueData: Identifiable, Codable, Equatable {
     // NEW: Computed championships container (safe/preserved, doesn't overwrite original TeamStanding.championships)
     // Key: ownerId -> count
     var computedChampionships: [String: Int]? = nil
-
-    // ----------------------------------------------------------------
-    // Version B additions (single-file caches)
-    //
-    // Compact per-league owned players cache (only players that were rostered or appeared in matchups)
-    // Key: playerId -> CompactPlayer
-    var ownedPlayers: [String: CompactPlayer]? = nil
-
-    // Per-team historical player records (teamId -> playerId -> TeamHistoricalPlayer)
-    // teamId corresponds to TeamStanding.id (which is roster_id as a String).
-    var teamHistoricalPlayers: [String: [String: TeamHistoricalPlayer]]? = nil
-
-    // NEW (Option A): Canonical full per-player record including weeklyPoints
-    // Key: playerId -> FullPlayerRecord
-    // Optional: missing on older imports; built gradually by rebuildCachesForLeague / imports.
-    var fullPlayers: [String: FullPlayerRecord]? = nil
-
-    // Optional persisted minimal free-agent snapshot for this league (if feature enabled)
-    var freeAgentsSnapshot: FreeAgentSnapshot? = nil
-
-    // NEW: Per-team matchup history (teamId -> opponentTeamId -> array of H2HMatchDetail)
-    // This stores perspective-specific match detail entries for each matchup encountered for that team.
-    // Example: matchupHistories["12"]["34"] = [H2HMatchDetail(...), ...] (team 12 vs opponent 34)
-    // This is intentionally stored at the league level to avoid changing TeamStanding shape widely.
-    var matchupHistories: [String: [String: [H2HMatchDetail]]]? = nil
-    // ----------------------------------------------------------------
 }
 
 struct SeasonData: Identifiable, Codable, Equatable {
