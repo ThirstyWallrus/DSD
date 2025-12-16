@@ -266,8 +266,6 @@ struct MatchupView: View {
                 return "\(initial). \(last)"
             }
         }
-        // No full name in cache — try to find in TeamStanding roster?  Team. Player doesn't contain name in our model.
-        // Fallback to pid
         return pid
     }
 
@@ -393,10 +391,8 @@ struct MatchupView: View {
             case "LB": picked = popBest(from: &lbPool)
             case "DB": picked = popBest(from: &dbPool)
             case "FLEX":
-                // pick best from offensiveFlexPool that isn't used
                 picked = popBest(from: &offensiveFlexPool)
                 if picked == nil {
-                    // try any remaining candidate
                     picked = popBest(from: &superFlexPool)
                 }
             case "SUPER_FLEX":
@@ -419,7 +415,6 @@ struct MatchupView: View {
             }
         }
 
-        // Append any starters not yet included (fallthrough)
         for c in candidates where !usedIds.contains(c.id) {
             usedIds.insert(c.id)
             let credited = SlotPositionAssigner.countedPosition(for: "FLEX", candidatePositions:  c.fantasy, base: c.basePos)
@@ -427,7 +422,6 @@ struct MatchupView: View {
             ordered.append(LineupPlayer(id: c.id, displaySlot: "\(credited) \(name)", creditedPosition: credited, position: c.basePos, slot: "FLEX", points: c.points, isBench: false, slotColor: positionColor(credited)))
         }
 
-        // debug logging retained
         if lineupDebugEnabled {
             let slotAssignmentsForDebug:  [(slot: String, player: Player? )] = ordered.map { lp in
                 if let p = team.roster.first(where: { $0.id == lp.id }) {
@@ -441,29 +435,65 @@ struct MatchupView: View {
         return ordered
     }
 
-    // Categorize bench into bench / IR / TAXI using explicit tokens and playerCache heuristics
-    private func categorizedBench(for team: TeamStanding, week: Int) -> (bench: [LineupPlayer], ir: [LineupPlayer], taxi:  [LineupPlayer]) {
+    // MARK: - Week-scoped bench helpers
+
+    private struct WeekPlayerMeta: Hashable {
+        let id: String
+        let position: String
+        let altPositions: [String]
+    }
+
+    private func weekContext(for team: TeamStanding, week: Int) -> (entry: MatchupEntry?, starters: [String], pool: [WeekPlayerMeta]) {
         let season = selectedSeasonData
         let entriesForWeek = season?.matchupsByWeek?[week]
         let rosterId = Int(team.id) ?? -1
         let myEntry = entriesForWeek?.first(where: { $0.roster_id == rosterId })
 
-        // build playerScores map
+        let starters = myEntry?.starters ?? team.actualStartersByWeek?[week] ?? []
+        var ids = Set(starters)
+
+        if let players = myEntry?.players { ids.formUnion(players) }
+        if let pp = myEntry?.players_points { ids.formUnion(pp.keys) }
+        if let actual = team.actualStartersByWeek?[week] { ids.formUnion(actual) }
+
+        // Build week-specific player metas without pulling the entire current roster
+        var pool: [WeekPlayerMeta] = []
+        for id in ids {
+            if let p = team.roster.first(where: { $0.id == id }) {
+                pool.append(WeekPlayerMeta(id: id, position: p.position, altPositions: p.altPositions ?? []))
+            } else if let raw = leagueManager.playerCache?[id] {
+                pool.append(WeekPlayerMeta(id: id, position: raw.position ?? "UNK", altPositions: raw.fantasy_positions ?? []))
+            } else {
+                pool.append(WeekPlayerMeta(id: id, position: "UNK", altPositions: []))
+            }
+        }
+
+        // Stable ordering
+        pool.sort { $0.id < $1.id }
+
+        return (entry: myEntry, starters: starters, pool: pool)
+    }
+
+    // Categorize bench into bench / IR / TAXI using explicit tokens and playerCache heuristics
+    private func categorizedBench(for team: TeamStanding, week: Int) -> (bench: [LineupPlayer], ir: [LineupPlayer], taxi:  [LineupPlayer]) {
+        let ctx = weekContext(for: team, week: week)
+        let myEntry = ctx.entry
+
         var playerScores: [String: Double] = [:]
         if let pp = myEntry?.players_points, !pp.isEmpty {
             playerScores = pp
         } else {
-            for p in team.roster {
-                if let s = p.weeklyScores.first(where: { $0.week == week }) {
-                    playerScores[p.id] = s.points_half_ppr ?? s.points
+            for wp in ctx.pool {
+                if playerScores[wp.id] == nil,
+                   let p = team.roster.first(where: { $0.id == wp.id }),
+                   let s = p.weeklyScores.first(where: { $0.week == week }) {
+                    playerScores[wp.id] = s.points_half_ppr ?? s.points
                 }
             }
         }
 
-        // Determine starters set
-        let startersSet = Set(myEntry?.starters ?? team.actualStartersByWeek?[week] ?? [])
-
-        let benchPlayers: [Player] = team.roster.filter { !startersSet.contains($0.id) }
+        let startersSet = Set(ctx.starters)
+        let benchPlayers: [WeekPlayerMeta] = ctx.pool.filter { !startersSet.contains($0.id) }
 
         var benchList: [LineupPlayer] = []
         var irList: [LineupPlayer] = []
@@ -476,7 +506,6 @@ struct MatchupView: View {
             let normPos = PositionNormalizer.normalize(player.position)
             let displaySlotBase = normPos
 
-            // Determine explicit slot token if any
             let token = explicitSlotTokenForBenchPlayer(playerId: pid, team: team, week: week, myEntry: myEntry)
             if let t = token {
                 if t.uppercased() == "IR" {
@@ -488,7 +517,6 @@ struct MatchupView: View {
                 }
             }
 
-            // If no explicit token, but playerCache indicates IR/TAXI-like token in fantasy_positions or position, detect heuristically
             if let raw = leagueManager.playerCache?[pid] {
                 if let pos = raw.position?.uppercased(), pos.contains("IR") {
                     irList.append(LineupPlayer(id: pid, displaySlot: "IR \(displaySlotBase) \(name)", creditedPosition: displaySlotBase, position: displaySlotBase, slot: "IR", points:  pts, isBench: true, slotColor: .gray))
@@ -502,21 +530,17 @@ struct MatchupView: View {
                 }
             }
 
-            // Default to bench
             benchList.append(LineupPlayer(id: pid, displaySlot: "\(displaySlotBase) \(name)", creditedPosition: displaySlotBase, position: displaySlotBase, slot: "BN", points: pts, isBench: true, slotColor:  .white))
         }
 
-        // Sort bench by position ordering for readability:  QB, RB, WR, TE, K, DL, LB, DB
         let benchOrder = ["QB","RB","WR","TE","K","DL","LB","DB"]
         benchList.sort { a, b in
             let ai = benchOrder.firstIndex(of: a.creditedPosition) ?? benchOrder.count
             let bi = benchOrder.firstIndex(of: b.creditedPosition) ?? benchOrder.count
             if ai != bi { return ai < bi }
-            // tie-breaker by points desc
             return a.points > b.points
         }
 
-        // Sort IR/TAXI by points desc
         irList.sort { $0.points > $1.points }
         taxiList.sort { $0.points > $1.points }
 
@@ -530,23 +554,24 @@ struct MatchupView: View {
 
     /// Returns the bench, ordered as specified (legacy usage compatible)
     private func orderedBench(for team: TeamStanding, week: Int) -> [LineupPlayer] {
-        // Keep the original simple bench order for compatibility (unused by the new combined layout)
-        let season = selectedSeasonData
-        let entriesForWeek = season?.matchupsByWeek?[week]
-        let rosterId = Int(team.id) ?? -1
-        let myEntry = entriesForWeek?.first(where: { $0.roster_id == rosterId })
-        let startersSet = Set(myEntry?.starters ?? team.actualStartersByWeek?[week] ??  [])
+        let ctx = weekContext(for: team, week: week)
+        let myEntry = ctx.entry
+        let startersSet = Set(ctx.starters)
+
         var playerScores: [String: Double] = [:]
         if let pp = myEntry?.players_points, !pp.isEmpty {
             playerScores = pp
         } else {
-            for p in team.roster {
-                if let s = p.weeklyScores.first(where: { $0.week == week }) {
-                    playerScores[p.id] = s.points_half_ppr ?? s.points
+            for wp in ctx.pool {
+                if playerScores[wp.id] == nil,
+                   let p = team.roster.first(where: { $0.id == wp.id }),
+                   let s = p.weeklyScores.first(where: { $0.week == week }) {
+                    playerScores[wp.id] = s.points_half_ppr ?? s.points
                 }
             }
         }
-        let benchPlayers = team.roster.filter { !startersSet.contains($0.id) }
+
+        let benchPlayers = ctx.pool.filter { !startersSet.contains($0.id) }
         var bench: [LineupPlayer] = benchPlayers.map { player in
             let normPos = PositionNormalizer.normalize(player.position)
             let name = formatPlayerDisplayName(pid:  player.id, team: team)
@@ -1047,7 +1072,6 @@ struct MatchupView: View {
                 Text("No lineup data").foregroundColor(.gray)
             }
 
-            // Bench / IR / TAXI separators and lists using Pick Six font for separators
             let benchBlocks = team.flatMap { categorizedBench(for: $0.teamStanding, week: currentWeekNumber) }
 
             Text("-----BENCH-----")
@@ -1230,7 +1254,6 @@ struct MatchupView: View {
                         .frame(maxWidth: .infinity)
                         .multilineTextAlignment(.center)
 
-                    // Use the simplified initializer (HeadToHeadStatsSection has optional snapshot params with defaults)
                     HeadToHeadStatsSection(
                         user: user,
                         opp: opp,
