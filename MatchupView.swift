@@ -5,13 +5,13 @@
 import SwiftUI
 
 // Flex slot definitions for Sleeper
-private let offensiveFlexSlots: Set<String> = [
+private let offensiveFlexSlots: Set = [
     "FLEX", "WRRB", "WRRBTE", "WRRB_TE", "RBWR", "RBWRTE",
     "SUPER_FLEX", "QBRBWRTE", "QBRBWR", "QBSF", "SFLX"
 ]
-private let regularFlexSlots: Set<String> = ["FLEX", "WRRB", "WRRBTE", "WRRB_TE", "RBWR", "RBWRTE"]
-private let superFlexSlots: Set<String> = ["SUPER_FLEX", "QBRBWRTE", "QBRBWR", "QBSF", "SFLX"]
-private let idpFlexSlots: Set<String> = [
+private let regularFlexSlots: Set = ["FLEX", "WRRB", "WRRBTE", "WRRB_TE", "RBWR", "RBWRTE"]
+private let superFlexSlots: Set = ["SUPER_FLEX", "QBRBWRTE", "QBRBWR", "QBSF", "SFLX"]
+private let idpFlexSlots: Set = [
     "IDP", "IDPFLEX", "IDP_FLEX", "DFLEX", "DL_LB_DB", "DL_LB", "LB_DB", "DL_DB"
 ]
 
@@ -35,6 +35,12 @@ private func duelDesignation(for slot: String) -> String? {
 }
 
 struct MatchupView: View {
+    enum LineupTab: Hashable {
+        case user
+        case opponent
+        case rol
+    }
+
     @EnvironmentObject var leagueManager: SleeperLeagueManager
     @EnvironmentObject var appSelection: AppSelection
     @EnvironmentObject var authViewModel: AuthViewModel
@@ -69,12 +75,13 @@ struct MatchupView: View {
     fileprivate let slotLabelWidth: CGFloat = 160
     fileprivate let scoreColumnWidth: CGFloat = 60
 
-    @AppStorage("statDropPersonality") var userStatDropPersonality:  StatDropPersonality = .classicESPN
+    @AppStorage("statDropPersonality") var userStatDropPersonality: StatDropPersonality = .classicESPN
     @State private var selectedWeek: String = ""
     @State private var isStatDropActive: Bool = false
     @State private var isLoading: Bool = false
     @State private var lineupDebugEnabled: Bool = true
     @State private var isH2HActive: Bool = false
+    @State private var lineupTab: LineupTab = .user
 
     // MARK: - Centralized Selection
     private var league: LeagueData?  { appSelection.selectedLeague }
@@ -140,7 +147,7 @@ struct MatchupView: View {
     }
 
     /// Returns the current week by preferring the league's most-recent meaningful week (in-progress or most recent with data).
-    /// Falls back to the largest key in matchupsByWeek, or to the leagueManager. globalCurrentWeek when appropriate.
+    /// Falls back to the largest key in matchupsByWeek, or to the leagueManager.globalCurrentWeek when appropriate.
     private var currentMatchupWeek: Int {
         guard let season = selectedSeasonData, let weeksDict = season.matchupsByWeek, !weeksDict.isEmpty else {
             return max(1, leagueManager.globalCurrentWeek)
@@ -246,7 +253,7 @@ struct MatchupView: View {
 
     // Formats a player's display name as "F.  Lastname" using playerCache if available.
     private func formatPlayerDisplayName(pid: String, team: TeamStanding?) -> String {
-        if let raw = leagueManager.playerCache? [pid], let full = raw.full_name, !full.isEmpty {
+        if let raw = leagueManager.playerCache?[pid], let full = raw.full_name, !full.isEmpty {
             let parts = full.split(separator: " ").map(String.init).filter { !$0.isEmpty }
             if parts.count == 1 {
                 let name = parts[0]
@@ -282,7 +289,7 @@ struct MatchupView: View {
         let rosterId = Int(team.id) ?? -1
         let myEntry = entriesForWeek?.first(where: { $0.roster_id == rosterId })
         let startersFromEntry:  [String]?  = myEntry?.starters
-        var starters = startersFromEntry ?? team.actualStartersByWeek? [week] ?? []
+        var starters = startersFromEntry ?? team.actualStartersByWeek?[week] ?? []
         if starters.isEmpty {
             // nothing to order
             return []
@@ -372,7 +379,7 @@ struct MatchupView: View {
         ]
 
         var ordered: [LineupPlayer] = []
-        var usedIds = Set<String>()
+        var usedIds = Set()
 
         for token in sequenceTokens {
             var picked:  C?  = nil
@@ -454,7 +461,7 @@ struct MatchupView: View {
         }
 
         // Determine starters set
-        let startersSet = Set(myEntry?.starters ?? team.actualStartersByWeek? [week] ?? [])
+        let startersSet = Set(myEntry?.starters ?? team.actualStartersByWeek?[week] ?? [])
 
         let benchPlayers: [Player] = team.roster.filter { !startersSet.contains($0.id) }
 
@@ -473,7 +480,7 @@ struct MatchupView: View {
             let token = explicitSlotTokenForBenchPlayer(playerId: pid, team: team, week: week, myEntry: myEntry)
             if let t = token {
                 if t.uppercased() == "IR" {
-                    irList.append(LineupPlayer(id: pid, displaySlot: "IR \(displaySlotBase) \(name)", creditedPosition:  displaySlotBase, position: displaySlotBase, slot: "IR", points: pts, isBench: true, slotColor:  . gray))
+                    irList.append(LineupPlayer(id: pid, displaySlot: "IR \(displaySlotBase) \(name)", creditedPosition:  displaySlotBase, position: displaySlotBase, slot: "IR", points: pts, isBench: true, slotColor:  .gray))
                     continue
                 } else if t.uppercased() == "TAXI" || t.uppercased().contains("TAXI") {
                     taxiList.append(LineupPlayer(id: pid, displaySlot: "Taxi \(displaySlotBase) \(name)", creditedPosition:  displaySlotBase, position: displaySlotBase, slot: "TAXI", points: pts, isBench: true, slotColor:  .gray))
@@ -608,7 +615,7 @@ struct MatchupView: View {
     }
     private var opponentDisplayName: String {
         if let opp = opponentTeamStanding {
-            if let stats = opp.league?.allTimeOwnerStats? [opp.ownerId], !stats.latestDisplayName.isEmpty {
+            if let stats = opp.league?.allTimeOwnerStats?[opp.ownerId], !stats.latestDisplayName.isEmpty {
                 return stats.latestDisplayName
             } else if !opp.name.isEmpty {
                 return opp.name
@@ -623,45 +630,46 @@ struct MatchupView: View {
 
     // MARK: - UI
     var body: some View {
-            ZStack {
-                Color.black.ignoresSafeArea()
-                if isLoading {
-                    ProgressView("Loading matchup data...")
-                        .progressViewStyle(CircularProgressViewStyle())
-                        .tint(.orange)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else {
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 36) {
-                            headerBlock
-                            if isStatDropActive {
-                                statDropContent
-                            } else if isH2HActive {
-                                headToHeadContent
-                            } else {
-                                matchupContent
-                            }
+        ZStack {
+            Color.black.ignoresSafeArea()
+            if isLoading {
+                ProgressView("Loading matchup data...")
+                    .progressViewStyle(CircularProgressViewStyle())
+                    .tint(.orange)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 36) {
+                        headerBlock
+                        if isStatDropActive {
+                            statDropContent
+                        } else if isH2HActive {
+                            headToHeadContent
+                        } else {
+                            matchupContent
                         }
-                        .frame(maxWidth: maxContentWidth)
-                        .padding(.horizontal, horizontalEdgePadding)
-                        . padding(.top, 32)
-                        .padding(.bottom, 120)
                     }
-                    .safeAreaInset(edge: . bottom) {
-                        Color.clear.frame(height: 0)
-                    }
+                    .frame(maxWidth: maxContentWidth)
+                    .padding(.horizontal, horizontalEdgePadding)
+                    .padding(.top, 32)
+                    .padding(.bottom, 120)
+                }
+                .safeAreaInset(edge: .bottom) {
+                    Color.clear.frame(height: 0)
                 }
             }
-            .ignoresSafeArea(edges: .bottom)
-            .onAppear {
-                setDefaultWeekSelection()
-                refreshData()
-            }
-            .onChange(of: appSelection.selectedSeason) { _ in setDefaultWeekSelection() }
-            .onChange(of: appSelection.selectedLeagueId) { _ in setDefaultWeekSelection() }
-            .onChange(of: appSelection.leagues) { _ in setDefaultWeekSelection() }
-            .onChange(of: leagueManager.globalCurrentWeek) { _ in setDefaultWeekSelection() }
         }
+        .ignoresSafeArea(edges: .bottom)
+        .onAppear {
+            setDefaultWeekSelection()
+            refreshData()
+        }
+        .onChange(of: appSelection.selectedSeason) { _ in setDefaultWeekSelection() }
+        .onChange(of: appSelection.selectedLeagueId) { _ in setDefaultWeekSelection() }
+        .onChange(of: appSelection.leagues) { _ in setDefaultWeekSelection() }
+        .onChange(of: leagueManager.globalCurrentWeek) { _ in setDefaultWeekSelection() }
+    }
+
     // MARK: - Header & Menus
     private var headerBlock:  some View {
         VStack(spacing: 18) {
@@ -681,13 +689,13 @@ struct MatchupView: View {
                         MyTeamView.phattGradientText(Text(opponentTeamName), size: 36)
                             .frame(maxWidth: .infinity)
                             .multilineTextAlignment(.center)
-                            . lineLimit(1)
+                            .lineLimit(1)
                             .minimumScaleFactor(0.5)
                     }
                 } else {
                     MyTeamView.phattGradientText(Text("Matchup"), size: 36)
                         .frame(maxWidth: .infinity)
-                        . multilineTextAlignment(.center)
+                        .multilineTextAlignment(.center)
                         .lineLimit(1)
                         .minimumScaleFactor(0.5)
                 }
@@ -796,7 +804,7 @@ struct MatchupView: View {
         } label: {
             Text(isH2HActive ? "Vs." : "H2H")
                 .bold()
-                .foregroundColor(. orange)
+                .foregroundColor(.orange)
                 .font(.custom("Phatt", size: 16))
                 .frame(minHeight: 36)
                 .frame(maxWidth: .infinity)
@@ -825,7 +833,7 @@ struct MatchupView: View {
     private func menuLabel(_ text: String) -> some View {
         Text(text)
             .bold()
-            .foregroundColor(. orange)
+            .foregroundColor(.orange)
             .font(.custom("Phatt", size: 16))
             .frame(minHeight: 36)
             .frame(maxWidth: .infinity)
@@ -833,7 +841,7 @@ struct MatchupView: View {
             .background(
                 RoundedRectangle(cornerRadius: 30)
                     .fill(Color.black)
-                    .shadow(color: . blue.opacity(0.7), radius: 8, y: 2)
+                    .shadow(color: .blue.opacity(0.7), radius: 8, y: 2)
             )
     }
 
@@ -859,7 +867,7 @@ struct MatchupView: View {
     // MARK: - Matchup Content (top:  Matchup Stats, below: Lineups)
     private var matchupContent: some View {
         VStack(alignment: .leading, spacing: 24) {
-            if let user = userTeamStanding, let opp = opponentTeamStanding, let lg = league {
+            if let user = userTeamStanding, let opp = opponentTeamStanding, let _ = league {
                 VStack(spacing: 8) {
                     MyTeamView.phattGradientText(Text("Matchup Stats"), size: 18)
                         .frame(maxWidth: .infinity)
@@ -869,18 +877,12 @@ struct MatchupView: View {
 
                 VStack(spacing: 8) {
                     MyTeamView.phattGradientText(Text("Lineups"), size: 18)
-                        . frame(maxWidth: .infinity)
+                        .frame(maxWidth: .infinity)
                         .multilineTextAlignment(.center)
 
-                    // Use flexible boxes that adapt to the parent container width.
-                    let spacing:  CGFloat = 16
-
-                    HStack(spacing: spacing) {
-                        teamCombinedLineupBenchBox(team: userTeam, accent: Color.cyan, title: "\(userDisplayName)'s Lineup")
-                            .frame(maxWidth: .infinity, alignment: .leading)
-
-                        teamCombinedLineupBenchBox(team: opponentTeam, accent: Color.yellow, title: "\(opponentDisplayName)'s Lineup")
-                            .frame(maxWidth: . infinity, alignment: .leading)
+                    VStack(spacing: 12) {
+                        lineupTabBar
+                        lineupTabContent
                     }
                     .padding(16)
                     .background(
@@ -891,8 +893,61 @@ struct MatchupView: View {
                 }
             } else {
                 Text("No matchup data available.")
-                    . foregroundColor(.white.opacity(0.7))
+                    .foregroundColor(.white.opacity(0.7))
             }
+        }
+    }
+
+    private func lineupTabButton(_ tab: LineupTab, title: String, enabled: Bool = true) -> some View {
+        let isSelected = lineupTab == tab
+        return Button {
+            guard enabled else { return }
+            lineupTab = tab
+        } label: {
+            Text(title)
+                .font(.custom("Phatt", size: 14))
+                .bold()
+                .foregroundColor(enabled ? (isSelected ? .black : .orange) : .gray)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 8)
+                .background(
+                    RoundedRectangle(cornerRadius: 12)
+                        .fill(isSelected ? Color.orange : Color.black)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 12)
+                                .stroke(Color.blue.opacity(0.6), lineWidth: isSelected ? 0 : 1)
+                        )
+                )
+        }
+        .disabled(!enabled)
+    }
+
+    private var lineupTabBar: some View {
+        HStack(spacing: 8) {
+            lineupTabButton(.user, title: "\(userDisplayName)'s Lineup", enabled: userTeam != nil)
+            lineupTabButton(.opponent, title: "\(opponentDisplayName)'s Lineup", enabled: opponentTeam != nil)
+            lineupTabButton(.rol, title: "R.O.L.", enabled: true)
+        }
+    }
+
+    @ViewBuilder
+    private var lineupTabContent: some View {
+        switch lineupTab {
+        case .user:
+            teamCombinedLineupBenchBox(team: userTeam, accent: Color.cyan, title: "\(userDisplayName)'s Lineup")
+        case .opponent:
+            teamCombinedLineupBenchBox(team: opponentTeam, accent: Color.yellow, title: "\(opponentDisplayName)'s Lineup")
+        case .rol:
+            VStack(alignment: .center, spacing: 8) {
+                Text("R.O.L.")
+                    .font(.headline.bold())
+                    .foregroundColor(.orange)
+                Text("Placeholder content coming soon.")
+                    .foregroundColor(.white.opacity(0.7))
+                    .font(.subheadline)
+            }
+            .frame(maxWidth: .infinity, alignment: .center)
+            .padding(.vertical, 12)
         }
     }
 
@@ -914,7 +969,7 @@ struct MatchupView: View {
                 HStack {
                     Text("Max Points").foregroundColor(.white.opacity(0.9))
                     Spacer()
-                    Text(String(format: "%. 2f", uDisplay.maxPoints)).foregroundColor(.white.opacity(0.85))
+                    Text(String(format: "%.2f", uDisplay.maxPoints)).foregroundColor(.white.opacity(0.85))
                 }
                 HStack {
                     Text("Mgmt %").foregroundColor(.white.opacity(0.9))
@@ -964,26 +1019,26 @@ struct MatchupView: View {
             VStack(spacing: 2) {
                 Text(head)
                     .font(.headline.bold())
-                    .foregroundColor(. orange)
+                    .foregroundColor(.orange)
                     .multilineTextAlignment(.center)
                 Text(tail)
                     .font(.subheadline)
-                    . foregroundColor(.white.opacity(0.9))
+                    .foregroundColor(.white.opacity(0.9))
                     .multilineTextAlignment(.center)
             }
-            .frame(maxWidth: . infinity)
+            .frame(maxWidth: .infinity)
 
             if let lineup = team?.lineup, !lineup.isEmpty {
                 ForEach(lineup) { player in
                     HStack {
                         Text(player.displaySlot)
                             .foregroundColor(player.slotColor ??  positionColor(player.creditedPosition))
-                            .frame(width: slotW, alignment: . leading)
+                            .frame(width: slotW, alignment: .leading)
                             .lineLimit(1)
                             .minimumScaleFactor(0.7)
                         Spacer()
                         Text(String(format: "%.2f", player.points))
-                            . foregroundColor(.green)
+                            .foregroundColor(.green)
                             .frame(width: scoreW, alignment:  .trailing)
                     }
                     .font(.caption)
@@ -996,8 +1051,8 @@ struct MatchupView: View {
             let benchBlocks = team.flatMap { categorizedBench(for: $0.teamStanding, week: currentWeekNumber) }
 
             Text("-----BENCH-----")
-                .font(. custom(pickSixPostScriptName, size: 14))
-                .foregroundColor(. white.opacity(0.9))
+                .font(.custom(pickSixPostScriptName, size: 14))
+                .foregroundColor(.white.opacity(0.9))
                 .frame(maxWidth: .infinity)
                 .multilineTextAlignment(.center)
                 .padding(.vertical, 6)
@@ -1007,7 +1062,7 @@ struct MatchupView: View {
                     HStack {
                         Text(player.displaySlot)
                             .foregroundColor(positionColor(player.creditedPosition))
-                            .frame(width: slotW, alignment: . leading)
+                            .frame(width: slotW, alignment: .leading)
                             .lineLimit(1)
                             .minimumScaleFactor(0.7)
                         Spacer()
@@ -1015,7 +1070,7 @@ struct MatchupView: View {
                             .foregroundColor(.green.opacity(0.7))
                             .frame(width: scoreW, alignment: .trailing)
                     }
-                    .font(. caption)
+                    .font(.caption)
                 }
             } else {
                 Text("No bench players").foregroundColor(.gray)
@@ -1025,15 +1080,15 @@ struct MatchupView: View {
                 .font(.custom(pickSixPostScriptName, size: 14))
                 .foregroundColor(.white.opacity(0.9))
                 .frame(maxWidth: .infinity)
-                .multilineTextAlignment(. center)
+                .multilineTextAlignment(.center)
                 .padding(.vertical, 6)
 
             if let ir = benchBlocks?.ir, !ir.isEmpty {
                 ForEach(ir) { player in
                     HStack {
                         Text(player.displaySlot)
-                            .foregroundColor(. gray)
-                            .frame(width: slotW, alignment: . leading)
+                            .foregroundColor(.gray)
+                            .frame(width: slotW, alignment: .leading)
                             .lineLimit(1)
                             .minimumScaleFactor(0.7)
                         Spacer()
@@ -1049,7 +1104,7 @@ struct MatchupView: View {
 
             Text("-----TAXI-----")
                 .font(.custom(pickSixPostScriptName, size: 14))
-                .foregroundColor(. white.opacity(0.9))
+                .foregroundColor(.white.opacity(0.9))
                 .frame(maxWidth: .infinity)
                 .multilineTextAlignment(.center)
                 .padding(.vertical, 6)
@@ -1058,16 +1113,16 @@ struct MatchupView: View {
                 ForEach(taxi) { player in
                     HStack {
                         Text(player.displaySlot)
-                            . foregroundColor(.gray)
+                            .foregroundColor(.gray)
                             .frame(width: slotW, alignment: .leading)
                             .lineLimit(1)
                             .minimumScaleFactor(0.7)
                         Spacer()
                         Text(String(format: "%.2f", player.points))
-                            .foregroundColor(. green.opacity(0.7))
+                            .foregroundColor(.green.opacity(0.7))
                             .frame(width: scoreW, alignment: .trailing)
                     }
-                    . font(.caption)
+                    .font(.caption)
                 }
             } else {
                 Text("No Taxi players").foregroundColor(.gray)
@@ -1075,7 +1130,7 @@ struct MatchupView: View {
         }
         .foregroundColor(.white)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(. horizontal, 4)
+        .padding(.horizontal, 4)
         .padding(.vertical, 6)
     }
 
@@ -1090,10 +1145,10 @@ struct MatchupView: View {
     // MARK: - Helper implementations reused from earlier file parts
 
     private func explicitSlotTokenForBenchPlayer(playerId: String, team: TeamStanding, week: Int, myEntry: MatchupEntry?) -> String? {
-        let taxiTokens:  Set<String> = ["TAXI", "TAXI_SLOT", "TAXI-SLOT", "TAXI SLOT"]
+        let taxiTokens:  Set = ["TAXI", "TAXI_SLOT", "TAXI-SLOT", "TAXI SLOT"]
         let irToken = "IR"
         func canonicalizeToken(_ raw: String) -> String {
-            let up = raw.trimmingCharacters(in: . whitespacesAndNewlines).uppercased()
+            let up = raw.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
             if up.contains("IR") { return irToken }
             if up.contains("TAXI") || taxiTokens.contains(up) { return "TAXI" }
             return up
@@ -1127,7 +1182,7 @@ struct MatchupView: View {
                 }
             }
         }
-        if let raw = leagueManager.playerCache? [playerId] {
+        if let raw = leagueManager.playerCache?[playerId] {
             if let pos = raw.position?.uppercased(), pos.contains("IR") {
                 if lineupDebugEnabled { print("[BenchSlotDetect] playerCache. position -> player:\(playerId) matched IR via '\(pos)'") }
                 return irToken
@@ -1208,7 +1263,7 @@ struct MatchupView: View {
         }
         print("\(prefix) team.lineupConfig:  \(team.lineupConfig ??  [:])")
         print("\(prefix) expanded slots (used here) count=\(slots.count) -> \(slots)")
-        print("\(prefix) actualStartersByWeek[\(week)]: \(team.actualStartersByWeek? [week] ?? [])")
+        print("\(prefix) actualStartersByWeek[\(week)]: \(team.actualStartersByWeek?[week] ?? [])")
         print("\(prefix) starters from actualStartersByWeek used in orderedLineup: \(starters) (count:  \(starters.count))")
         let paddedStarters:  [String] = {
             if starters.count < slots.count {
