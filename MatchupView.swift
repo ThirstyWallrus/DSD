@@ -627,8 +627,9 @@ struct MatchupView: View {
             Color.black.ignoresSafeArea()
             if isLoading {
                 ProgressView("Loading matchup data...")
-                    .progressViewStyle(CircularProgressStyle(tint: .orange))
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                    .progressViewStyle(CircularProgressStyle())
+                                    .tint(.orange)
+                                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 36) {
