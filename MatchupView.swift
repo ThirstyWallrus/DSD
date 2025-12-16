@@ -623,46 +623,45 @@ struct MatchupView: View {
 
     // MARK: - UI
     var body: some View {
-        ZStack {
-            Color.black.ignoresSafeArea()
-            if isLoading {
-                ProgressView("Loading matchup data...")
-                                    .progressViewStyle(CircularProgressStyle())
-                                    .tint(.orange)
-                                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 36) {
-                        headerBlock
-                        if isStatDropActive {
-                            statDropContent
-                        } else if isH2HActive {
-                            headToHeadContent
-                        } else {
-                            matchupContent
+            ZStack {
+                Color.black.ignoresSafeArea()
+                if isLoading {
+                    ProgressView("Loading matchup data...")
+                        .progressViewStyle(CircularProgressViewStyle())
+                        .tint(.orange)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 36) {
+                            headerBlock
+                            if isStatDropActive {
+                                statDropContent
+                            } else if isH2HActive {
+                                headToHeadContent
+                            } else {
+                                matchupContent
+                            }
                         }
+                        .frame(maxWidth: maxContentWidth)
+                        .padding(.horizontal, horizontalEdgePadding)
+                        . padding(.top, 32)
+                        .padding(.bottom, 120)
                     }
-                    .frame(maxWidth: maxContentWidth)
-                    .padding(.horizontal, horizontalEdgePadding)
-                    . padding(.top, 32)
-                    .padding(.bottom, 120)
-                }
-                .safeAreaInset(edge: . bottom) {
-                    Color.clear.frame(height: 0)
+                    .safeAreaInset(edge: . bottom) {
+                        Color.clear.frame(height: 0)
+                    }
                 }
             }
+            .ignoresSafeArea(edges: .bottom)
+            .onAppear {
+                setDefaultWeekSelection()
+                refreshData()
+            }
+            .onChange(of: appSelection.selectedSeason) { _ in setDefaultWeekSelection() }
+            .onChange(of: appSelection.selectedLeagueId) { _ in setDefaultWeekSelection() }
+            .onChange(of: appSelection.leagues) { _ in setDefaultWeekSelection() }
+            .onChange(of: leagueManager.globalCurrentWeek) { _ in setDefaultWeekSelection() }
         }
-        .ignoresSafeArea(edges: .bottom)
-        .onAppear {
-            setDefaultWeekSelection()
-            refreshData()
-        }
-        .onChange(of: appSelection.selectedSeason) { _ in setDefaultWeekSelection() }
-        .onChange(of: appSelection.selectedLeagueId) { _ in setDefaultWeekSelection() }
-        .onChange(of: appSelection.leagues) { _ in setDefaultWeekSelection() }
-        .onChange(of: leagueManager.globalCurrentWeek) { _ in setDefaultWeekSelection() }
-    }
-
     // MARK: - Header & Menus
     private var headerBlock:  some View {
         VStack(spacing: 18) {
