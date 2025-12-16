@@ -379,7 +379,7 @@ struct MatchupView: View {
         ]
 
         var ordered: [LineupPlayer] = []
-        var usedIds = Set()
+        var usedIds = Set<String>()
 
         for token in sequenceTokens {
             var picked:  C?  = nil
