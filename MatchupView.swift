@@ -69,7 +69,7 @@ struct MatchupView: View {
     fileprivate let slotLabelWidth: CGFloat = 160
     fileprivate let scoreColumnWidth: CGFloat = 60
 
-    @AppStorage("statDropPersonality") var userStatDropPersonality: StatDropPersonality = .classicESPN
+    @AppStorage("statDropPersonality") var userStatDropPersonality:  StatDropPersonality = .classicESPN
     @State private var selectedWeek: String = ""
     @State private var isStatDropActive: Bool = false
     @State private var isLoading: Bool = false
@@ -77,7 +77,7 @@ struct MatchupView: View {
     @State private var isH2HActive: Bool = false
 
     // MARK: - Centralized Selection
-    private var league: LeagueData? { appSelection.selectedLeague }
+    private var league: LeagueData?  { appSelection.selectedLeague }
 
     private var allSeasonIds: [String] {
         guard let league else { return [] }
@@ -97,13 +97,13 @@ struct MatchupView: View {
 
     // MARK: - Fonts used for separators
     private var blackKnightPostScriptName: String {
-        FontLoader.postScriptName(matching: "Black Knight") ?? "Black Knight"
+        FontLoader.postScriptName(matching: "Black Knight") ??  "Black Knight"
     }
     private var pickSixPostScriptName: String {
         FontLoader.postScriptName(matching: "Pick Six") ?? "Pick Six"
     }
 
-    // Helper: determine if a matchup week has meaningful data (not solely padded placeholders)
+    // Helper:  determine if a matchup week has meaningful data (not solely padded placeholders)
     private func weekHasMeaningfulData(_ entries: [MatchupEntry]) -> Bool {
         return entries.contains { entry in
             if let pp = entry.players_points, !pp.isEmpty { return true }
@@ -135,12 +135,12 @@ struct MatchupView: View {
         league?.name.unicodeScalars.filter { !$0.properties.isEmojiPresentation }.reduce(into: "") { $0 += String($1) } ?? "League"
     }
 
-    private var userTeamStanding: TeamStanding? {
+    private var userTeamStanding: TeamStanding?  {
         appSelection.selectedTeam
     }
 
     /// Returns the current week by preferring the league's most-recent meaningful week (in-progress or most recent with data).
-    /// Falls back to the largest key in matchupsByWeek, or to the leagueManager.globalCurrentWeek when appropriate.
+    /// Falls back to the largest key in matchupsByWeek, or to the leagueManager. globalCurrentWeek when appropriate.
     private var currentMatchupWeek: Int {
         guard let season = selectedSeasonData, let weeksDict = season.matchupsByWeek, !weeksDict.isEmpty else {
             return max(1, leagueManager.globalCurrentWeek)
@@ -161,14 +161,14 @@ struct MatchupView: View {
     }
 
     /// Determines the currently selected week number, defaults to currentMatchupWeek if not set
-    private var currentWeekNumber: Int {
-        if let weekNum = Int(selectedWeek.replacingOccurrences(of: "Week ", with: "")), !selectedWeek.isEmpty {
+    private var currentWeekNumber:  Int {
+        if let weekNum = Int(selectedWeek.replacingOccurrences(of:  "Week ", with: "")), !selectedWeek.isEmpty {
             return weekNum
         }
         return currentMatchupWeek
     }
 
-    // Week selector default logic: prefer global current week explicitly (enforced by app)
+    // Week selector default logic:  prefer global current week explicitly (enforced by app)
     private func setDefaultWeekSelection() {
         DispatchQueue.main.async {
             guard let _ = self.league else {
@@ -202,7 +202,7 @@ struct MatchupView: View {
     private func refreshData() {
         guard let leagueId = appSelection.selectedLeagueId else { return }
         isLoading = true
-        leagueManager.refreshLeagueData(leagueId: leagueId) { result in
+        leagueManager.refreshLeagueData(leagueId:  leagueId) { result in
             DispatchQueue.main.async {
                 switch result {
                 case .success(let updatedLeague):
@@ -244,22 +244,22 @@ struct MatchupView: View {
         return sanitized.flatMap { Array(repeating: $0.key, count: $0.value) }
     }
 
-    // Formats a player's display name as "F. Lastname" using playerCache if available.
+    // Formats a player's display name as "F.  Lastname" using playerCache if available.
     private func formatPlayerDisplayName(pid: String, team: TeamStanding?) -> String {
-        if let raw = leagueManager.playerCache?[pid], let full = raw.full_name, !full.isEmpty {
+        if let raw = leagueManager.playerCache? [pid], let full = raw.full_name, !full.isEmpty {
             let parts = full.split(separator: " ").map(String.init).filter { !$0.isEmpty }
             if parts.count == 1 {
                 let name = parts[0]
                 let initial = name.prefix(1)
                 return "\(initial). \(name)"
             } else {
-                let first = parts.first ?? ""
+                let first = parts.first ??  ""
                 let last = parts.last ?? ""
                 let initial = first.prefix(1)
                 return "\(initial). \(last)"
             }
         }
-        // No full name in cache — try to find in TeamStanding roster? Team.Player doesn't contain name in our model.
+        // No full name in cache — try to find in TeamStanding roster?  Team. Player doesn't contain name in our model.
         // Fallback to pid
         return pid
     }
@@ -267,7 +267,7 @@ struct MatchupView: View {
     // Returns starters ordered according to requested slot sequence while being tolerant of actual slots.
     private func startersOrdered(for team: TeamStanding, week: Int) -> [LineupPlayer] {
         // Resolve slots for this team
-        let resolvedSlots: [String] = {
+        let resolvedSlots:  [String] = {
             if let lg = self.league, !lg.startingLineup.isEmpty {
                 return SlotUtils.sanitizeStartingSlots(lg.startingLineup)
             }
@@ -281,8 +281,8 @@ struct MatchupView: View {
         let entriesForWeek = season?.matchupsByWeek?[week]
         let rosterId = Int(team.id) ?? -1
         let myEntry = entriesForWeek?.first(where: { $0.roster_id == rosterId })
-        let startersFromEntry: [String]? = myEntry?.starters
-        var starters = startersFromEntry ?? team.actualStartersByWeek?[week] ?? []
+        let startersFromEntry:  [String]?  = myEntry?.starters
+        var starters = startersFromEntry ?? team.actualStartersByWeek? [week] ?? []
         if starters.isEmpty {
             // nothing to order
             return []
@@ -295,18 +295,18 @@ struct MatchupView: View {
         } else {
             for p in team.roster {
                 if let s = p.weeklyScores.first(where: { $0.week == week }) {
-                    playerScores[p.id] = s.points_half_ppr ?? s.points
+                    playerScores[p.id] = s.points_half_ppr ??  s.points
                 }
             }
         }
 
-        // Candidate metadata: base pos, fantasy positions
+        // Candidate metadata:  base pos, fantasy positions
         struct C {
             let id: String
             let basePos: String
             let fantasy: [String]
             let points: Double
-            let slotPlayed: String? // slot token if we can map by position index
+            let slotPlayed: String?  // slot token if we can map by position index
         }
 
         // Build map for quick lookup from team roster or player cache
@@ -316,15 +316,15 @@ struct MatchupView: View {
         // Map starters to candidate list
         var candidates: [C] = []
         for pid in starters {
-            let pts = playerScores[pid] ?? 0.0
+            let pts = playerScores[pid] ??  0.0
             if let raw = leagueManager.playerCache?[pid] {
-                let base = PositionNormalizer.normalize(raw.position ?? "UNK")
+                let base = PositionNormalizer.normalize(raw.position ??  "UNK")
                 let fantasy = (raw.fantasy_positions ?? []).map { PositionNormalizer.normalize($0) }
                 candidates.append(C(id: pid, basePos: base, fantasy: fantasy, points: pts, slotPlayed: nil))
             } else if let p = rosterMap[pid] {
                 let base = PositionNormalizer.normalize(p.position)
                 let fantasy = (p.altPositions ?? []).map { PositionNormalizer.normalize($0) }
-                candidates.append(C(id: pid, basePos: base, fantasy: fantasy, points: pts, slotPlayed: nil))
+                candidates.append(C(id: pid, basePos: base, fantasy: fantasy, points: pts, slotPlayed:  nil))
             } else {
                 candidates.append(C(id: pid, basePos: PositionNormalizer.normalize("UNK"), fantasy: [], points: pts, slotPlayed: nil))
             }
@@ -340,13 +340,13 @@ struct MatchupView: View {
         var lbPool = candidates.filter { $0.basePos == "LB" }
         var dbPool = candidates.filter { $0.basePos == "DB" }
 
-        // Offensive flex pools: players eligible RB/WR/TE but not already used
+        // Offensive flex pools:  players eligible RB/WR/TE but not already used
         var offensiveFlexPool = candidates.filter { ["RB","WR","TE"].contains($0.basePos) || !$0.fantasy.isEmpty && !$0.fantasy.filter({ ["RB","WR","TE"].contains($0) }).isEmpty }
 
         // Super flex candidates: include QBs too
         var superFlexPool = candidates.filter { ["QB","RB","WR","TE"].contains($0.basePos) || !$0.fantasy.isEmpty && !$0.fantasy.filter({ ["QB","RB","WR","TE"].contains($0) }).isEmpty }
 
-        // IDP flex: defensive candidates beyond DL/LB/DB fixed starters
+        // IDP flex:  defensive candidates beyond DL/LB/DB fixed starters
         var idpFlexPool = candidates.filter { ["DL","LB","DB"].contains($0.basePos) }
 
         // Helper to pop a best candidate from a pool (highest points)
@@ -375,9 +375,9 @@ struct MatchupView: View {
         var usedIds = Set<String>()
 
         for token in sequenceTokens {
-            var picked: C? = nil
+            var picked:  C?  = nil
             switch token {
-            case "QB": picked = popBest(from: &qbPool)
+            case "QB":  picked = popBest(from: &qbPool)
             case "RB": picked = popBest(from: &rbPool)
             case "WR": picked = popBest(from: &wrPool)
             case "TE": picked = popBest(from: &tePool)
@@ -406,7 +406,7 @@ struct MatchupView: View {
                 usedIds.insert(p.id)
                 let credited = SlotPositionAssigner.countedPosition(for: token, candidatePositions: p.fantasy, base: p.basePos)
                 let displaySlot = credited
-                let name = formatPlayerDisplayName(pid: p.id, team: team)
+                let name = formatPlayerDisplayName(pid:  p.id, team: team)
                 let points = p.points
                 ordered.append(LineupPlayer(id: p.id, displaySlot: "\(credited) \(name)", creditedPosition: credited, position: p.basePos, slot: token, points: points, isBench: false, slotColor: positionColor(credited)))
             }
@@ -415,14 +415,14 @@ struct MatchupView: View {
         // Append any starters not yet included (fallthrough)
         for c in candidates where !usedIds.contains(c.id) {
             usedIds.insert(c.id)
-            let credited = SlotPositionAssigner.countedPosition(for: "FLEX", candidatePositions: c.fantasy, base: c.basePos)
-            let name = formatPlayerDisplayName(pid: c.id, team: team)
+            let credited = SlotPositionAssigner.countedPosition(for: "FLEX", candidatePositions:  c.fantasy, base: c.basePos)
+            let name = formatPlayerDisplayName(pid:  c.id, team: team)
             ordered.append(LineupPlayer(id: c.id, displaySlot: "\(credited) \(name)", creditedPosition: credited, position: c.basePos, slot: "FLEX", points: c.points, isBench: false, slotColor: positionColor(credited)))
         }
 
         // debug logging retained
         if lineupDebugEnabled {
-            let slotAssignmentsForDebug: [(slot: String, player: Player?)] = ordered.map { lp in
+            let slotAssignmentsForDebug:  [(slot: String, player: Player? )] = ordered.map { lp in
                 if let p = team.roster.first(where: { $0.id == lp.id }) {
                     return (slot: lp.slot, player: p)
                 }
@@ -435,7 +435,7 @@ struct MatchupView: View {
     }
 
     // Categorize bench into bench / IR / TAXI using explicit tokens and playerCache heuristics
-    private func categorizedBench(for team: TeamStanding, week: Int) -> (bench: [LineupPlayer], ir: [LineupPlayer], taxi: [LineupPlayer]) {
+    private func categorizedBench(for team: TeamStanding, week: Int) -> (bench: [LineupPlayer], ir: [LineupPlayer], taxi:  [LineupPlayer]) {
         let season = selectedSeasonData
         let entriesForWeek = season?.matchupsByWeek?[week]
         let rosterId = Int(team.id) ?? -1
@@ -454,7 +454,7 @@ struct MatchupView: View {
         }
 
         // Determine starters set
-        let startersSet = Set(myEntry?.starters ?? team.actualStartersByWeek?[week] ?? [])
+        let startersSet = Set(myEntry?.starters ?? team.actualStartersByWeek? [week] ?? [])
 
         let benchPlayers: [Player] = team.roster.filter { !startersSet.contains($0.id) }
 
@@ -464,8 +464,8 @@ struct MatchupView: View {
 
         for player in benchPlayers {
             let pid = player.id
-            let name = formatPlayerDisplayName(pid: pid, team: team)
-            let pts = playerScores[pid] ?? 0.0
+            let name = formatPlayerDisplayName(pid:  pid, team: team)
+            let pts = playerScores[pid] ??  0.0
             let normPos = PositionNormalizer.normalize(player.position)
             let displaySlotBase = normPos
 
@@ -473,10 +473,10 @@ struct MatchupView: View {
             let token = explicitSlotTokenForBenchPlayer(playerId: pid, team: team, week: week, myEntry: myEntry)
             if let t = token {
                 if t.uppercased() == "IR" {
-                    irList.append(LineupPlayer(id: pid, displaySlot: "IR \(displaySlotBase) \(name)", creditedPosition: displaySlotBase, position: displaySlotBase, slot: "IR", points: pts, isBench: true, slotColor: .gray))
+                    irList.append(LineupPlayer(id: pid, displaySlot: "IR \(displaySlotBase) \(name)", creditedPosition:  displaySlotBase, position: displaySlotBase, slot: "IR", points: pts, isBench: true, slotColor:  . gray))
                     continue
                 } else if t.uppercased() == "TAXI" || t.uppercased().contains("TAXI") {
-                    taxiList.append(LineupPlayer(id: pid, displaySlot: "Taxi \(displaySlotBase) \(name)", creditedPosition: displaySlotBase, position: displaySlotBase, slot: "TAXI", points: pts, isBench: true, slotColor: .gray))
+                    taxiList.append(LineupPlayer(id: pid, displaySlot: "Taxi \(displaySlotBase) \(name)", creditedPosition:  displaySlotBase, position: displaySlotBase, slot: "TAXI", points: pts, isBench: true, slotColor:  .gray))
                     continue
                 }
             }
@@ -484,22 +484,22 @@ struct MatchupView: View {
             // If no explicit token, but playerCache indicates IR/TAXI-like token in fantasy_positions or position, detect heuristically
             if let raw = leagueManager.playerCache?[pid] {
                 if let pos = raw.position?.uppercased(), pos.contains("IR") {
-                    irList.append(LineupPlayer(id: pid, displaySlot: "IR \(displaySlotBase) \(name)", creditedPosition: displaySlotBase, position: displaySlotBase, slot: "IR", points: pts, isBench: true, slotColor: .gray))
+                    irList.append(LineupPlayer(id: pid, displaySlot: "IR \(displaySlotBase) \(name)", creditedPosition: displaySlotBase, position: displaySlotBase, slot: "IR", points:  pts, isBench: true, slotColor: .gray))
                     continue
                 }
                 if let fantasy = raw.fantasy_positions {
                     if fantasy.contains(where: { $0.uppercased().contains("TAXI") }) {
-                        taxiList.append(LineupPlayer(id: pid, displaySlot: "Taxi \(displaySlotBase) \(name)", creditedPosition: displaySlotBase, position: displaySlotBase, slot: "TAXI", points: pts, isBench: true, slotColor: .gray))
+                        taxiList.append(LineupPlayer(id: pid, displaySlot: "Taxi \(displaySlotBase) \(name)", creditedPosition: displaySlotBase, position: displaySlotBase, slot: "TAXI", points: pts, isBench:  true, slotColor: .gray))
                         continue
                     }
                 }
             }
 
             // Default to bench
-            benchList.append(LineupPlayer(id: pid, displaySlot: "\(displaySlotBase) \(name)", creditedPosition: displaySlotBase, position: displaySlotBase, slot: "BN", points: pts, isBench: true, slotColor: .white))
+            benchList.append(LineupPlayer(id: pid, displaySlot: "\(displaySlotBase) \(name)", creditedPosition: displaySlotBase, position: displaySlotBase, slot: "BN", points: pts, isBench: true, slotColor:  .white))
         }
 
-        // Sort bench by position ordering for readability: QB, RB, WR, TE, K, DL, LB, DB
+        // Sort bench by position ordering for readability:  QB, RB, WR, TE, K, DL, LB, DB
         let benchOrder = ["QB","RB","WR","TE","K","DL","LB","DB"]
         benchList.sort { a, b in
             let ai = benchOrder.firstIndex(of: a.creditedPosition) ?? benchOrder.count
@@ -528,7 +528,7 @@ struct MatchupView: View {
         let entriesForWeek = season?.matchupsByWeek?[week]
         let rosterId = Int(team.id) ?? -1
         let myEntry = entriesForWeek?.first(where: { $0.roster_id == rosterId })
-        let startersSet = Set(myEntry?.starters ?? team.actualStartersByWeek?[week] ?? [])
+        let startersSet = Set(myEntry?.starters ?? team.actualStartersByWeek?[week] ??  [])
         var playerScores: [String: Double] = [:]
         if let pp = myEntry?.players_points, !pp.isEmpty {
             playerScores = pp
@@ -542,7 +542,7 @@ struct MatchupView: View {
         let benchPlayers = team.roster.filter { !startersSet.contains($0.id) }
         var bench: [LineupPlayer] = benchPlayers.map { player in
             let normPos = PositionNormalizer.normalize(player.position)
-            let name = formatPlayerDisplayName(pid: player.id, team: team)
+            let name = formatPlayerDisplayName(pid:  player.id, team: team)
             return LineupPlayer(
                 id: player.id,
                 displaySlot: "\(normPos) \(name)",
@@ -565,9 +565,9 @@ struct MatchupView: View {
 
     // MARK: - TeamDisplay construction
     private func teamDisplay(for team: TeamStanding, week: Int) -> TeamDisplay {
-        let lineup = orderedLineup(for: team, week: week)
+        let lineup = orderedLineup(for:  team, week: week)
         let bench = orderedBench(for: team, week: week)
-        let (actualTotal, maxTotal, _, _, _, _) = ManagementCalculator.computeManagementForWeek(team: team, week: week, league: self.league ?? team.league, leagueManager: leagueManager)
+        let (actualTotal, maxTotal, _, _, _, _) = ManagementCalculator.computeManagementForWeek(team: team, week: week, league: self.league ??  team.league, leagueManager: leagueManager)
         let managementPercent = maxTotal > 0 ? (actualTotal / maxTotal * 100) : 0.0
         return TeamDisplay(
             id: team.id,
@@ -580,7 +580,7 @@ struct MatchupView: View {
             teamStanding: team
         )
     }
-    private var userTeam: TeamDisplay? {
+    private var userTeam: TeamDisplay?  {
         userTeamStanding.map { teamDisplay(for: $0, week: currentWeekNumber) }
     }
     private var opponentTeam: TeamDisplay? {
@@ -608,7 +608,7 @@ struct MatchupView: View {
     }
     private var opponentDisplayName: String {
         if let opp = opponentTeamStanding {
-            if let stats = opp.league?.allTimeOwnerStats?[opp.ownerId], !stats.latestDisplayName.isEmpty {
+            if let stats = opp.league?.allTimeOwnerStats? [opp.ownerId], !stats.latestDisplayName.isEmpty {
                 return stats.latestDisplayName
             } else if !opp.name.isEmpty {
                 return opp.name
@@ -627,7 +627,7 @@ struct MatchupView: View {
             Color.black.ignoresSafeArea()
             if isLoading {
                 ProgressView("Loading matchup data...")
-                    .progressViewStyle(CircularProgressViewStyle(tint: .orange))
+                    .progressViewStyle(CircularProgressStyle(tint: .orange))
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ScrollView {
@@ -643,10 +643,10 @@ struct MatchupView: View {
                     }
                     .frame(maxWidth: maxContentWidth)
                     .padding(.horizontal, horizontalEdgePadding)
-                    .padding(.top, 32)
+                    . padding(.top, 32)
                     .padding(.bottom, 120)
                 }
-                .safeAreaInset(edge: .bottom) {
+                .safeAreaInset(edge: . bottom) {
                     Color.clear.frame(height: 0)
                 }
             }
@@ -663,7 +663,7 @@ struct MatchupView: View {
     }
 
     // MARK: - Header & Menus
-    private var headerBlock: some View {
+    private var headerBlock:  some View {
         VStack(spacing: 18) {
             Group {
                 if let _ = userTeamStanding, let _ = opponentTeamStanding {
@@ -673,7 +673,7 @@ struct MatchupView: View {
                             .multilineTextAlignment(.center)
                             .lineLimit(1)
                             .minimumScaleFactor(0.5)
-                        MyTeamView.phattGradientText(Text("Vs."), size: 18)
+                        MyTeamView.phattGradientText(Text("Vs. "), size: 18)
                             .frame(maxWidth: .infinity)
                             .multilineTextAlignment(.center)
                             .lineLimit(1)
@@ -681,13 +681,13 @@ struct MatchupView: View {
                         MyTeamView.phattGradientText(Text(opponentTeamName), size: 36)
                             .frame(maxWidth: .infinity)
                             .multilineTextAlignment(.center)
-                            .lineLimit(1)
+                            . lineLimit(1)
                             .minimumScaleFactor(0.5)
                     }
                 } else {
                     MyTeamView.phattGradientText(Text("Matchup"), size: 36)
                         .frame(maxWidth: .infinity)
-                        .multilineTextAlignment(.center)
+                        . multilineTextAlignment(.center)
                         .lineLimit(1)
                         .minimumScaleFactor(0.5)
                 }
@@ -731,7 +731,7 @@ struct MatchupView: View {
                     setDefaultWeekSelection()
                 }
             }
-        } label: {
+        } label:  {
             menuLabel(appSelection.selectedLeague?.name ?? "League")
         }
     }
@@ -796,7 +796,7 @@ struct MatchupView: View {
         } label: {
             Text(isH2HActive ? "Vs." : "H2H")
                 .bold()
-                .foregroundColor(.orange)
+                .foregroundColor(. orange)
                 .font(.custom("Phatt", size: 16))
                 .frame(minHeight: 36)
                 .frame(maxWidth: .infinity)
@@ -825,7 +825,7 @@ struct MatchupView: View {
     private func menuLabel(_ text: String) -> some View {
         Text(text)
             .bold()
-            .foregroundColor(.orange)
+            .foregroundColor(. orange)
             .font(.custom("Phatt", size: 16))
             .frame(minHeight: 36)
             .frame(maxWidth: .infinity)
@@ -833,7 +833,7 @@ struct MatchupView: View {
             .background(
                 RoundedRectangle(cornerRadius: 30)
                     .fill(Color.black)
-                    .shadow(color: .blue.opacity(0.7), radius: 8, y: 2)
+                    .shadow(color: . blue.opacity(0.7), radius: 8, y: 2)
             )
     }
 
@@ -856,7 +856,7 @@ struct MatchupView: View {
         }
     }
 
-    // MARK: - Matchup Content (top: Matchup Stats, below: Lineups)
+    // MARK: - Matchup Content (top:  Matchup Stats, below: Lineups)
     private var matchupContent: some View {
         VStack(alignment: .leading, spacing: 24) {
             if let user = userTeamStanding, let opp = opponentTeamStanding, let lg = league {
@@ -869,21 +869,18 @@ struct MatchupView: View {
 
                 VStack(spacing: 8) {
                     MyTeamView.phattGradientText(Text("Lineups"), size: 18)
-                        .frame(maxWidth: .infinity)
+                        . frame(maxWidth: .infinity)
                         .multilineTextAlignment(.center)
 
                     // Use flexible boxes that adapt to the parent container width.
-                    // Each team box computes its own internal column widths so the whole section remains contained.
-                    let spacing: CGFloat = 16
+                    let spacing:  CGFloat = 16
 
                     HStack(spacing: spacing) {
                         teamCombinedLineupBenchBox(team: userTeam, accent: Color.cyan, title: "\(userDisplayName)'s Lineup")
-                            .frame(minWidth: 200, maxWidth: .infinity, alignment: .leading)
-                            .layoutPriority(1)
+                            .frame(maxWidth: .infinity, alignment: .leading)
 
                         teamCombinedLineupBenchBox(team: opponentTeam, accent: Color.yellow, title: "\(opponentDisplayName)'s Lineup")
-                            .frame(minWidth: 200, maxWidth: .infinity, alignment: .leading)
-                            .layoutPriority(1)
+                            .frame(maxWidth: . infinity, alignment: .leading)
                     }
                     .padding(16)
                     .background(
@@ -894,7 +891,7 @@ struct MatchupView: View {
                 }
             } else {
                 Text("No matchup data available.")
-                    .foregroundColor(.white.opacity(0.7))
+                    . foregroundColor(.white.opacity(0.7))
             }
         }
     }
@@ -908,7 +905,7 @@ struct MatchupView: View {
                     Spacer()
                 }
                 let week = currentWeekNumber
-                let uDisplay = teamDisplay(for: user, week: week)
+                let uDisplay = teamDisplay(for: user, week:  week)
                 HStack {
                     Text("Points").foregroundColor(.white.opacity(0.9))
                     Spacer()
@@ -917,7 +914,7 @@ struct MatchupView: View {
                 HStack {
                     Text("Max Points").foregroundColor(.white.opacity(0.9))
                     Spacer()
-                    Text(String(format: "%.2f", uDisplay.maxPoints)).foregroundColor(.white.opacity(0.85))
+                    Text(String(format: "%. 2f", uDisplay.maxPoints)).foregroundColor(.white.opacity(0.85))
                 }
                 HStack {
                     Text("Mgmt %").foregroundColor(.white.opacity(0.9))
@@ -956,136 +953,130 @@ struct MatchupView: View {
         .background(RoundedRectangle(cornerRadius: 12).fill(Color.black.opacity(0.25)))
     }
 
-    // MARK: — Adaptive combined lineup & bench box (renders starters in requested order and separated bench/IR/TAXI)
-    // NOTE: This view now computes its own internal column widths based on its available width so it won't overflow the parent.
+    // MARK: — Fixed-width combined lineup & bench box (no GeometryReader)
     private func teamCombinedLineupBenchBox(team: TeamDisplay?, accent: Color, title: String) -> some View {
-        // Use a GeometryReader here so we can compute slot/score column widths relative to the box width.
-        GeometryReader { geo in
-            let fullW = max(200, geo.size.width) // ensure a sensible baseline
-            let slotW = max(80, min(160, fullW * 0.55))
-            let scoreW = max(44, min(80, fullW * 0.18))
+        // Fixed column widths that work proportionally within the parent's maxWidth constraint
+        let slotW: CGFloat = 140
+        let scoreW: CGFloat = 55
 
-            VStack(alignment: .leading, spacing: 8) {
-                let (head, tail) = splitTitle(title)
-                VStack(spacing: 2) {
-                    Text(head)
-                        .font(.headline.bold())
-                        .foregroundColor(.orange)
-                        .multilineTextAlignment(.center)
-                    Text(tail)
-                        .font(.subheadline)
-                        .foregroundColor(.white.opacity(0.9))
-                        .multilineTextAlignment(.center)
-                }
-                .frame(maxWidth: .infinity)
-
-                if let lineup = team?.lineup, !lineup.isEmpty {
-                    ForEach(lineup) { player in
-                        HStack {
-                            Text(player.displaySlot)
-                                .foregroundColor(player.slotColor ?? positionColor(player.creditedPosition))
-                                .frame(width: slotW, alignment: .leading)
-                                .lineLimit(1)
-                                .minimumScaleFactor(0.7)
-                            Spacer()
-                            Text(String(format: "%.2f", player.points))
-                                .foregroundColor(.green)
-                                .frame(width: scoreW, alignment: .trailing)
-                        }
-                        .font(.caption)
-                    }
-                } else {
-                    Text("No lineup data").foregroundColor(.gray)
-                }
-
-                // Bench / IR / TAXI separators and lists using Pick Six font for separators
-                let benchBlocks = team.flatMap { categorizedBench(for: $0.teamStanding, week: currentWeekNumber) }
-
-                Text("-----BENCH-----")
-                    .font(.custom(pickSixPostScriptName, size: 14))
-                    .foregroundColor(.white.opacity(0.9))
-                    .frame(maxWidth: .infinity)
+        return VStack(alignment: .leading, spacing: 8) {
+            let (head, tail) = splitTitle(title)
+            VStack(spacing: 2) {
+                Text(head)
+                    .font(.headline.bold())
+                    .foregroundColor(. orange)
                     .multilineTextAlignment(.center)
-                    .padding(.vertical, 6)
-
-                if let bench = benchBlocks?.bench, !bench.isEmpty {
-                    ForEach(bench) { player in
-                        HStack {
-                            Text(player.displaySlot)
-                                .foregroundColor(positionColor(player.creditedPosition))
-                                .frame(width: slotW, alignment: .leading)
-                                .lineLimit(1)
-                                .minimumScaleFactor(0.7)
-                            Spacer()
-                            Text(String(format: "%.2f", player.points))
-                                .foregroundColor(.green.opacity(0.7))
-                                .frame(width: scoreW, alignment: .trailing)
-                        }
-                        .font(.caption)
-                    }
-                } else {
-                    Text("No bench players").foregroundColor(.gray)
-                }
-
-                Text("-----IR-----")
-                    .font(.custom(pickSixPostScriptName, size: 14))
-                    .foregroundColor(.white.opacity(0.9))
-                    .frame(maxWidth: .infinity)
+                Text(tail)
+                    .font(.subheadline)
+                    . foregroundColor(.white.opacity(0.9))
                     .multilineTextAlignment(.center)
-                    .padding(.vertical, 6)
-
-                if let ir = benchBlocks?.ir, !ir.isEmpty {
-                    ForEach(ir) { player in
-                        HStack {
-                            Text(player.displaySlot)
-                                .foregroundColor(.gray)
-                                .frame(width: slotW, alignment: .leading)
-                                .lineLimit(1)
-                                .minimumScaleFactor(0.7)
-                            Spacer()
-                            Text(String(format: "%.2f", player.points))
-                                .foregroundColor(.green.opacity(0.7))
-                                .frame(width: scoreW, alignment: .trailing)
-                        }
-                        .font(.caption)
-                    }
-                } else {
-                    Text("No IR players").foregroundColor(.gray)
-                }
-
-                Text("-----TAXI-----")
-                    .font(.custom(pickSixPostScriptName, size: 14))
-                    .foregroundColor(.white.opacity(0.9))
-                    .frame(maxWidth: .infinity)
-                    .multilineTextAlignment(.center)
-                    .padding(.vertical, 6)
-
-                if let taxi = benchBlocks?.taxi, !taxi.isEmpty {
-                    ForEach(taxi) { player in
-                        HStack {
-                            Text(player.displaySlot)
-                                .foregroundColor(.gray)
-                                .frame(width: slotW, alignment: .leading)
-                                .lineLimit(1)
-                                .minimumScaleFactor(0.7)
-                            Spacer()
-                            Text(String(format: "%.2f", player.points))
-                                .foregroundColor(.green.opacity(0.7))
-                                .frame(width: scoreW, alignment: .trailing)
-                        }
-                        .font(.caption)
-                    }
-                } else {
-                    Text("No Taxi players").foregroundColor(.gray)
-                }
             }
-            .foregroundColor(.white)
-            .frame(width: geo.size.width, alignment: .leading)
-            .padding(.horizontal, 4)
-            .padding(.vertical, 6)
+            .frame(maxWidth: . infinity)
+
+            if let lineup = team?.lineup, !lineup.isEmpty {
+                ForEach(lineup) { player in
+                    HStack {
+                        Text(player.displaySlot)
+                            .foregroundColor(player.slotColor ??  positionColor(player.creditedPosition))
+                            .frame(width: slotW, alignment: . leading)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.7)
+                        Spacer()
+                        Text(String(format: "%.2f", player.points))
+                            . foregroundColor(.green)
+                            .frame(width: scoreW, alignment:  .trailing)
+                    }
+                    .font(.caption)
+                }
+            } else {
+                Text("No lineup data").foregroundColor(.gray)
+            }
+
+            // Bench / IR / TAXI separators and lists using Pick Six font for separators
+            let benchBlocks = team.flatMap { categorizedBench(for: $0.teamStanding, week: currentWeekNumber) }
+
+            Text("-----BENCH-----")
+                .font(. custom(pickSixPostScriptName, size: 14))
+                .foregroundColor(. white.opacity(0.9))
+                .frame(maxWidth: .infinity)
+                .multilineTextAlignment(.center)
+                .padding(.vertical, 6)
+
+            if let bench = benchBlocks?.bench, !bench.isEmpty {
+                ForEach(bench) { player in
+                    HStack {
+                        Text(player.displaySlot)
+                            .foregroundColor(positionColor(player.creditedPosition))
+                            .frame(width: slotW, alignment: . leading)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.7)
+                        Spacer()
+                        Text(String(format: "%.2f", player.points))
+                            .foregroundColor(.green.opacity(0.7))
+                            .frame(width: scoreW, alignment: .trailing)
+                    }
+                    .font(. caption)
+                }
+            } else {
+                Text("No bench players").foregroundColor(.gray)
+            }
+
+            Text("-----IR-----")
+                .font(.custom(pickSixPostScriptName, size: 14))
+                .foregroundColor(.white.opacity(0.9))
+                .frame(maxWidth: .infinity)
+                .multilineTextAlignment(. center)
+                .padding(.vertical, 6)
+
+            if let ir = benchBlocks?.ir, !ir.isEmpty {
+                ForEach(ir) { player in
+                    HStack {
+                        Text(player.displaySlot)
+                            .foregroundColor(. gray)
+                            .frame(width: slotW, alignment: . leading)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.7)
+                        Spacer()
+                        Text(String(format: "%.2f", player.points))
+                            .foregroundColor(.green.opacity(0.7))
+                            .frame(width: scoreW, alignment: .trailing)
+                    }
+                    .font(.caption)
+                }
+            } else {
+                Text("No IR players").foregroundColor(.gray)
+            }
+
+            Text("-----TAXI-----")
+                .font(.custom(pickSixPostScriptName, size: 14))
+                .foregroundColor(. white.opacity(0.9))
+                .frame(maxWidth: .infinity)
+                .multilineTextAlignment(.center)
+                .padding(.vertical, 6)
+
+            if let taxi = benchBlocks?.taxi, !taxi.isEmpty {
+                ForEach(taxi) { player in
+                    HStack {
+                        Text(player.displaySlot)
+                            . foregroundColor(.gray)
+                            .frame(width: slotW, alignment: .leading)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.7)
+                        Spacer()
+                        Text(String(format: "%.2f", player.points))
+                            .foregroundColor(. green.opacity(0.7))
+                            .frame(width: scoreW, alignment: .trailing)
+                    }
+                    . font(.caption)
+                }
+            } else {
+                Text("No Taxi players").foregroundColor(.gray)
+            }
         }
-        // Let the parent decide horizontal sizing, but ensure the reader gives us a sensible min height.
-        .frame(minHeight: 140)
+        .foregroundColor(.white)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(. horizontal, 4)
+        .padding(.vertical, 6)
     }
 
     private func splitTitle(_ title: String) -> (String, String) {
@@ -1099,10 +1090,10 @@ struct MatchupView: View {
     // MARK: - Helper implementations reused from earlier file parts
 
     private func explicitSlotTokenForBenchPlayer(playerId: String, team: TeamStanding, week: Int, myEntry: MatchupEntry?) -> String? {
-        let taxiTokens: Set<String> = ["TAXI", "TAXI_SLOT", "TAXI-SLOT", "TAXI SLOT"]
+        let taxiTokens:  Set<String> = ["TAXI", "TAXI_SLOT", "TAXI-SLOT", "TAXI SLOT"]
         let irToken = "IR"
         func canonicalizeToken(_ raw: String) -> String {
-            let up = raw.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+            let up = raw.trimmingCharacters(in: . whitespacesAndNewlines).uppercased()
             if up.contains("IR") { return irToken }
             if up.contains("TAXI") || taxiTokens.contains(up) { return "TAXI" }
             return up
@@ -1111,7 +1102,7 @@ struct MatchupView: View {
             if let rawToken = slotsMap[playerId] {
                 let canonical = canonicalizeToken(rawToken)
                 if lineupDebugEnabled {
-                    print("[BenchSlotDetect] players_slots -> player:\(playerId) token:'\(rawToken)' canonical:'\(canonical)' (team: \(team.name), week: \(week))")
+                    print("[BenchSlotDetect] players_slots -> player:\(playerId) token: '\(rawToken)' canonical:'\(canonical)' (team:  \(team.name), week: \(week))")
                 }
                 if canonical == irToken { return irToken }
                 if canonical == "TAXI" { return "TAXI" }
@@ -1127,7 +1118,7 @@ struct MatchupView: View {
             for c in checks {
                 let canonical = canonicalizeToken(c)
                 if canonical == irToken {
-                    if lineupDebugEnabled { print("[BenchSlotDetect] roster.altPositions -> player:\(playerId) matched IR via '\(c)'") }
+                    if lineupDebugEnabled { print("[BenchSlotDetect] roster. altPositions -> player:\(playerId) matched IR via '\(c)'") }
                     return irToken
                 }
                 if canonical == "TAXI" {
@@ -1136,16 +1127,16 @@ struct MatchupView: View {
                 }
             }
         }
-        if let raw = leagueManager.playerCache?[playerId] {
+        if let raw = leagueManager.playerCache? [playerId] {
             if let pos = raw.position?.uppercased(), pos.contains("IR") {
-                if lineupDebugEnabled { print("[BenchSlotDetect] playerCache.position -> player:\(playerId) matched IR via '\(pos)'") }
+                if lineupDebugEnabled { print("[BenchSlotDetect] playerCache. position -> player:\(playerId) matched IR via '\(pos)'") }
                 return irToken
             }
             if let fantasy = raw.fantasy_positions {
                 for alt in fantasy {
                     let canonical = canonicalizeToken(alt)
                     if canonical == irToken {
-                        if lineupDebugEnabled { print("[BenchSlotDetect] playerCache.fantasy_positions -> player:\(playerId) matched IR via '\(alt)'") }
+                        if lineupDebugEnabled { print("[BenchSlotDetect] playerCache. fantasy_positions -> player:\(playerId) matched IR via '\(alt)'") }
                         return irToken
                     }
                     if canonical == "TAXI" {
@@ -1167,7 +1158,7 @@ struct MatchupView: View {
         case "RB": return .green
         case "WR": return .blue
         case "TE": return .yellow
-        case "K": return .purple.opacity(0.6)
+        case "K":  return .purple.opacity(0.6)
         case "DL": return .orange
         case "LB": return .purple
         case "DB": return .pink
@@ -1207,19 +1198,19 @@ struct MatchupView: View {
         slotAssignments: [(slot: String, player: Player?)],
         finalOrdered: [LineupPlayer]
     ) {
-        let prefix = "DSD::LineupDebug"
-        print("\(prefix) Team: \(team.name) (id=\(team.id)) week=\(week)")
+        let prefix = "DSD:: LineupDebug"
+        print("\(prefix) Team:  \(team.name) (id=\(team.id)) week=\(week)")
         let sanitizedLeagueSlots = SlotUtils.sanitizeStartingSlots(team.league?.startingLineup ?? [])
         if !sanitizedLeagueSlots.isEmpty {
             print("\(prefix) league.startingLineup count=\(sanitizedLeagueSlots.count) -> \(sanitizedLeagueSlots)")
         } else {
             print("\(prefix) league.startingLineup: none")
         }
-        print("\(prefix) team.lineupConfig: \(team.lineupConfig ?? [:])")
+        print("\(prefix) team.lineupConfig:  \(team.lineupConfig ??  [:])")
         print("\(prefix) expanded slots (used here) count=\(slots.count) -> \(slots)")
-        print("\(prefix) actualStartersByWeek[\(week)]: \(team.actualStartersByWeek?[week] ?? [])")
-        print("\(prefix) starters from actualStartersByWeek used in orderedLineup: \(starters) (count: \(starters.count))")
-        let paddedStarters: [String] = {
+        print("\(prefix) actualStartersByWeek[\(week)]: \(team.actualStartersByWeek? [week] ?? [])")
+        print("\(prefix) starters from actualStartersByWeek used in orderedLineup: \(starters) (count:  \(starters.count))")
+        let paddedStarters:  [String] = {
             if starters.count < slots.count {
                 return starters + Array(repeating: "0", count: slots.count - starters.count)
             } else if starters.count > slots.count {
