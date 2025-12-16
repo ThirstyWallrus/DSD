@@ -872,17 +872,18 @@ struct MatchupView: View {
                         .frame(maxWidth: .infinity)
                         .multilineTextAlignment(.center)
 
+                    // Use flexible boxes that adapt to the parent container width.
+                    // Each team box computes its own internal column widths so the whole section remains contained.
                     let spacing: CGFloat = 16
-                    let totalAvailable = min(maxContentWidth, UIScreen.main.bounds.width - horizontalEdgePadding * 2)
-                    let perTeam = max(220, (totalAvailable - spacing) / 2.0)
-                    let slotW = max(80, min(160, perTeam * 0.55))
-                    let scoreW = max(44, min(80, perTeam * 0.18))
 
                     HStack(spacing: spacing) {
-                        teamCombinedLineupBenchBox(team: userTeam, accent: Color.cyan, title: "\(userDisplayName)'s Lineup", slotLabelWidth: slotW, scoreColumnWidth: scoreW)
-                            .frame(width: perTeam, alignment: .leading)
-                        teamCombinedLineupBenchBox(team: opponentTeam, accent: Color.yellow, title: "\(opponentDisplayName)'s Lineup", slotLabelWidth: slotW, scoreColumnWidth: scoreW)
-                            .frame(width: perTeam, alignment: .leading)
+                        teamCombinedLineupBenchBox(team: userTeam, accent: Color.cyan, title: "\(userDisplayName)'s Lineup")
+                            .frame(minWidth: 200, maxWidth: .infinity, alignment: .leading)
+                            .layoutPriority(1)
+
+                        teamCombinedLineupBenchBox(team: opponentTeam, accent: Color.yellow, title: "\(opponentDisplayName)'s Lineup")
+                            .frame(minWidth: 200, maxWidth: .infinity, alignment: .leading)
+                            .layoutPriority(1)
                     }
                     .padding(16)
                     .background(
@@ -956,123 +957,135 @@ struct MatchupView: View {
     }
 
     // MARK: — Adaptive combined lineup & bench box (renders starters in requested order and separated bench/IR/TAXI)
-    private func teamCombinedLineupBenchBox(team: TeamDisplay?, accent: Color, title: String, slotLabelWidth: CGFloat = 160, scoreColumnWidth: CGFloat = 60) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            let (head, tail) = splitTitle(title)
-            VStack(spacing: 2) {
-                Text(head)
-                    .font(.headline.bold())
-                    .foregroundColor(.orange)
-                    .multilineTextAlignment(.center)
-                Text(tail)
-                    .font(.subheadline)
+    // NOTE: This view now computes its own internal column widths based on its available width so it won't overflow the parent.
+    private func teamCombinedLineupBenchBox(team: TeamDisplay?, accent: Color, title: String) -> some View {
+        // Use a GeometryReader here so we can compute slot/score column widths relative to the box width.
+        GeometryReader { geo in
+            let fullW = max(200, geo.size.width) // ensure a sensible baseline
+            let slotW = max(80, min(160, fullW * 0.55))
+            let scoreW = max(44, min(80, fullW * 0.18))
+
+            VStack(alignment: .leading, spacing: 8) {
+                let (head, tail) = splitTitle(title)
+                VStack(spacing: 2) {
+                    Text(head)
+                        .font(.headline.bold())
+                        .foregroundColor(.orange)
+                        .multilineTextAlignment(.center)
+                    Text(tail)
+                        .font(.subheadline)
+                        .foregroundColor(.white.opacity(0.9))
+                        .multilineTextAlignment(.center)
+                }
+                .frame(maxWidth: .infinity)
+
+                if let lineup = team?.lineup, !lineup.isEmpty {
+                    ForEach(lineup) { player in
+                        HStack {
+                            Text(player.displaySlot)
+                                .foregroundColor(player.slotColor ?? positionColor(player.creditedPosition))
+                                .frame(width: slotW, alignment: .leading)
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.7)
+                            Spacer()
+                            Text(String(format: "%.2f", player.points))
+                                .foregroundColor(.green)
+                                .frame(width: scoreW, alignment: .trailing)
+                        }
+                        .font(.caption)
+                    }
+                } else {
+                    Text("No lineup data").foregroundColor(.gray)
+                }
+
+                // Bench / IR / TAXI separators and lists using Pick Six font for separators
+                let benchBlocks = team.flatMap { categorizedBench(for: $0.teamStanding, week: currentWeekNumber) }
+
+                Text("-----BENCH-----")
+                    .font(.custom(pickSixPostScriptName, size: 14))
                     .foregroundColor(.white.opacity(0.9))
+                    .frame(maxWidth: .infinity)
                     .multilineTextAlignment(.center)
-            }
-            .frame(maxWidth: .infinity)
+                    .padding(.vertical, 6)
 
-            if let lineup = team?.lineup, !lineup.isEmpty {
-                ForEach(lineup) { player in
-                    HStack {
-                        Text(player.displaySlot)
-                            .foregroundColor(player.slotColor ?? positionColor(player.creditedPosition))
-                            .frame(width: slotLabelWidth, alignment: .leading)
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.7)
-                        Spacer()
-                        Text(String(format: "%.2f", player.points))
-                            .foregroundColor(.green)
-                            .frame(width: scoreColumnWidth, alignment: .trailing)
+                if let bench = benchBlocks?.bench, !bench.isEmpty {
+                    ForEach(bench) { player in
+                        HStack {
+                            Text(player.displaySlot)
+                                .foregroundColor(positionColor(player.creditedPosition))
+                                .frame(width: slotW, alignment: .leading)
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.7)
+                            Spacer()
+                            Text(String(format: "%.2f", player.points))
+                                .foregroundColor(.green.opacity(0.7))
+                                .frame(width: scoreW, alignment: .trailing)
+                        }
+                        .font(.caption)
                     }
-                    .font(.caption)
+                } else {
+                    Text("No bench players").foregroundColor(.gray)
                 }
-            } else {
-                Text("No lineup data").foregroundColor(.gray)
-            }
 
-            // Bench / IR / TAXI separators and lists using Pick Six font for separators
-            let benchBlocks = team.flatMap { categorizedBench(for: $0.teamStanding, week: currentWeekNumber) }
+                Text("-----IR-----")
+                    .font(.custom(pickSixPostScriptName, size: 14))
+                    .foregroundColor(.white.opacity(0.9))
+                    .frame(maxWidth: .infinity)
+                    .multilineTextAlignment(.center)
+                    .padding(.vertical, 6)
 
-            Text("-----BENCH-----")
-                .font(.custom(pickSixPostScriptName, size: 14))
-                .foregroundColor(.white.opacity(0.9))
-                .frame(maxWidth: .infinity)
-                .multilineTextAlignment(.center)
-                .padding(.vertical, 6)
-
-            if let bench = benchBlocks?.bench, !bench.isEmpty {
-                ForEach(bench) { player in
-                    HStack {
-                        Text(player.displaySlot)
-                            .foregroundColor(positionColor(player.creditedPosition))
-                            .frame(width: slotLabelWidth, alignment: .leading)
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.7)
-                        Spacer()
-                        Text(String(format: "%.2f", player.points))
-                            .foregroundColor(.green.opacity(0.7))
-                            .frame(width: scoreColumnWidth, alignment: .trailing)
+                if let ir = benchBlocks?.ir, !ir.isEmpty {
+                    ForEach(ir) { player in
+                        HStack {
+                            Text(player.displaySlot)
+                                .foregroundColor(.gray)
+                                .frame(width: slotW, alignment: .leading)
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.7)
+                            Spacer()
+                            Text(String(format: "%.2f", player.points))
+                                .foregroundColor(.green.opacity(0.7))
+                                .frame(width: scoreW, alignment: .trailing)
+                        }
+                        .font(.caption)
                     }
-                    .font(.caption)
+                } else {
+                    Text("No IR players").foregroundColor(.gray)
                 }
-            } else {
-                Text("No bench players").foregroundColor(.gray)
-            }
 
-            Text("-----IR-----")
-                .font(.custom(pickSixPostScriptName, size: 14))
-                .foregroundColor(.white.opacity(0.9))
-                .frame(maxWidth: .infinity)
-                .multilineTextAlignment(.center)
-                .padding(.vertical, 6)
+                Text("-----TAXI-----")
+                    .font(.custom(pickSixPostScriptName, size: 14))
+                    .foregroundColor(.white.opacity(0.9))
+                    .frame(maxWidth: .infinity)
+                    .multilineTextAlignment(.center)
+                    .padding(.vertical, 6)
 
-            if let ir = benchBlocks?.ir, !ir.isEmpty {
-                ForEach(ir) { player in
-                    HStack {
-                        Text(player.displaySlot)
-                            .foregroundColor(.gray)
-                            .frame(width: slotLabelWidth, alignment: .leading)
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.7)
-                        Spacer()
-                        Text(String(format: "%.2f", player.points))
-                            .foregroundColor(.green.opacity(0.7))
-                            .frame(width: scoreColumnWidth, alignment: .trailing)
+                if let taxi = benchBlocks?.taxi, !taxi.isEmpty {
+                    ForEach(taxi) { player in
+                        HStack {
+                            Text(player.displaySlot)
+                                .foregroundColor(.gray)
+                                .frame(width: slotW, alignment: .leading)
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.7)
+                            Spacer()
+                            Text(String(format: "%.2f", player.points))
+                                .foregroundColor(.green.opacity(0.7))
+                                .frame(width: scoreW, alignment: .trailing)
+                        }
+                        .font(.caption)
                     }
-                    .font(.caption)
+                } else {
+                    Text("No Taxi players").foregroundColor(.gray)
                 }
-            } else {
-                Text("No IR players").foregroundColor(.gray)
             }
-
-            Text("-----TAXI-----")
-                .font(.custom(pickSixPostScriptName, size: 14))
-                .foregroundColor(.white.opacity(0.9))
-                .frame(maxWidth: .infinity)
-                .multilineTextAlignment(.center)
-                .padding(.vertical, 6)
-
-            if let taxi = benchBlocks?.taxi, !taxi.isEmpty {
-                ForEach(taxi) { player in
-                    HStack {
-                        Text(player.displaySlot)
-                            .foregroundColor(.gray)
-                            .frame(width: slotLabelWidth, alignment: .leading)
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.7)
-                        Spacer()
-                        Text(String(format: "%.2f", player.points))
-                            .foregroundColor(.green.opacity(0.7))
-                            .frame(width: scoreColumnWidth, alignment: .trailing)
-                    }
-                    .font(.caption)
-                }
-            } else {
-                Text("No Taxi players").foregroundColor(.gray)
-            }
+            .foregroundColor(.white)
+            .frame(width: geo.size.width, alignment: .leading)
+            .padding(.horizontal, 4)
+            .padding(.vertical, 6)
         }
-        .foregroundColor(.white)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        // Let the parent decide horizontal sizing, but ensure the reader gives us a sensible min height.
+        .frame(minHeight: 140)
     }
 
     private func splitTitle(_ title: String) -> (String, String) {
