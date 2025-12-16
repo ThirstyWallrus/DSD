@@ -345,14 +345,21 @@ struct MatchupView: View {
         var lbPool = candidates.filter { $0.basePos == "LB" }
         var dbPool = candidates.filter { $0.basePos == "DB" }
 
-        // Offensive flex pools:  players eligible RB/WR/TE but not already used
-        var offensiveFlexPool = candidates.filter { ["RB","WR","TE"].contains($0.basePos) || !$0.fantasy.isEmpty && !$0.fantasy.filter({ ["RB","WR","TE"].contains($0) }).isEmpty }
-
+        // Offensive flex pools
+        var wrRbFlexPool = candidates.filter {
+            ["RB", "WR"].contains($0.basePos) ||
+            !$0.fantasy.filter({ ["RB", "WR"].contains($0) }).isEmpty
+        }
+        var wrRbTeFlexPool = candidates.filter {
+            ["RB", "WR", "TE"].contains($0.basePos) ||
+            !$0.fantasy.filter({ ["RB", "WR", "TE"].contains($0) }).isEmpty
+        }
+        var offensiveFlexPool = wrRbTeFlexPool
         // Super flex candidates: include QBs too
-        var superFlexPool = candidates.filter { ["QB","RB","WR","TE"].contains($0.basePos) || !$0.fantasy.isEmpty && !$0.fantasy.filter({ ["QB","RB","WR","TE"].contains($0) }).isEmpty }
+        var superFlexPool = candidates.filter { ["QB", "RB", "WR", "TE"].contains($0.basePos) || !$0.fantasy.filter({ ["QB", "RB", "WR", "TE"].contains($0) }).isEmpty }
 
         // IDP flex:  defensive candidates beyond DL/LB/DB fixed starters
-        var idpFlexPool = candidates.filter { ["DL","LB","DB"].contains($0.basePos) }
+        var idpFlexPool = candidates.filter { ["DL", "LB", "DB"].contains($0.basePos) }
 
         // Helper to pop a best candidate from a pool (highest points)
         func popBest(from pool: inout [C]) -> C? {
@@ -367,8 +374,11 @@ struct MatchupView: View {
             "RB","RB",
             "WR","WR",
             "TE",
-            "FLEX","FLEX",
-            "SUPER_FLEX",
+            // Offensive flexes grouped here (below TE, above K)
+            "WRRB",          // WR/RB flex first
+            "WRRBTE",        // WR/RB/TE flex next (aliases handled)
+            "FLEX",          // generic flex (fallback)
+            "SUPER_FLEX",    // superflex last among flexes
             "K",
             "DL","DL","DL",
             "LB","LB","LB",
@@ -390,6 +400,10 @@ struct MatchupView: View {
             case "DL": picked = popBest(from: &dlPool)
             case "LB": picked = popBest(from: &lbPool)
             case "DB": picked = popBest(from: &dbPool)
+            case "WRRB", "RBWR":
+                picked = popBest(from: &wrRbFlexPool)
+            case "WRRBTE", "WRRB_TE", "RBWRTE":
+                picked = popBest(from: &wrRbTeFlexPool)
             case "FLEX":
                 picked = popBest(from: &offensiveFlexPool)
                 if picked == nil {
