@@ -49,7 +49,7 @@ struct SleeperRoster: Codable {
     let settings: [String: AnyCodable]?
 }
 
-struct AnyCodable: Codable, Equatable {
+struct AnyCodable: Codable, Hashable {
     let value: Any
     init(_ value: Any) { self.value = value }
     init(from decoder: Decoder) throws {
@@ -79,6 +79,9 @@ struct AnyCodable: Codable, Equatable {
     }
     static func ==(lhs: AnyCodable, rhs: AnyCodable) -> Bool {
         String(describing: lhs.value) == String(describing: rhs.value)
+    }
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(String(describing: value))
     }
 }
 
@@ -161,9 +164,9 @@ class SleeperLeagueManager: ObservableObject {
     private var usersCache: [String: [SleeperUser]] = [:]
     private var rostersCache: [String: [SleeperRoster]] = [:]
 
-    private let offensivePositions: Set<String> = ["QB","RB","WR","TE","K"]
-    private let defensivePositions: Set<String> = ["DL","LB","DB"]
-    private let offensiveFlexSlots: Set<String> = [
+    private let offensivePositions: Set = ["QB","RB","WR","TE","K"]
+    private let defensivePositions: Set = ["DL","LB","DB"]
+    private let offensiveFlexSlots: Set = [
         "FLEX","WRRB","WRRBTE","WRRB_TE","RBWR","RBWRTE",
         "SUPER_FLEX","QBRBWRTE","QBRBWR","QBSF","SFLX"
     ]
@@ -612,7 +615,6 @@ class SleeperLeagueManager: ObservableObject {
 
     func setPlayoffStartWeek(_ week: Int) { playoffStartWeek = max(13, min(18, week)) }
 
-
     // --- PATCHED SECTION: Robust position assignment for per-season PPW/individualPPW ---
     private func buildTeams(
         leagueId: String,
@@ -689,9 +691,10 @@ class SleeperLeagueManager: ObservableObject {
                 : allWeeks
             let weeksToUse = completedWeeks
             var weeksCounted = 0
-            var actualPosTotals: [String: Double] = [:]
-            var actualPosStartCounts: [String: Int] = [:]
-            var actualPosWeeks: [String: Set<Int>] = [:]
+            var posPPW: [String: Double] = [:]
+            var indivPPW: [String: Double] = [:]
+            var posCounts: [String: Int] = [:]
+            var indivCounts: [String: Int] = [:]
 
             // --- MAIN PATCHED SECTION: Use robust credited position for per-week actual lineup ---
             for week in weeksToUse {
@@ -715,25 +718,11 @@ class SleeperLeagueManager: ObservableObject {
 
                     var startersForThisWeek: [String] = []
                     // --- PATCH: Assign only ONE start per slot (not per eligible position!) ---
-                    for idx in 0..<slots.count {
+                    for idx in 0..<paddedStarters.count {
                         let pid = paddedStarters[idx]
-                        guard pid != "0" else { continue }
-                        let slotType = slots[idx]
-                        let rawPlayer = allPlayers[pid]
-                        let pos = rawPlayer?.position ?? players.first(where: { $0.id == pid })?.position ?? "UNK"
-                        let fantasyPositions = rawPlayer?.fantasy_positions ?? players.first(where: { $0.id == pid })?.altPositions ?? []
-                        let candidatePositions = [pos] + fantasyPositions
-
-                        // --- PATCH: Use global SlotPositionAssigner for credited position ---
-                        let creditedPosition = SlotPositionAssigner.countedPosition(for: slotType, candidatePositions: candidatePositions, base: pos)
-                        let points = playersPoints[pid] ?? 0.0
-                        actualPosStartCounts[creditedPosition, default: 0] += 1
-                        actualPosTotals[creditedPosition, default: 0] += points
-                        if points != 0.0 { weekHadValidScore = true }
-                        thisWeekActual += points
-                        startersForThisWeek.append(pid)
-                        actualStarterPosTotals[creditedPosition, default: 0] += 1
-                        actualPosWeeks[creditedPosition, default: Set<Int>()].insert(week)
+                        if pid != "0" {
+                            startersForThisWeek.append(pid)
+                        }
                     }
                     actualStartersByWeek[week] = startersForThisWeek
                 }
@@ -766,14 +755,18 @@ class SleeperLeagueManager: ObservableObject {
                 let candidates: [Candidate] = {
                     guard let weeklyPlayerIds = myEntry.players else { return [] }
                     return weeklyPlayerIds.compactMap { pid in
-                        let raw = allPlayers[pid]
-                        let basePosRaw = raw?.position ?? players.first(where: { $0.id == pid })?.position ?? "UNK"
-                        let basePos = PositionNormalizer.normalize(basePosRaw)
-                        let fantasyRaw = raw?.fantasy_positions ?? [basePosRaw]
-                        // normalize all eligible fantasy positions
-                        let fantasy = fantasyRaw.map { PositionNormalizer.normalize($0) }
-                        let points = myEntry.players_points?[pid] ?? 0.0
-                        return Candidate(id: pid, basePos: basePos, fantasy: fantasy, points: points)
+                        let pts = playersPoints[pid] ?? 0.0
+                        if let raw = playerCache[pid] {
+                            let normBase = PositionNormalizer.normalize(raw.position)
+                            let fantasy = (raw.fantasy_positions ?? []).map { PositionNormalizer.normalize($0) }
+                            return Candidate(id: pid, basePos: normBase, fantasy: fantasy, points: pts)
+                        } else if let roster = teamRoster, let player = roster.first(where: { $0.id == pid }) {
+                            let normBase = PositionNormalizer.normalize(player.position)
+                            let fantasy = (player.altPositions ?? []).map { PositionNormalizer.normalize($0) }
+                            return Candidate(id: pid, basePos: normBase, fantasy: fantasy, points: pts)
+                        } else {
+                            return Candidate(id: pid, basePos: PositionNormalizer.normalize("UNK"), fantasy: [], points: pts)
+                        }
                     }
                 }()
 
@@ -798,18 +791,19 @@ class SleeperLeagueManager: ObservableObject {
                     let allowed = allowedPositions(for: slot)
                     let pick = candidates
                         .filter { !used.contains($0.id) && isEligible($0, allowed: allowed) }
-                        .max(by: { $0.points < $1.points })
+                        .max { $0.points < $1.points }
 
-                    guard let best = pick else { continue }
-                    used.insert(best.id)
-                    weekMax += best.points
+                    guard let cand = pick else { continue }
+                    used.insert(cand.id)
                     // --- PATCH: Use global SlotPositionAssigner for credited position ---
-                    let counted = SlotPositionAssigner.countedPosition(for: slot, candidatePositions: best.fantasy, base: best.basePos)
-                    let credited = PositionNormalizer.normalize(counted)
-                    if offensivePositions.contains(credited) { weekOff += best.points }
-                    else if defensivePositions.contains(credited) { weekDef += best.points }
-                    posTotals[credited, default: 0] += best.points
-                    posStartCounts[credited, default: 0] += 1
+                    let candidatePositions = [cand.basePos] + cand.fantasy
+                    let creditedPosition = SlotPositionAssigner.countedPosition(for: slot, candidatePositions: candidatePositions, base: cand.basePos)
+                    let normalized = PositionNormalizer.normalize(creditedPosition)
+                    weekMax += cand.points
+                    if offensivePositions.contains(creditedPosition) { weekOff += cand.points }
+                    else if defensivePositions.contains(creditedPosition) { weekDef += cand.points }
+                    posTotals[creditedPosition, default: 0] += cand.points
+                    posStartCounts[creditedPosition, default: 0] += 1
                 }
 
                 maxTotal += weekMax
@@ -818,15 +812,15 @@ class SleeperLeagueManager: ObservableObject {
             }
 
             let managementPercent = maxTotal > 0 ? (actualTotal / maxTotal) * 100 : 0
-            let offensiveMgmt = maxOff > 0 ? (actualOff / maxOff * 100) : 0
-            let defensiveMgmt = maxDef > 0 ? (actualDef / maxDef * 100) : 0
+            let offensiveMgmt = maxOff > 0 ? (actualOff / maxOff) * 100 : 0
+            let defensiveMgmt = maxDef > 0 ? (actualDef / maxDef) * 100 : 0
             let teamPPW = weeksCounted > 0 ? actualTotal / Double(weeksCounted) : 0
 
             // --- PATCHED SECTION: Use robust credited position counts for individualPPW/positionPPW ---
             var positionPPW: [String: Double] = [:]
             var individualPPW: [String: Double] = [:]
-            for (pos, total) in actualPosTotals {
-                let starts = Double(actualPosStartCounts[pos] ?? 0)
+            for (pos, total) in posTotals {
+                let starts = Double(posStartCounts[pos] ?? 0)
                 individualPPW[pos] = starts > 0 ? total / starts : 0
                 positionPPW[pos] = weeksCounted > 0 ? total / Double(weeksCounted) : 0
             }
@@ -848,7 +842,6 @@ class SleeperLeagueManager: ObservableObject {
             let waiverMoves = waiverMoveCount(rosterId: roster.roster_id, in: txs)
             let faabSpentVal = faabSpent(rosterId: roster.roster_id, in: txs)
             let trades = tradeCount(rosterId: roster.roster_id, in: txs)
-
 
             let standingModel = TeamStanding(
                 id: String(roster.roster_id),
@@ -922,7 +915,7 @@ class SleeperLeagueManager: ObservableObject {
         }
         return scores.sorted { $0.week < $1.week }
     }
-    
+
     // MARK: - Transactions Helpers
 
         private func waiverMoveCount(rosterId: Int, in tx: [SleeperTransaction]) -> Int {
@@ -952,7 +945,7 @@ class SleeperLeagueManager: ObservableObject {
             }.count
         }
 
-    private struct Candidate {
+    struct Candidate {
         let id: String
         let basePos: String
         let fantasy: [String]
@@ -984,23 +977,13 @@ class SleeperLeagueManager: ObservableObject {
     private func allowedPositions(for slot: String) -> Set<String> {
         let u = slot.uppercased()
         switch u {
-        case "QB","RB","WR","TE","K","DL","LB","DB":
-            return Set([PositionNormalizer.normalize(u)])
-        case "FLEX","WRRB","WRRBTE","WRRB_TE","RBWR","RBWRTE":
-            return Set(["RB","WR","TE"].map { PositionNormalizer.normalize($0) })
-        case "SUPER_FLEX","QBRBWRTE","QBRBWR","QBSF","SFLX":
-            return Set(["QB","RB","WR","TE"].map { PositionNormalizer.normalize($0) })
-        case "IDP","DP","D","DEF","DL_LB_DB":
-            return Set(["DL","LB","DB"].map { PositionNormalizer.normalize($0) })
-        case "DL_LB":
-            return Set(["DL","LB"].map { PositionNormalizer.normalize($0) })
-        case "LB_DB":
-            return Set(["LB","DB"].map { PositionNormalizer.normalize($0) })
-        case "DL_DB":
-            return Set(["DL","DB"].map { PositionNormalizer.normalize($0) })
+        case "QB","RB","WR","TE","K","DL","LB","DB": return Set([PositionNormalizer.normalize(u)])
+        case "FLEX": return Set(["RB","WR","TE"].map { PositionNormalizer.normalize($0) })
+        case "WRRB_FLEX": return Set(["WR","RB"].map { PositionNormalizer.normalize($0) })
+        case "REC_FLEX": return Set(["WR","TE"].map { PositionNormalizer.normalize($0) })
+        case "SUPER_FLEX": return Set(["QB","RB","WR","TE"].map { PositionNormalizer.normalize($0) })
+        case "IDP_FLEX": return Set(["DL","LB","DB"].map { PositionNormalizer.normalize($0) })
         default:
-            if u.contains("IDP") { return Set(["DL","LB","DB"].map { PositionNormalizer.normalize($0) }) }
-            if u.allSatisfy({ "DLB".contains($0) }) { return Set(["DL","LB","DB"].map { PositionNormalizer.normalize($0) }) }
             return Set([PositionNormalizer.normalize(u)])
         }
     }
@@ -1028,23 +1011,20 @@ class SleeperLeagueManager: ObservableObject {
     private func fetchAllSeasonsForLeague(league: SleeperLeague, userId: String, playoffStartWeek: Int, perSeasonOverrides: [String: Int]?) async throws -> LeagueData {
         let currentYear = Calendar.current.component(.year, from: Date())
         let startYear = currentYear - 9
-        let base = baseLeagueName(league.name ?? "")
         var seasonData: [SeasonData] = []
 
         for yr in startYear...currentYear {
             let seasonId = "\(yr)"
             let userLeagues = try await fetchLeagues(userId: userId, season: seasonId)
-            if let seasonLeague = userLeagues.first(where: { baseLeagueName($0.name ?? "") == base }) {
+            if let seasonLeague = userLeagues.first(where: { baseLeagueName($0.name ?? "") == baseLeagueName(league.name ?? "") }) {
                 let rosters = try await fetchRosters(leagueId: seasonLeague.league_id)
                 let users = try await fetchLeagueUsers(leagueId: seasonLeague.league_id)
                 let tx = try await fetchTransactions(for: seasonLeague.league_id)
                 var matchupsByWeek = try await fetchMatchupsByWeek(leagueId: seasonLeague.league_id)
 
-                // NEW: Populate players_slots from roster settings if present so downstream logic can
-                // rely on authoritative per-player tokens (IR, TAXI, etc.)
+                // Populate players_slots from roster settings where possible
                 populatePlayersSlots(&matchupsByWeek, rosters: rosters)
 
-                // SANITIZE roster_positions early and log if bench-like tokens are present
                 let rawRosterPositions = seasonLeague.roster_positions ?? []
                 if rawRosterPositions.contains(where: { SlotUtils.nonStartingTokens.contains($0.uppercased()) }) {
                     let offending = rawRosterPositions.filter { SlotUtils.nonStartingTokens.contains($0.uppercased()) }
@@ -1144,28 +1124,24 @@ class SleeperLeagueManager: ObservableObject {
             for (wk, entries) in matchupsByWeek {
                 var copy = entries
                 for i in 0..<copy.count {
-                    if copy[i].roster_id == roster.roster_id {
-                        let existing = copy[i].players_slots
-                        if existing == nil || existing?.isEmpty == true {
-                            // Replace entry with same values but players_slots set to discovered
-                            let newEntry = MatchupEntry(
-                                roster_id: copy[i].roster_id,
-                                matchup_id: copy[i].matchup_id,
-                                points: copy[i].points,
-                                players_points: copy[i].players_points,
-                                players_projected_points: copy[i].players_projected_points,
-                                starters: copy[i].starters,
-                                players: copy[i].players,
-                                players_slots: discovered
-                            )
-                            copy[i] = newEntry
-                            appliedCount += 1
-                        }
+                    if copy[i].roster_id == roster.roster_id && copy[i].players_slots == nil {
+                        copy[i] = MatchupEntry(
+                            roster_id: copy[i].roster_id,
+                            matchup_id: copy[i].matchup_id,
+                            points: copy[i].points,
+                            players_points: copy[i].players_points,
+                            players_projected_points: copy[i].players_projected_points,
+                            starters: copy[i].starters,
+                            players: copy[i].players,
+                            players_slots: discovered
+                        )
+                        appliedCount += 1
                     }
                 }
-                matchupsByWeek[wk] = copy
+                if appliedCount > 0 {
+                    matchupsByWeek[wk] = copy
+                }
             }
-
             if appliedCount > 0 {
                 print("[PlayersSlotsMigration] roster \(roster.roster_id): populated players_slots for \(appliedCount) matchup entries (source: roster.settings)")
                 // Print up to 10 sample mappings for verification
@@ -1200,7 +1176,7 @@ class SleeperLeagueManager: ObservableObject {
     /// LeagueData.computedChampionships and SeasonData.computedChampionOwnerId.
     ///
     /// - Parameters:
-    ///   - leagueId: league id to operate on (must be already imported into the active user's store)
+    ///   - leagueId: league id to operate on (must be already imported into the active user’s store)
     ///   - persistComputedContainer: if true, write aggregated computed results into LeagueData.computedChampionships and SeasonData.computedChampionOwnerId
     ///   - overwriteTeamStanding: if true, also overwrite TeamStanding.championships (destructive). Default: false.
     /// - Returns: per-season report and aggregated computed counts
@@ -1264,123 +1240,39 @@ class SleeperLeagueManager: ObservableObject {
         // Build updated LeagueData with computed container + per-season computedChampionOwnerId
         var newSeasons = league.seasons
         for i in 0..<newSeasons.count {
-            let sid = newSeasons[i].id
-            if let comp = seasonChampions[sid] ?? nil {
-                newSeasons[i].computedChampionOwnerId = comp
-            } else {
-                newSeasons[i].computedChampionOwnerId = nil
+            if let computedOwner = seasonChampions[newSeasons[i].id] {
+                newSeasons[i] = SeasonData(
+                    id: newSeasons[i].id,
+                    season: newSeasons[i].season,
+                    teams: newSeasons[i].teams,
+                    playoffStartWeek: newSeasons[i].playoffStartWeek,
+                    playoffTeamsCount: newSeasons[i].playoffTeamsCount,
+                    matchups: newSeasons[i].matchups,
+                    matchupsByWeek: newSeasons[i].matchupsByWeek,
+                    computedChampionOwnerId: computedOwner
+                )
             }
         }
 
-        var updatedLeague = LeagueData(
+        let updatedLeague = LeagueData(
             id: league.id,
             name: league.name,
             season: league.season,
             teams: league.teams,
             seasons: newSeasons,
-            startingLineup: league.startingLineup
+            startingLineup: league.startingLineup,
+            allTimeOwnerStats: league.allTimeOwnerStats,
+            currentSeasonOwnerIds: league.currentSeasonOwnerIds,
+            computedChampionships: aggregated
         )
-        updatedLeague.computedChampionships = aggregated
 
-        // Optionally overwrite TeamStanding.championships (destructive) — NOT recommended by default
-        if overwriteTeamStanding {
-            // We must reconstruct seasons and teams because TeamStanding fields are `let`.
-            var rewrittenSeasons: [SeasonData] = []
-            for season in updatedLeague.seasons {
-                var rewrittenTeams: [TeamStanding] = []
-                for ts in season.teams {
-                    var newChamp = ts.championships ?? 0
-                    // If computed champion for this season matches this team.ownerId, set championships=1 (or increment)
-                    if let compOwner = seasonChampions[season.id] ?? nil, compOwner == ts.ownerId {
-                        // If there was an existing numeric championships, keep its numeric value? For now we set to 1 to reflect this season's championship.
-                        newChamp = 1
-                    }
-                    // Build a new TeamStanding instance copying all fields but with updated championships
-                    let newTS = TeamStanding(
-                        id: ts.id,
-                        name: ts.name,
-                        positionStats: ts.positionStats,
-                        ownerId: ts.ownerId,
-                        roster: ts.roster,
-                        leagueStanding: ts.leagueStanding,
-                        pointsFor: ts.pointsFor,
-                        maxPointsFor: ts.maxPointsFor,
-                        managementPercent: ts.managementPercent,
-                        teamPointsPerWeek: ts.teamPointsPerWeek,
-                        winLossRecord: ts.winLossRecord,
-                        bestGameDescription: ts.bestGameDescription,
-                        biggestRival: ts.biggestRival,
-                        strengths: ts.strengths,
-                        weaknesses: ts.weaknesses,
-                        playoffRecord: ts.playoffRecord,
-                        championships: newChamp,
-                        winStreak: ts.winStreak,
-                        lossStreak: ts.lossStreak,
-                        offensivePointsFor: ts.offensivePointsFor,
-                        maxOffensivePointsFor: ts.maxOffensivePointsFor,
-                        offensiveManagementPercent: ts.offensiveManagementPercent,
-                        averageOffensivePPW: ts.averageOffensivePPW,
-                        offensiveStrengths: ts.offensiveStrengths,
-                        offensiveWeaknesses: ts.offensiveWeaknesses,
-                        positionAverages: ts.positionAverages,
-                        individualPositionAverages: ts.individualPositionAverages,
-                        defensivePointsFor: ts.defensivePointsFor,
-                        maxDefensivePointsFor: ts.maxDefensivePointsFor,
-                        defensiveManagementPercent: ts.defensiveManagementPercent,
-                        averageDefensivePPW: ts.averageDefensivePPW,
-                        defensiveStrengths: ts.defensiveStrengths,
-                        defensiveWeaknesses: ts.defensiveWeaknesses,
-                        pointsScoredAgainst: ts.pointsScoredAgainst,
-                        league: ts.league,
-                        lineupConfig: ts.lineupConfig,
-                        weeklyActualLineupPoints: ts.weeklyActualLineupPoints,
-                        actualStartersByWeek: ts.actualStartersByWeek,
-                        actualStarterPositionCounts: ts.actualStarterPositionCounts,
-                        actualStarterWeeks: ts.actualStarterWeeks,
-                        waiverMoves: ts.waiverMoves,
-                        faabSpent: ts.faabSpent,
-                        tradesCompleted: ts.tradesCompleted
-                    )
-                    rewrittenTeams.append(newTS)
-                }
-                let rewrittenSeason = SeasonData(
-                    id: season.id,
-                    season: season.season,
-                    teams: rewrittenTeams,
-                    playoffStartWeek: season.playoffStartWeek,
-                    playoffTeamsCount: season.playoffTeamsCount,
-                    matchups: season.matchups,
-                    matchupsByWeek: season.matchupsByWeek,
-                    computedChampionOwnerId: season.computedChampionOwnerId
-                )
-                rewrittenSeasons.append(rewrittenSeason)
-            }
-            updatedLeague = LeagueData(
-                id: updatedLeague.id,
-                name: updatedLeague.name,
-                season: updatedLeague.season,
-                teams: rewrittenSeasons.last?.teams ?? updatedLeague.teams,
-                seasons: rewrittenSeasons,
-                startingLineup: updatedLeague.startingLineup
-            )
-            // Note: computedChampionships remains attached
-            updatedLeague.computedChampionships = aggregated
-        }
-
-        // Rebuild aggregated AllTime stats using computed container (AllTimeAggregator.buildAllTime prefers computed)
-        let finalLeague = AllTimeAggregator.buildAllTime(for: updatedLeague, playerCache: allPlayers)
-
-        // Persist file to disk
-        persistLeagueFile(finalLeague)
+        // Persist the updated league
+        persistLeagueFile(updatedLeague)
         saveIndex()
-        DatabaseManager.shared.saveLeague(finalLeague)
-
-        print("[ChampionPersist] Persisted computed championships for league \(leagueId). Aggregated counts: \(aggregated)")
 
         return (report, aggregated)
     }
 
-    /// Create a timestamped backup of the current league JSON file. Returns the backup URL.
     private func backupLeagueFile(_ leagueId: String) throws -> URL {
         let src = leagueFileURL(leagueId)
         guard FileManager.default.fileExists(atPath: src.path) else {
@@ -1411,7 +1303,6 @@ class SleeperLeagueManager: ObservableObject {
         guard !targets.isEmpty else { return }
 
         let maxConcurrent = 3
-        var updated: [LeagueData] = []
         var active = 0
 
         for league in targets {
@@ -1424,7 +1315,10 @@ class SleeperLeagueManager: ObservableObject {
                 do {
                     if let refreshed = try await refreshLatestSeason(for: league) {
                         await MainActor.run {
-                            updated.append(refreshed)
+                            if let idx = self.leagues.firstIndex(where: { $0.id == refreshed.id }) {
+                                self.leagues[idx] = refreshed
+                                persistLeagueFile(refreshed)
+                            }
                             Self._lastRefresh[league.id] = now
                         }
                     }
@@ -1439,14 +1333,7 @@ class SleeperLeagueManager: ObservableObject {
             try? await Task.sleep(nanoseconds: 60_000_000)
         }
 
-        guard !updated.isEmpty else { return }
-        for newLeague in updated {
-            if let idx = leagues.firstIndex(where: { $0.id == newLeague.id }) {
-                leagues[idx] = newLeague
-                persistLeagueFile(newLeague)
-            }
-        }
-        saveIndex()
+        await MainActor.run { saveIndex() }
     }
 
     func forceRefreshAllLeagues(username: String?) async {
@@ -1638,7 +1525,7 @@ class SleeperLeagueManager: ObservableObject {
         return result.sorted { $0.matchupId < $1.matchupId }
     }
 
-    // NEW: Small helper to refresh the manager's globalCurrentWeek from the Sleeper API for a specific league.
+    // NEW: Small helper to refresh the manager’s globalCurrentWeek from the Sleeper API for a specific league.
     // Non-destructive: only updates published properties (globalCurrentWeek and leaguePlayoffStartWeeks[leagueId]).
     // Safe to call from UI .onChange handlers; failure is logged but does not throw.
     func refreshGlobalCurrentWeek(for leagueId: String) async {
