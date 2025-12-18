@@ -5,7 +5,6 @@
 //  FULL FILE — PATCHED: Robust week/team matchup data population for per-week views.
 //  Change: fetchMatchupsByWeek now ensures all teams have a MatchupEntry for every week.
 //  Add: per-season playoff overrides persisted and exposed to import UI.
-//  Add: recompute championships helpers that populate computedChampionOwnerId / computedChampionships container.
 //
 
 import Foundation
@@ -201,7 +200,7 @@ class SleeperLeagueManager: ObservableObject {
         }
     }
 
-    private func userRootDir(_ user: String) -> URL {
+    func userRootDir(_ user: String) -> URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         return base.appendingPathComponent(rootFolderName, isDirectory: true).appendingPathComponent(user, isDirectory: true)
     }
@@ -224,7 +223,7 @@ class SleeperLeagueManager: ObservableObject {
         rostersCache = [:]
     }
 
-    private func leagueFileURL(_ leagueId: String) -> URL {
+    func leagueFileURL(_ leagueId: String) -> URL {
         userRootDir(activeUsername).appendingPathComponent("\(leagueId).json")
     }
 
@@ -304,7 +303,7 @@ class SleeperLeagueManager: ObservableObject {
         indexEntries = arr
     }
 
-    private func saveIndex() {
+    func saveIndex() {
         ensureUserDir()
         guard let data = try? JSONEncoder().encode(indexEntries) else { return }
         try? data.write(to: indexFileURL(), options: .atomic)
@@ -336,7 +335,7 @@ class SleeperLeagueManager: ObservableObject {
         indexEntries = newEntries
     }
 
-    private func persistLeagueFile(_ league: LeagueData) {
+    func persistLeagueFile(_ league: LeagueData) {
         ensureUserDir()
         if var lg = try? deepCopy(league) {
             // Ensure we persist any computed championships container as well
@@ -353,7 +352,7 @@ class SleeperLeagueManager: ObservableObject {
     }
 
     // Helper deep copy via encode/decode to avoid accidental reference sharing
-    private func deepCopy<T: Codable>(_ val: T) throws -> T {
+    private func deepCopy<T>(_ val: T) throws -> T where T: Codable {
         let d = try JSONEncoder().encode(val)
         return try JSONDecoder().decode(T.self, from: d)
     }
@@ -816,7 +815,7 @@ class SleeperLeagueManager: ObservableObject {
                 }
                 let optimalOrder = strictSlots + flexSlots
 
-                var used = Set<String>()
+                var used = Set()
                 var weekMax = 0.0, weekOff = 0.0, weekDef = 0.0
 
                 for slot in optimalOrder {
@@ -1148,8 +1147,8 @@ class SleeperLeagueManager: ObservableObject {
             var appliedCount = 0
             for (wk, entries) in matchupsByWeek {
                 var copy = entries
-                for i in 0..<copy.count {
-                    if copy[i].roster_id == roster.roster_id && copy[i].players_slots == nil {
+                for i in 0..<copy.count where copy[i].roster_id == roster.roster_id {
+                    if copy[i].players_slots == nil {
                         copy[i] = MatchupEntry(
                             roster_id: copy[i].roster_id,
                             matchup_id: copy[i].matchup_id,
@@ -1165,6 +1164,7 @@ class SleeperLeagueManager: ObservableObject {
                 }
                 matchupsByWeek[wk] = copy
             }
+
             if appliedCount > 0 {
                 print("[PlayersSlotsMigration] roster \(roster.roster_id): populated players_slots for \(appliedCount) matchup entries (source: roster.settings)")
                 // Print up to 10 sample mappings for verification
@@ -1191,181 +1191,6 @@ class SleeperLeagueManager: ObservableObject {
         leagues[idx] = AllTimeAggregator.buildAllTime(for: leagues[idx], playerCache: allPlayers)
         persistLeagueFile(leagues[idx])
         saveIndex()
-    }
-
-    // MARK: — New: recompute + persist computed championships (safe, non-destructive by default)
-
-    /// Recompute championships from final bracket winners for a single league, optionally persist into
-    /// LeagueData.computedChampionships and SeasonData.computedChampionOwnerId.
-    ///
-    /// - Parameters:
-    ///   - leagueId: league id to operate on (must be already imported into the active user’s store)
-    ///   - persistComputedContainer: if true, write aggregated computed results into LeagueData.computedChampionships and SeasonData.computedChampionOwnerId
-    ///   - overwriteTeamStanding: if true, also overwrite TeamStanding.championships (destructive). Default: false.
-    /// - Returns: per-season report and aggregated computed counts
-    ///
-    /// This method makes a timestamped backup of the current league file before writing.
-    func recomputeAndPersistChampionships(
-        for leagueId: String,
-        persistComputedContainer: Bool = true,
-        overwriteTeamStanding: Bool = false
-    ) async throws -> (seasonReport: [String: (stored: String?, computed: String?)], aggregated: [String: Int]) {
-        // Load the league (from disk so we have the persisted pre-change state)
-        let url = leagueFileURL(leagueId)
-        guard FileManager.default.fileExists(atPath: url.path),
-              let data = try? Data(contentsOf: url),
-              let league = try? JSONDecoder().decode(LeagueData.self, from: data) else {
-            throw NSError(domain: "SleeperLeagueManager", code: 1, userInfo: [NSLocalizedDescriptionKey: "League file not found for id \(leagueId)"])
-        }
-
-        // Compute champions
-        let (seasonChampions, aggregated) = AllTimeAggregator.recomputeAllChampionships(for: league)
-
-        // Build season-level stored vs computed report
-        var report: [String: (stored: String?, computed: String?)] = [:]
-        for season in league.seasons {
-            // Attempt to discover stored champion ownerId from imported TeamStanding.championships
-            // Strategy:
-            //  - Find first team whose TeamStanding.championships ?? 0 > 0 and use its ownerId (best-effort)
-            //  - If none found, nil
-            let storedOwner: String? = {
-                if let t = season.teams.first(where: { ($0.championships ?? 0) > 0 }) {
-                    return t.ownerId
-                }
-                return nil
-            }()
-
-            let computedOwner = seasonChampions[season.id] ?? nil
-            report[season.id] = (stored: storedOwner, computed: computedOwner)
-
-            // Emit a diagnostic line for greppable logs
-            print("[ChampionRecompute] season=\(season.id) storedChampionOwnerId=\(storedOwner ?? "null") computedChampionOwnerId=\(computedOwner ?? "null")")
-        }
-
-        // If not persisting, return results now
-        if !persistComputedContainer {
-            // Also emit aggregated summary
-            for (owner, cnt) in aggregated {
-                print("[ChampionRecompute] owner=\(owner) computedChampionships=\(cnt)")
-            }
-            return (report, aggregated)
-        }
-
-        // Persist: create a backup of the existing league file
-        do {
-            let backupURL = try backupLeagueFile(leagueId)
-            print("[ChampionPersist] Backup created at \(backupURL.path)")
-        } catch {
-            print("[ChampionPersist] Warning: failed to create backup for league \(leagueId): \(error)")
-            // proceed but log warning
-        }
-
-        // Build updated LeagueData with computed container + per-season computedChampionOwnerId
-        var newSeasons = league.seasons
-        for i in 0..<newSeasons.count {
-            let sid = newSeasons[i].id
-            var season = newSeasons[i]
-            season.computedChampionOwnerId = seasonChampions[sid] ?? nil
-            newSeasons[i] = season
-        }
-
-        var newLeague = league
-        if persistComputedContainer {
-            var computed = newLeague.computedChampionships ?? [:]
-            for (owner, cnt) in aggregated { computed[owner] = cnt }
-            newLeague.computedChampionships = computed
-        }
-
-        if overwriteTeamStanding {
-            var newSeasonsOverwrite = newSeasons
-            for si in 0..<newSeasonsOverwrite.count {
-                var teams = newSeasonsOverwrite[si].teams
-                for ti in 0..<teams.count {
-                    var t = teams[ti]
-                    if let champOwner = seasonChampions[newSeasonsOverwrite[si].id],
-                       t.ownerId == champOwner {
-                        let current = t.championships ?? 0
-                        t = TeamStanding(
-                            id: t.id,
-                            name: t.name,
-                            positionStats: t.positionStats,
-                            ownerId: t.ownerId,
-                            roster: t.roster,
-                            leagueStanding: t.leagueStanding,
-                            pointsFor: t.pointsFor,
-                            maxPointsFor: t.maxPointsFor,
-                            managementPercent: t.managementPercent,
-                            teamPointsPerWeek: t.teamPointsPerWeek,
-                            winLossRecord: t.winLossRecord,
-                            bestGameDescription: t.bestGameDescription,
-                            biggestRival: t.biggestRival,
-                            strengths: t.strengths,
-                            weaknesses: t.weaknesses,
-                            playoffRecord: t.playoffRecord,
-                            championships: current + 1,
-                            winStreak: t.winStreak,
-                            lossStreak: t.lossStreak,
-                            offensivePointsFor: t.offensivePointsFor,
-                            maxOffensivePointsFor: t.maxOffensivePointsFor,
-                            offensiveManagementPercent: t.offensiveManagementPercent,
-                            averageOffensivePPW: t.averageOffensivePPW,
-                            offensiveStrengths: t.offensiveStrengths,
-                            offensiveWeaknesses: t.offensiveWeaknesses,
-                            positionAverages: t.positionAverages,
-                            individualPositionAverages: t.individualPositionAverages,
-                            defensivePointsFor: t.defensivePointsFor,
-                            maxDefensivePointsFor: t.maxDefensivePointsFor,
-                            defensiveManagementPercent: t.defensiveManagementPercent,
-                            averageDefensivePPW: t.averageDefensivePPW,
-                            defensiveStrengths: t.defensiveStrengths,
-                            defensiveWeaknesses: t.defensiveWeaknesses,
-                            pointsScoredAgainst: t.pointsScoredAgainst,
-                            league: t.league,
-                            lineupConfig: t.lineupConfig,
-                            weeklyActualLineupPoints: t.weeklyActualLineupPoints,
-                            actualStartersByWeek: t.actualStartersByWeek,
-                            actualStarterPositionCounts: t.actualStarterPositionCounts,
-                            actualStarterWeeks: t.actualStarterWeeks,
-                            waiverMoves: t.waiverMoves,
-                            faabSpent: t.faabSpent,
-                            tradesCompleted: t.tradesCompleted
-                        )
-                    }
-                    teams[ti] = t
-                }
-                newSeasonsOverwrite[si] = SeasonData(id: newSeasonsOverwrite[si].id,
-                                                     season: newSeasonsOverwrite[si].season,
-                                                     teams: teams,
-                                                     playoffStartWeek: newSeasonsOverwrite[si].playoffStartWeek,
-                                                     playoffTeamsCount: newSeasonsOverwrite[si].playoffTeamsCount,
-                                                     matchups: newSeasonsOverwrite[si].matchups,
-                                                     matchupsByWeek: newSeasonsOverwrite[si].matchupsByWeek,
-                                                     computedChampionOwnerId: newSeasonsOverwrite[si].computedChampionOwnerId)
-            }
-            newSeasons = newSeasonsOverwrite
-        }
-
-        newLeague.seasons = newSeasons
-
-        // Persist the updated league
-        persistLeagueFile(newLeague)
-        saveIndex()
-
-        return (report, aggregated)
-    }
-
-    private func backupLeagueFile(_ leagueId: String) throws -> URL {
-        let src = leagueFileURL(leagueId)
-        guard FileManager.default.fileExists(atPath: src.path) else {
-            throw NSError(domain: "SleeperLeagueManager", code: 2, userInfo: [NSLocalizedDescriptionKey: "No file to backup for \(leagueId)"])
-        }
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        let ts = formatter.string(from: Date()).replacingOccurrences(of: ":", with: "-")
-        let backupName = "\(leagueId)-pre-recompute-\(ts).json"
-        let dest = userRootDir(activeUsername).appendingPathComponent(backupName)
-        try FileManager.default.copyItem(at: src, to: dest)
-        return dest
     }
 
     // MARK: - Bulk Fetch / Refresh Helpers (kept as methods on class)
