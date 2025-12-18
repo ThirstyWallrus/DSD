@@ -376,24 +376,24 @@ final class DataMigrationManager: ObservableObject {
     //     return SlotPositionAssigner.countedPosition(for: slot, candidatePositions: candidatePositions, base: base)
     // }
 
-    private struct MigCandidate: Hashable {
+    struct MigCandidate: Hashable {
         let basePos: String
         let fantasy: [String]
         let points: Double
     }
 
-    private func isEligible(c: MigCandidate, allowed: Set) -> Bool {
+    func isEligible(c: MigCandidate, allowed: Set) -> Bool {
         // PATCH: Use normalized position for eligibility checks
         let normalizedAllowed = Set(allowed.map { PositionNormalizer.normalize($0) })
         let allCandidate = [c.basePos] + c.fantasy
         return allCandidate.map { PositionNormalizer.normalize($0) }.contains(where: { normalizedAllowed.contains($0) })
     }
 
-    private func eligibleSlots(for c: MigCandidate, _ slots: [String]) -> [String] {
+   func eligibleSlots(for c: MigCandidate, _ slots: [String]) -> [String] {
         slots.filter { isEligible(c: c, allowed: allowedPositions(for: $0)) }
     }
 
-    private func inferredLineupConfig(from roster: [Player]) -> [String:Int] {
+    func inferredLineupConfig(from roster: [Player]) -> [String:Int] {
         var counts: [String:Int] = [:]
         for p in roster {
             // PATCH: Normalize position for starter slot assignment
@@ -403,12 +403,12 @@ final class DataMigrationManager: ObservableObject {
         return counts.mapValues { min($0, 3) }
     }
 
-    private func expandSlots(lineupConfig: [String:Int]) -> [String] {
+    func expandSlots(lineupConfig: [String:Int]) -> [String] {
         lineupConfig.map { (canonicalFlexSlot($0.key), $0.value) }
             .flatMap { Array(repeating: $0.0, count: $0.1) }
     }
     
-    private func slotPriority(_ slot: String) -> Int {
+    func slotPriority(_ slot: String) -> Int {
         let s = canonicalFlexSlot(slot)
         if ["QB","RB","WR","TE","K","DL","LB","DB"].contains(PositionNormalizer.normalize(s)) { return 1 } // higher for specific
         return 0

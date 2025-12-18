@@ -150,7 +150,7 @@ class SleeperLeagueManager: ObservableObject {
     // NEW: Global current week reported from Sleeper API (helps views pick the "current" week)
     @Published var globalCurrentWeek: Int = 1
 
-    fileprivate var activeUsername: String = "global"
+    var activeUsername: String = "global"
     private let legacySingleFilePrefix = "leagues_"
     private let legacyFilename = "leagues.json"
     private let oldUDKey: String? = nil
@@ -206,7 +206,7 @@ class SleeperLeagueManager: ObservableObject {
     }
 
     private func ensureUserDir() {
-        let dir = userRootDir(activeUsername)
+        var dir = userRootDir(activeUsername)
         if !FileManager.default.fileExists(atPath: dir.path) {
             try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
             var rv = URLResourceValues()
