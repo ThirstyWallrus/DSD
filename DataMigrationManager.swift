@@ -22,22 +22,32 @@ import Foundation
 // --- PATCH: Import SlotPositionAssigner for global slot assignment
 // import SlotPositionAssigner // Uncomment and ensure SlotPositionAssigner.swift is available in your target
 
+// Canonical flex slot normalizer (maps legacy tokens to Sleeper’s current set)
+private func canonicalFlexSlot(_ slot: String) -> String {
+    let u = slot.uppercased()
+    switch u {
+    case "WRRB", "RBWR": return "WRRB_FLEX"
+    case "WRRBTE", "WRRB_TE", "RBWRTE": return "FLEX"
+    case "REC_FLEX": return "REC_FLEX"
+    case "SUPER_FLEX", "QBRBWRTE", "QBRBWR", "QBSF", "SFLX": return "SUPER_FLEX"
+    case "IDP", "IDPFLEX", "IDP_FLEX", "DFLEX", "DL_LB_DB", "DL_LB", "LB_DB", "DL_DB": return "IDP_FLEX"
+    default: return u == "FLEX" ? "FLEX" : u
+    }
+}
+
 @MainActor
 final class DataMigrationManager: ObservableObject {
 
     private let dataVersionKey = "dsd.data.version"
     private let currentDataVersion = 5   // UPDATED to 5 for extended starter / transaction metrics
 
-    private let offensivePositions: Set<String> = ["QB","RB","WR","TE","K"]
-    private let defensivePositions: Set<String> = ["DL","LB","DB"]
-    private let offensiveFlexSlots: Set<String> = [
-        "FLEX","WRRB","WRRBTE","WRRB_TE","RBWR","RBWRTE",
-        "SUPER_FLEX","QBRBWRTE","QBRBWR","QBSF","SFLX"
-    ]
+    private let offensivePositions: Set = ["QB","RB","WR","TE","K"]
+    private let defensivePositions: Set = ["DL","LB","DB"]
+    private let offensiveFlexSlots: Set = ["FLEX","WRRB_FLEX","REC_FLEX","SUPER_FLEX"]
 
     private func isOffensiveSlot(_ slot: String) -> Bool {
-        let u = slot.uppercased()
-        let defSlots: Set<String> = ["DL", "LB", "DB", "IDP", "DEF"]
+        let u = canonicalFlexSlot(slot)
+        let defSlots: Set = ["DL", "LB", "DB", "IDP_FLEX", "DEF"]
         return !defSlots.contains(u)
     }
 
@@ -207,75 +217,7 @@ final class DataMigrationManager: ObservableObject {
             // players_points is a mapping keyed by player ID and may contain bench players or differ in size.
             // We should not skip the week simply because counts differ — instead, use starterPoints[pid] ?? 0.0
             if slots.count == starters.count {
-                for i in 0..<starters.count {
-                    let pid = starters[i]
-                    let pts = starterPoints[pid] ?? 0.0
-
-                    // --- PATCH: Use SlotPositionAssigner.countedPosition for credited position ---
-                    let player: RawSleeperPlayer? = playerCache[pid] ?? {
-                        if let p = old.roster.first(where: { $0.id == pid }) {
-                            return RawSleeperPlayer(
-                                player_id: p.id,
-                                full_name: nil,
-                                position: p.position,
-                                fantasy_positions: p.altPositions
-                            )
-                        }
-                        return nil
-                    }()
-                    let candidatePositions = ([player?.position ?? ""] + (player?.fantasy_positions ?? [])).filter { !$0.isEmpty }
-                    let creditedPosition = SlotPositionAssigner.countedPosition(for: slots[i], candidatePositions: candidatePositions, base: player?.position ?? "")
-
-                    if offensivePositions.contains(creditedPosition) {
-                        off += pts
-                    } else if defensivePositions.contains(creditedPosition) {
-                        defPF += pts
-                    }
-                    // --- PATCH: Use normalized position for stat groupings ---
-                    posPPW[creditedPosition, default: 0] += pts
-                    indivPPW[creditedPosition, default: 0] += pts
-                    posCounts[creditedPosition, default: 0] += 1
-                    indivCounts[creditedPosition, default: 0] += 1
-                }
-            } else {
-                // Fallback to position-based
-                for i in 0..<starters.count {
-                    let pid = starters[i]
-                    let pts = starterPoints[pid] ?? 0.0
-                    let player: RawSleeperPlayer? = playerCache[pid] ?? {
-                        if let p = old.roster.first(where: { $0.id == pid }) {
-                            return RawSleeperPlayer(
-                                player_id: p.id,
-                                full_name: nil,
-                                position: p.position,
-                                fantasy_positions: p.altPositions
-                            )
-                        }
-                        return nil
-                    }()
-                    let candidatePositions = ([player?.position ?? ""] + (player?.fantasy_positions ?? [])).filter { !$0.isEmpty }
-                    let creditedPosition = SlotPositionAssigner.countedPosition(for: player?.position ?? "", candidatePositions: candidatePositions, base: player?.position ?? "")
-
-                    if offensivePositions.contains(creditedPosition) {
-                        off += pts
-                    } else if defensivePositions.contains(creditedPosition) {
-                        defPF += pts
-                    }
-                    posPPW[creditedPosition, default: 0] += pts
-                    indivPPW[creditedPosition, default: 0] += pts
-                    posCounts[creditedPosition, default: 0] += 1
-                    indivCounts[creditedPosition, default: 0] += 1
-                }
-            }
-            totalOffPF += off
-            totalDefPF += defPF
-
-            // Optimal Lineup
-            let candidates: [MigCandidate] = old.roster.compactMap { player in
-                guard let ws = player.weeklyScores.first(where: { $0.week == week }) else { return nil }
-                return MigCandidate(basePos: player.position, fantasy: player.altPositions ?? [], points: ws.points_half_ppr ?? ws.points)
-            }
-            var used = Set<MigCandidate>()
+                for i in 0..()
             var weekMax = 0.0
             var weekMaxOff = 0.0
             var weekMaxDef = 0.0
@@ -408,21 +350,21 @@ final class DataMigrationManager: ObservableObject {
 
     // MARK: Shared Logic (mirrors updated runtime logic)
 
-    private func allowedPositions(for slot: String) -> Set<String> {
-        switch slot.uppercased() {
-        case "QB","RB","WR","TE","K","DL","LB","DB": return [slot.uppercased()]
-        case "FLEX","WRRB","WRRBTE","WRRB_TE","RBWR","RBWRTE": return ["RB","WR","TE"]
-        case "SUPER_FLEX","QBRBWRTE","QBRBWR","QBSF","SFLX": return ["QB","RB","WR","TE"]
-        case "IDP": return ["DL","LB","DB"]
+    private func allowedPositions(for slot: String) -> Set {
+        switch canonicalFlexSlot(slot) {
+        case "QB","RB","WR","TE","K","DL","LB","DB": return [canonicalFlexSlot(slot)]
+        case "FLEX": return ["RB","WR","TE"]
+        case "WRRB_FLEX": return ["WR","RB"]
+        case "REC_FLEX": return ["WR","TE"]
+        case "SUPER_FLEX": return ["QB","RB","WR","TE"]
+        case "IDP_FLEX": return ["DL","LB","DB"]
         default:
-            if slot.uppercased().contains("IDP") { return ["DL","LB","DB"] }
-            return [slot.uppercased()]
+            return [canonicalFlexSlot(slot)]
         }
     }
 
     private func isIDPFlex(_ slot: String) -> Bool {
-        let s = slot.uppercased()
-        return s.contains("IDP") && s != "DL" && s != "LB" && s != "DB"
+        canonicalFlexSlot(slot) == "IDP_FLEX"
     }
 
     // PATCHED: Use slot assignment rules for duel-designated/flex positions
@@ -440,7 +382,7 @@ final class DataMigrationManager: ObservableObject {
         let points: Double
     }
 
-    private func isEligible(c: MigCandidate, allowed: Set<String>) -> Bool {
+    private func isEligible(c: MigCandidate, allowed: Set) -> Bool {
         // PATCH: Use normalized position for eligibility checks
         let normalizedAllowed = Set(allowed.map { PositionNormalizer.normalize($0) })
         let allCandidate = [c.basePos] + c.fantasy
@@ -456,17 +398,19 @@ final class DataMigrationManager: ObservableObject {
         for p in roster {
             // PATCH: Normalize position for starter slot assignment
             let normalized = PositionNormalizer.normalize(p.position)
-            counts[normalized, default: 0] += 1
+            counts[canonicalFlexSlot(normalized), default: 0] += 1
         }
         return counts.mapValues { min($0, 3) }
     }
 
     private func expandSlots(lineupConfig: [String:Int]) -> [String] {
-        lineupConfig.flatMap { Array(repeating: $0.key, count: $0.value) }
+        lineupConfig.map { (canonicalFlexSlot($0.key), $0.value) }
+            .flatMap { Array(repeating: $0.0, count: $0.1) }
     }
     
     private func slotPriority(_ slot: String) -> Int {
-        if ["QB","RB","WR","TE","K","DL","LB","DB"].contains(PositionNormalizer.normalize(slot)) { return 1 } // higher for specific
+        let s = canonicalFlexSlot(slot)
+        if ["QB","RB","WR","TE","K","DL","LB","DB"].contains(PositionNormalizer.normalize(s)) { return 1 } // higher for specific
         return 0
     }
 

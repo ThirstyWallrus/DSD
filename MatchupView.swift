@@ -4,25 +4,30 @@
 //
 import SwiftUI
 
-// Flex slot definitions for Sleeper
-private let offensiveFlexSlots: Set = [
-    "FLEX", "WRRB", "WRRBTE", "WRRB_TE", "RBWR", "RBWRTE",
-    "SUPER_FLEX", "QBRBWRTE", "QBRBWR", "QBSF", "SFLX"
-]
-private let regularFlexSlots: Set = ["FLEX", "WRRB", "WRRBTE", "WRRB_TE", "RBWR", "RBWRTE"]
-private let superFlexSlots: Set = ["SUPER_FLEX", "QBRBWRTE", "QBRBWR", "QBSF", "SFLX"]
-private let idpFlexSlots: Set = [
-    "IDP", "IDPFLEX", "IDP_FLEX", "DFLEX", "DL_LB_DB", "DL_LB", "LB_DB", "DL_DB"
-]
+// Canonical flex slot normalizer (maps legacy tokens to Sleeper’s current set)
+private func canonicalFlexSlot(_ slot: String) -> String {
+    let u = slot.uppercased()
+    switch u {
+    case "WRRB", "RBWR": return "WRRB_FLEX"
+    case "WRRBTE", "WRRB_TE", "RBWRTE": return "FLEX"
+    case "REC_FLEX": return "REC_FLEX"
+    case "SUPER_FLEX", "QBRBWRTE", "QBRBWR", "QBSF", "SFLX": return "SUPER_FLEX"
+    case "IDP", "IDPFLEX", "IDP_FLEX", "DFLEX", "DL_LB_DB", "DL_LB", "LB_DB", "DL_DB": return "IDP_FLEX"
+    default: return u == "FLEX" ? "FLEX" : u
+    }
+}
+
+// Flex slot definitions (canonical)
+private let offensiveFlexSlots: Set = ["FLEX", "WRRB_FLEX", "REC_FLEX", "SUPER_FLEX"]
+private let idpFlexSlots: Set = ["IDP_FLEX"]
 
 // Helper to determine if slot is offensive flex
 private func isOffensiveFlexSlot(_ slot: String) -> Bool {
-    offensiveFlexSlots.contains(slot.uppercased())
+    offensiveFlexSlots.contains(canonicalFlexSlot(slot))
 }
 // Helper to determine if slot is defensive flex
 private func isDefensiveFlexSlot(_ slot: String) -> Bool {
-    let s = slot.uppercased()
-    return idpFlexSlots.contains(s) || (s.contains("IDP") && s != "DL" && s != "LB" && s != "DB")
+    canonicalFlexSlot(slot) == "IDP_FLEX"
 }
 // Helper to get duel designation for a flex slot
 private func duelDesignation(for slot: String) -> String? {
@@ -247,7 +252,7 @@ struct MatchupView: View {
 
     // Small helper to expand lineupConfig dict -> ordered slot list (keeps parity with other files)
     private func expandSlots(_ config: [String: Int]) -> [String] {
-        let sanitized = SlotUtils.sanitizeStartingLineupConfig(config)
+        let sanitized = SlotUtils.sanitizeStartingLineupConfig(config).mapKeys { canonicalFlexSlot($0) }
         return sanitized.flatMap { Array(repeating: $0.key, count: $0.value) }
     }
 
@@ -274,7 +279,7 @@ struct MatchupView: View {
         // Resolve slots for this team
         let resolvedSlots:  [String] = {
             if let lg = self.league, !lg.startingLineup.isEmpty {
-                return SlotUtils.sanitizeStartingSlots(lg.startingLineup)
+                return SlotUtils.sanitizeStartingSlots(lg.startingLineup).map(canonicalFlexSlot)
             }
             if let cfg = team.lineupConfig, !cfg.isEmpty {
                 return expandSlots(cfg)
@@ -350,6 +355,10 @@ struct MatchupView: View {
             ["RB", "WR"].contains($0.basePos) ||
             !$0.fantasy.filter({ ["RB", "WR"].contains($0) }).isEmpty
         }
+        var wrTeFlexPool = candidates.filter {
+            ["WR", "TE"].contains($0.basePos) ||
+            !$0.fantasy.filter({ ["WR", "TE"].contains($0) }).isEmpty
+        }
         var wrRbTeFlexPool = candidates.filter {
             ["RB", "WR", "TE"].contains($0.basePos) ||
             !$0.fantasy.filter({ ["RB", "WR", "TE"].contains($0) }).isEmpty
@@ -368,17 +377,17 @@ struct MatchupView: View {
             return pool.removeFirst()
         }
 
-        // Sequence defined by request; some tokens map to pools
+        // Sequence defined by request; uses canonical tokens only
         let sequenceTokens: [String] = [
             "QB",
             "RB","RB",
             "WR","WR",
             "TE",
             // Offensive flexes grouped here (below TE, above K)
-            "WRRB",          // WR/RB flex first
-            "WRRBTE",        // WR/RB/TE flex next (aliases handled)
-            "FLEX",          // generic flex (fallback)
-            "SUPER_FLEX",    // superflex last among flexes
+            "WRRB_FLEX",      // WR/RB flex
+            "REC_FLEX",       // WR/TE flex
+            "FLEX",           // WR/RB/TE flex
+            "SUPER_FLEX",     // QB/WR/RB/TE flex
             "K",
             "DL","DL","DL",
             "LB","LB","LB",
@@ -387,9 +396,10 @@ struct MatchupView: View {
         ]
 
         var ordered: [LineupPlayer] = []
-        var usedIds = Set<String>()
+        var usedIds = Set()
 
-        for token in sequenceTokens {
+        for rawToken in sequenceTokens {
+            let token = canonicalFlexSlot(rawToken)
             var picked:  C?  = nil
             switch token {
             case "QB":  picked = popBest(from: &qbPool)
@@ -400,15 +410,12 @@ struct MatchupView: View {
             case "DL": picked = popBest(from: &dlPool)
             case "LB": picked = popBest(from: &lbPool)
             case "DB": picked = popBest(from: &dbPool)
-            case "WRRB", "RBWR":
+            case "WRRB_FLEX":
                 picked = popBest(from: &wrRbFlexPool)
-            case "WRRBTE", "WRRB_TE", "RBWRTE":
-                picked = popBest(from: &wrRbTeFlexPool)
+            case "REC_FLEX":
+                picked = popBest(from: &wrTeFlexPool)
             case "FLEX":
                 picked = popBest(from: &offensiveFlexPool)
-                if picked == nil {
-                    picked = popBest(from: &superFlexPool)
-                }
             case "SUPER_FLEX":
                 picked = popBest(from: &superFlexPool)
                 if picked == nil {
@@ -538,7 +545,7 @@ struct MatchupView: View {
                 }
                 if let fantasy = raw.fantasy_positions {
                     if fantasy.contains(where: { $0.uppercased().contains("TAXI") }) {
-                        taxiList.append(LineupPlayer(id: pid, displaySlot: "Taxi \(displaySlotBase) \(name)", creditedPosition: displaySlotBase, position: displaySlotBase, slot: "TAXI", points: pts, isBench:  true, slotColor: .gray))
+                        taxiList.append(LineupPlayer(id: pid, displaySlot: "Taxi \(displaySlotBase) \(name)", creditedPosition:  displaySlotBase, position: displaySlotBase, slot: "TAXI", points: pts, isBench:  true, slotColor: .gray))
                         continue
                     }
                 }
@@ -1292,7 +1299,7 @@ struct MatchupView: View {
     ) {
         let prefix = "DSD:: LineupDebug"
         print("\(prefix) Team:  \(team.name) (id=\(team.id)) week=\(week)")
-        let sanitizedLeagueSlots = SlotUtils.sanitizeStartingSlots(team.league?.startingLineup ?? [])
+        let sanitizedLeagueSlots = SlotUtils.sanitizeStartingSlots(team.league?.startingLineup ?? []).map(canonicalFlexSlot)
         if !sanitizedLeagueSlots.isEmpty {
             print("\(prefix) league.startingLineup count=\(sanitizedLeagueSlots.count) -> \(sanitizedLeagueSlots)")
         } else {
@@ -1340,5 +1347,17 @@ struct MatchupView: View {
             print("\(prefix) final ordered lineup length matches expected slots")
         }
         print("\(prefix) roster size=\(team.roster.count), bench candidates (non-starters) count=\(team.roster.filter { !(team.actualStartersByWeek?[week] ?? []).contains($0.id) }.count)")
+    }
+}
+
+// Small helper to map keys in dictionaries (used for lineup config canonicalization)
+private extension Dictionary where Key == String, Value == Int {
+    func mapKeys(_ transform: (String) -> String) -> [String: Int] {
+        var out: [String: Int] = [:]
+        for (k, v) in self {
+            let nk = transform(k)
+            out[nk, default: 0] += v
+        }
+        return out
     }
 }

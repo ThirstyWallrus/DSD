@@ -26,19 +26,29 @@
 
 import Foundation
 
+// Canonical flex slot normalizer (maps legacy tokens to Sleeper’s current set)
+private func canonicalFlexSlot(_ slot: String) -> String {
+    let u = slot.uppercased()
+    switch u {
+    case "WRRB", "RBWR": return "WRRB_FLEX"
+    case "WRRBTE", "WRRB_TE", "RBWRTE": return "FLEX"
+    case "REC_FLEX": return "REC_FLEX"
+    case "SUPER_FLEX", "QBRBWRTE", "QBRBWR", "QBSF", "SFLX": return "SUPER_FLEX"
+    case "IDP", "IDPFLEX", "IDP_FLEX", "DFLEX", "DL_LB_DB", "DL_LB", "LB_DB", "DL_DB": return "IDP_FLEX"
+    default: return u == "FLEX" ? "FLEX" : u
+    }
+}
+
 @MainActor
 struct AllTimeAggregator {
 
     // MARK: - Config / Position sets
 
-    private static let offensiveFlexSlots: Set<String> = [
-        "FLEX","WRRB","WRRBTE","WRRB_TE","RBWR","RBWRTE",
-        "SUPER_FLEX","QBRBWRTE","QBRBWR","QBSF","SFLX"
-    ]
+    private static let offensiveFlexSlots: Set = ["FLEX","WRRB_FLEX","REC_FLEX","SUPER_FLEX"]
 
     static let allStatPositions: [String] = ["QB", "RB", "WR", "TE", "K", "DL", "LB", "DB"]
-    static let offensivePositions: Set<String> = ["QB", "RB", "WR", "TE", "K"]
-    static let defensivePositions: Set<String> = ["DL", "LB", "DB"]
+    static let offensivePositions: Set = ["QB", "RB", "WR", "TE", "K"]
+    static let defensivePositions: Set = ["DL", "LB", "DB"]
 
     // MARK: - Public Entry
 
@@ -262,39 +272,23 @@ struct AllTimeAggregator {
                     return starters
                 }()
 
-                for idx in 0..<slots.count {
+                for idx in 0..<paddedStarters.count {
                     let pid = paddedStarters[idx]
-                    guard pid != "0" else { continue }
-                    let creditedPosition: String = {
-                        if let rawPlayer = playerCache[pid], let pos = rawPlayer.position {
-                            let forSlot = slots[idx]
-                            let candidatePositions = [PositionNormalizer.normalize(pos)] + (rawPlayer.fantasy_positions?.map { PositionNormalizer.normalize($0) } ?? [])
-                            return SlotPositionAssigner.countedPosition(for: forSlot, candidatePositions: candidatePositions, base: PositionNormalizer.normalize(pos))
-                        }
-                        if let teamPlayer = team.roster.first(where: { $0.id == pid }) {
-                            let forSlot = slots[idx]
-                            let candidatePositions = [PositionNormalizer.normalize(teamPlayer.position)] + (teamPlayer.altPositions?.map { PositionNormalizer.normalize($0) } ?? [])
-                            return SlotPositionAssigner.countedPosition(for: forSlot, candidatePositions: candidatePositions, base: PositionNormalizer.normalize(teamPlayer.position))
-                        }
-                        let forSlot = slots[idx]
-                        return SlotPositionAssigner.countedPosition(for: forSlot, candidatePositions: [], base: PositionNormalizer.normalize(forSlot))
-                    }()
+                    if pid == "0" { continue }
+                    let points = entry.players_points?[pid] ?? 0.0
+                    weekPF += points
 
-                    let point = entry.players_points?[pid] ?? 0.0
-                    posTotals[creditedPosition, default: 0.0] += point
-                    posStarts[creditedPosition, default: 0] += 1
+                    let slot = slots[safe: idx] ?? "FLEX"
+                    let rawPlayer = playerCache[pid]
+                    let candidatePositions = ([rawPlayer?.position ?? ""] + (rawPlayer?.fantasy_positions ?? [])).map { PositionNormalizer.normalize($0) }
+                    let credited = SlotPositionAssigner.countedPosition(for: canonicalFlexSlot(slot), candidatePositions: candidatePositions, base: PositionNormalizer.normalize(rawPlayer?.position ?? "UNK"))
+                    let norm = PositionNormalizer.normalize(credited)
 
-                    let basePos: String = {
-                        if let rawPlayer = playerCache[pid], let pos = rawPlayer.position { return PositionNormalizer.normalize(pos) }
-                        if let teamPlayer = team.roster.first(where: { $0.id == pid }) { return PositionNormalizer.normalize(teamPlayer.position) }
-                        return creditedPosition
-                    }()
-                    if offensivePositions.contains(basePos) {
-                        weekOffPF += point
-                    } else if defensivePositions.contains(basePos) {
-                        weekDefPF += point
-                    }
-                    weekPF += point
+                    if offensivePositions.contains(norm) { weekOffPF += points }
+                    else if defensivePositions.contains(norm) { weekDefPF += points }
+
+                    posTotals[norm, default: 0] += points
+                    posStarts[norm, default: 0] += 1
                 }
 
                 totalPF += weekPF
@@ -306,13 +300,12 @@ struct AllTimeAggregator {
                 totalMaxOffPF += maxes.off
                 totalMaxDefPF += maxes.def
 
-                // Points scored against / W-L/T
+                // Wins/losses/ties
                 if let matchupId = entry.matchup_id,
                    let oppEntry = entries.first(where: { $0.matchup_id == matchupId && $0.roster_id != rosterId }),
-                   let oppPoints = oppEntry.points {
-                    totalPSA += oppPoints
-                    let myPoints = entry.points ?? 0.0
-                    if myPoints > oppPoints { wins += 1 }
+                   let myPoints = entry.points, let oppPoints = oppEntry.points {
+                    if myPoints == oppPoints { ties += 1 }
+                    else if myPoints > oppPoints { wins += 1 }
                     else if myPoints < oppPoints { losses += 1 }
                 }
             }
@@ -379,7 +372,7 @@ struct AllTimeAggregator {
 
     /// Expands a lineupConfig to array of slot names in order
     private static func expandSlots(lineupConfig: [String: Int]) -> [String] {
-        let sanitized = SlotUtils.sanitizeStartingLineupConfig(lineupConfig)
+        let sanitized = SlotUtils.sanitizeStartingLineupConfig(lineupConfig).mapKeys { canonicalFlexSlot($0) }
         return sanitized.flatMap { Array(repeating: $0.key, count: $0.value) }
     }
 
@@ -402,7 +395,8 @@ struct AllTimeAggregator {
             }
         }
 
-        let startingSlots = SlotUtils.sanitizeStartingSlots(team.league?.startingLineup ?? [])
+        let startingSlotsRaw = SlotUtils.sanitizeStartingSlots(team.league?.startingLineup ?? [])
+        let startingSlots = startingSlotsRaw.map(canonicalFlexSlot)
         let fixedCounts = fixedSlotCounts(startingSlots: startingSlots)
 
         var offPlayerList = team.roster.filter { offensivePositions.contains(PositionNormalizer.normalize($0.position)) }.map {
@@ -418,7 +412,7 @@ struct AllTimeAggregator {
             }
         }
 
-        let flexAllowed: Set<String> = ["RB", "WR", "TE"]
+        let flexAllowed: Set = ["RB", "WR", "TE"]
         let flexCount = startingSlots.filter { offensiveFlexSlots.contains($0) }.count
         let flexCandidates = offPlayerList.filter { flexAllowed.contains($0.pos) }.sorted { $0.score > $1.score }
         maxOff += flexCandidates.prefix(flexCount).reduce(0.0) { $0 + $1.score }
@@ -448,7 +442,7 @@ struct AllTimeAggregator {
         teamRoster: [Player]? = nil,
         week: Int? = nil
     ) -> (total: Double, off: Double, def: Double) {
-        let sanitizedConfig = SlotUtils.sanitizeStartingLineupConfig(lineupConfig)
+        let sanitizedConfig = SlotUtils.sanitizeStartingLineupConfig(lineupConfig).mapKeys { canonicalFlexSlot($0) }
 
         var playersPoints: [String: Double] = entry.players_points ?? [:]
         if playersPoints.isEmpty, let roster = teamRoster, let wk = week {
@@ -459,7 +453,7 @@ struct AllTimeAggregator {
             }
         }
 
-        var idSet = Set<String>(entry.players ?? [])
+        var idSet = Set(entry.players ?? [])
         if let starters = entry.starters { idSet.formUnion(starters) }
         idSet.formUnion(playersPoints.keys)
         if let roster = teamRoster { for p in roster { idSet.insert(p.id) } }
@@ -502,7 +496,8 @@ struct AllTimeAggregator {
         var usedIDs = Set<String>()
         var maxTotal = 0.0, maxOff = 0.0, maxDef = 0.0
 
-        for slot in expandedSlots {
+        for rawSlot in expandedSlots {
+            let slot = canonicalFlexSlot(rawSlot)
             let allowedSet: Set<String> = Set(allowedPositions(for: slot).map { PositionNormalizer.normalize($0) })
             let pick = candidates
                 .filter { !usedIDs.contains($0.id) && (allowedSet.contains($0.basePos) || !allowedSet.intersection(Set($0.fantasy)).isEmpty) }
@@ -519,20 +514,21 @@ struct AllTimeAggregator {
 
     /// Allowed positions for a slot (canonical, not normalized here)
     private static func allowedPositions(for slot: String) -> Set<String> {
-        switch slot.uppercased() {
-        case "QB","RB","WR","TE","K","DL","LB","DB": return [slot.uppercased()]
-        case "FLEX","WRRB","WRRBTE","WRRB_TE","RBWR","RBWRTE": return ["RB","WR","TE"]
-        case "SUPER_FLEX","QBRBWRTE","QBRBWR","QBSF","SFLX": return ["QB","RB","WR","TE"]
-        case "IDP": return ["DL","LB","DB"]
+        switch canonicalFlexSlot(slot) {
+        case "QB","RB","WR","TE","K","DL","LB","DB": return [canonicalFlexSlot(slot)]
+        case "FLEX": return ["RB","WR","TE"]
+        case "WRRB_FLEX": return ["WR","RB"]
+        case "REC_FLEX": return ["WR","TE"]
+        case "SUPER_FLEX": return ["QB","RB","WR","TE"]
+        case "IDP_FLEX": return ["DL","LB","DB"]
         default:
-            if slot.uppercased().contains("IDP") { return ["DL","LB","DB"] }
-            return [slot.uppercased()]
+            return [canonicalFlexSlot(slot)]
         }
     }
 
     /// Fixed slot counts helper
     private static func fixedSlotCounts(startingSlots: [String]) -> [String: Int] {
-        startingSlots.reduce(into: [:]) { $0[$1, default: 0] += 1 }
+        startingSlots.reduce(into: [:]) { $0[canonicalFlexSlot($1), default: 0] += 1 }
     }
 
     /// Actual points for a set of positions for a team that week
@@ -581,7 +577,7 @@ struct AllTimeAggregator {
                 let slots = expandSlots(lineupConfig: ownerTeam.lineupConfig ?? [:])
                 let forSlot: String = slots[safe: idx] ?? posRaw
                 let candidatePositions = ([posRaw] + (rawPlayer?.fantasy_positions ?? [])).map { PositionNormalizer.normalize($0) }
-                let creditedPos = SlotPositionAssigner.countedPosition(for: forSlot, candidatePositions: candidatePositions, base: PositionNormalizer.normalize(posRaw))
+                let creditedPos = SlotPositionAssigner.countedPosition(for: canonicalFlexSlot(forSlot), candidatePositions: candidatePositions, base: PositionNormalizer.normalize(posRaw))
                 if offensivePositions.contains(PositionNormalizer.normalize(creditedPos)) { weekOffPF += point }
                 else if defensivePositions.contains(PositionNormalizer.normalize(creditedPos)) { weekDefPF += point }
                 weekPF += point
@@ -773,5 +769,17 @@ struct AllTimeAggregator {
 extension Collection {
     subscript(safe index: Index) -> Element? {
         indices.contains(index) ? self[index] : nil
+    }
+}
+
+// Helper to map keys in a dictionary (used for canonical flex conversion)
+private extension Dictionary where Key == String, Value == Int {
+    func mapKeys(_ transform: (String) -> String) -> [String: Int] {
+        var out: [String: Int] = [:]
+        for (k, v) in self {
+            let nk = transform(k)
+            out[nk, default: 0] += v
+        }
+        return out
     }
 }
