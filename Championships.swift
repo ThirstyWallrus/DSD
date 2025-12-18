@@ -74,19 +74,19 @@ extension SleeperLeagueManager {
             // proceed but log warning
         }
 
-        // Build updated LeagueData with computed container + per-season computedChampionOwnerId
-        var newSeasons = league.seasons
-        for i in 0..<newSeasons.count {
-            let sid = newSeasons[i].id
+        // Build updated seasons with computedChampionOwnerId (and optional TeamStanding.championships increment)
+        var updatedSeasons = league.seasons
+        for i in 0..<updatedSeasons.count {
+            var season = updatedSeasons[i]
+            let sid = season.id
             let computedOwner = seasonChampions[sid] ?? nil
-            newSeasons[i].computedChampionOwnerId = computedOwner
+            season.computedChampionOwnerId = computedOwner
 
             if overwriteTeamStanding, let ownerId = computedOwner {
-                // overwrite championships count on the champion team for that season
-                var teams = newSeasons[i].teams
+                var teams = season.teams
                 if let tidx = teams.firstIndex(where: { $0.ownerId == ownerId }) {
-                    var t = teams[tidx]
-                    t = TeamStanding(
+                    let t = teams[tidx]
+                    teams[tidx] = TeamStanding(
                         id: t.id,
                         name: t.name,
                         positionStats: t.positionStats,
@@ -131,28 +131,41 @@ extension SleeperLeagueManager {
                         faabSpent: t.faabSpent,
                         tradesCompleted: t.tradesCompleted
                     )
-                    teams[tidx] = t
+                    season = SeasonData(
+                        id: season.id,
+                        season: season.season,
+                        teams: teams,
+                        playoffStartWeek: season.playoffStartWeek,
+                        playoffTeamsCount: season.playoffTeamsCount,
+                        matchups: season.matchups,
+                        matchupsByWeek: season.matchupsByWeek,
+                        computedChampionOwnerId: season.computedChampionOwnerId
+                    )
                 }
-                newSeasons[i] = SeasonData(
-                    id: newSeasons[i].id,
-                    season: newSeasons[i].season,
-                    teams: teams,
-                    playoffStartWeek: newSeasons[i].playoffStartWeek,
-                    playoffTeamsCount: newSeasons[i].playoffTeamsCount,
-                    matchups: newSeasons[i].matchups,
-                    matchupsByWeek: newSeasons[i].matchupsByWeek,
-                    computedChampionOwnerId: newSeasons[i].computedChampionOwnerId
-                )
             }
+
+            updatedSeasons[i] = season
         }
 
-        var newLeague = league
-        newLeague.seasons = newSeasons
-        newLeague.computedChampionships = aggregated
+        // Build new LeagueData immutably (respecting let properties)
+        var newLeague = LeagueData(
+            id: league.id,
+            name: league.name,
+            season: league.season,
+            teams: updatedSeasons.last?.teams ?? league.teams,
+            seasons: updatedSeasons,
+            startingLineup: league.startingLineup,
+            allTimeOwnerStats: league.allTimeOwnerStats,
+            computedChampionships: aggregated
+        )
+        // Rebuild all-time cache to reflect computed championships
+        newLeague = AllTimeAggregator.buildAllTime(for: newLeague, playerCache: allPlayers)
 
         await MainActor.run {
             if let idx = leagues.firstIndex(where: { $0.id == newLeague.id }) {
                 leagues[idx] = newLeague
+            } else {
+                leagues.append(newLeague)
             }
             persistLeagueFile(newLeague)
             saveIndex()
@@ -166,7 +179,7 @@ extension SleeperLeagueManager {
 
     // MARK: - Backup Helper
 
-    private func backupLeagueFile(_ leagueId: String) throws -> URL {
+    fileprivate func backupLeagueFile(_ leagueId: String) throws -> URL {
         let src = leagueFileURL(leagueId)
         guard FileManager.default.fileExists(atPath: src.path) else {
             throw NSError(domain: "SleeperLeagueManager", code: 2, userInfo: [NSLocalizedDescriptionKey: "No file to backup for \(leagueId)"])

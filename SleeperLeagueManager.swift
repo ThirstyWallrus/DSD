@@ -150,7 +150,7 @@ class SleeperLeagueManager: ObservableObject {
     // NEW: Global current week reported from Sleeper API (helps views pick the "current" week)
     @Published var globalCurrentWeek: Int = 1
 
-    private var activeUsername: String = "global"
+    fileprivate var activeUsername: String = "global"
     private let legacySingleFilePrefix = "leagues_"
     private let legacyFilename = "leagues.json"
     private let oldUDKey: String? = nil
@@ -206,7 +206,7 @@ class SleeperLeagueManager: ObservableObject {
     }
 
     private func ensureUserDir() {
-        var dir = userRootDir(activeUsername)
+        let dir = userRootDir(activeUsername)
         if !FileManager.default.fileExists(atPath: dir.path) {
             try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
             var rv = URLResourceValues()
@@ -499,7 +499,7 @@ class SleeperLeagueManager: ObservableObject {
     // --- PATCHED: Ensure every team has a matchup entry for every week played ---
     private func fetchMatchupsByWeek(leagueId: String) async throws -> [Int: [MatchupEntry]] {
         var out: [Int: [MatchupEntry]] = [:]
-        var allRosterIds: Set = []
+        var allRosterIds: Set<Int> = []
 
         // Heuristic / dynamic detection:
         //  - Try to fetch league metadata to learn currentWeek (if available).
@@ -815,7 +815,7 @@ class SleeperLeagueManager: ObservableObject {
                 }
                 let optimalOrder = strictSlots + flexSlots
 
-                var used = Set()
+                var used = Set<String>()
                 var weekMax = 0.0, weekOff = 0.0, weekDef = 0.0
 
                 for slot in optimalOrder {
@@ -949,32 +949,32 @@ class SleeperLeagueManager: ObservableObject {
 
     // MARK: - Transactions Helpers
 
-        private func waiverMoveCount(rosterId: Int, in tx: [SleeperTransaction]) -> Int {
-            tx.filter {
-                let t = ($0.type ?? "").lowercased()
-                return (t == "waiver" || t == "free_agent")
-                    && ($0.status ?? "").lowercased() == "complete"
-                    && ($0.roster_ids?.contains(rosterId) ?? false)
-            }.count
-        }
-
-        private func faabSpent(rosterId: Int, in tx: [SleeperTransaction]) -> Double {
-            tx.reduce(0.0) { acc, tr in
-                let t = (tr.type ?? "").lowercased()
-                guard t == "waiver",
-                      (tr.status ?? "").lowercased() == "complete",
-                      (tr.roster_ids?.contains(rosterId) ?? false) else { return acc }
-                return acc + Double(tr.waiver_bid ?? 0)
-            }
-        }
-
-        private func tradeCount(rosterId: Int, in tx: [SleeperTransaction]) -> Int {
-            tx.filter {
-                ($0.type ?? "").lowercased() == "trade"
+    private func waiverMoveCount(rosterId: Int, in tx: [SleeperTransaction]) -> Int {
+        tx.filter {
+            let t = ($0.type ?? "").lowercased()
+            return (t == "waiver" || t == "free_agent")
                 && ($0.status ?? "").lowercased() == "complete"
                 && ($0.roster_ids?.contains(rosterId) ?? false)
-            }.count
+        }.count
+    }
+
+    private func faabSpent(rosterId: Int, in tx: [SleeperTransaction]) -> Double {
+        tx.reduce(0.0) { acc, tr in
+            let t = (tr.type ?? "").lowercased()
+            guard t == "waiver",
+                  (tr.status ?? "").lowercased() == "complete",
+                  (tr.roster_ids?.contains(rosterId) ?? false) else { return acc }
+            return acc + Double(tr.waiver_bid ?? 0)
         }
+    }
+
+    private func tradeCount(rosterId: Int, in tx: [SleeperTransaction]) -> Int {
+        tx.filter {
+            ($0.type ?? "").lowercased() == "trade"
+            && ($0.status ?? "").lowercased() == "complete"
+            && ($0.roster_ids?.contains(rosterId) ?? false)
+        }.count
+    }
 
     // --- PATCH: Normalize allowed position set before checking eligibility
     private func isEligible(_ c: Candidate, allowed: Set<String>) -> Bool {
@@ -1104,8 +1104,7 @@ class SleeperLeagueManager: ObservableObject {
 
             // Attempt to find any dictionary-like value whose keys look like player ids (strings) and values are strings.
             var discovered: [String: String] = [:]
-            for (k, any) in settings {
-                // Prefer a mapping typed as [String: AnyCodable]
+            for (_, any) in settings {
                 if let map = any.value as? [String: AnyCodable] {
                     var candidate: [String: String] = [:]
                     for (pid, v) in map {
@@ -1115,35 +1114,24 @@ class SleeperLeagueManager: ObservableObject {
                             candidate[pid] = String(num)
                         }
                     }
-                    if !candidate.isEmpty {
-                        // Merge into discovered if keys look like player IDs (heuristic: all numeric or length >= 3)
-                        for (pid, token) in candidate {
-                            if pid.count >= 3 { discovered[pid] = token }
-                        }
-                    }
+                    for (pid, token) in candidate where pid.count >= 3 { discovered[pid] = token }
                 } else if let map2 = any.value as? [String: String] {
-                    for (pid, token) in map2 {
-                        if pid.count >= 3 { discovered[pid] = token }
+                    for (pid, token) in map2 where pid.count >= 3 && !token.isEmpty {
+                        discovered[pid] = token
                     }
-                } else if let mapAny = any.value as? [String: Any] {
+                } else if let map3 = any.value as? [String: Any] {
                     var candidate: [String: String] = [:]
-                    for (pid, v) in mapAny {
-                        if let s = v as? String { candidate[pid] = s }
+                    for (pid, v) in map3 {
+                        if let s = v as? String, !s.isEmpty { candidate[pid] = s }
                         else if let n = v as? Int { candidate[pid] = String(n) }
                     }
-                    if !candidate.isEmpty {
-                        for (pid, token) in candidate where pid.count >= 3 {
-                            discovered[pid] = token
-                        }
-                    }
+                    for (pid, token) in candidate where pid.count >= 3 { discovered[pid] = token }
                 }
-                // If we found something, we prefer the first meaningful mapping (break)
                 if !discovered.isEmpty { break }
             }
 
             if discovered.isEmpty { continue }
 
-            // Now inject discovered mapping into any MatchupEntry rows for this roster that lack players_slots.
             var appliedCount = 0
             for (wk, entries) in matchupsByWeek {
                 var copy = entries
@@ -1167,7 +1155,6 @@ class SleeperLeagueManager: ObservableObject {
 
             if appliedCount > 0 {
                 print("[PlayersSlotsMigration] roster \(roster.roster_id): populated players_slots for \(appliedCount) matchup entries (source: roster.settings)")
-                // Print up to 10 sample mappings for verification
                 let sample = discovered.prefix(10).map { "\($0.key)->\($0.value)" }.joined(separator: ", ")
                 print("[PlayersSlotsMigration] sample mappings: \(sample)")
             }
