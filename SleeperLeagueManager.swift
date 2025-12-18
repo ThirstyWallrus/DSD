@@ -263,7 +263,7 @@ class SleeperLeagueManager: ObservableObject {
         migrateSingleFile(legacyPath)
     }
 
-    private func migrateSingleFile(_ url: URL) {
+    private func migrateLegacySingleFile(_ url: URL) {
         guard let data = try? Data(contentsOf: url),
               let old = try? JSONDecoder().decode([LeagueData].self, from: data),
               !old.isEmpty else { return }
@@ -616,6 +616,14 @@ class SleeperLeagueManager: ObservableObject {
     func setPlayoffStartWeek(_ week: Int) { playoffStartWeek = max(13, min(18, week)) }
 
     // --- PATCHED SECTION: Robust position assignment for per-season PPW/individualPPW ---
+
+    struct Candidate {
+        let id: String
+        let basePos: String
+        let fantasy: [String]
+        let points: Double
+    }
+
     private func buildTeams(
         leagueId: String,
         rosters: [SleeperRoster],
@@ -755,12 +763,12 @@ class SleeperLeagueManager: ObservableObject {
                 let candidates: [Candidate] = {
                     guard let weeklyPlayerIds = myEntry.players else { return [] }
                     return weeklyPlayerIds.compactMap { pid in
-                        let pts = playersPoints[pid] ?? 0.0
-                        if let raw = playerCache[pid] {
+                        let pts = playerScores[pid] ?? 0.0
+                        if let raw = leagueManager.playerCache?[pid] {
                             let normBase = PositionNormalizer.normalize(raw.position)
                             let fantasy = (raw.fantasy_positions ?? []).map { PositionNormalizer.normalize($0) }
                             return Candidate(id: pid, basePos: normBase, fantasy: fantasy, points: pts)
-                        } else if let roster = teamRoster, let player = roster.first(where: { $0.id == pid }) {
+                        } else if let roster = team.roster, let player = roster.first(where: { $0.id == pid }) {
                             let normBase = PositionNormalizer.normalize(player.position)
                             let fantasy = (player.altPositions ?? []).map { PositionNormalizer.normalize($0) }
                             return Candidate(id: pid, basePos: normBase, fantasy: fantasy, points: pts)
@@ -790,8 +798,8 @@ class SleeperLeagueManager: ObservableObject {
                 for slot in optimalOrder {
                     let allowed = allowedPositions(for: slot)
                     let pick = candidates
-                        .filter { !used.contains($0.id) && isEligible($0, allowed: allowed) }
-                        .max { $0.points < $1.points }
+                        .filter { !used.contains($0.id) && isEligible(c: $0, allowed: allowed) }
+                        .max { $0.points > $1.points }
 
                     guard let cand = pick else { continue }
                     used.insert(cand.id)
@@ -944,13 +952,6 @@ class SleeperLeagueManager: ObservableObject {
                 && ($0.roster_ids?.contains(rosterId) ?? false)
             }.count
         }
-
-    struct Candidate {
-        let id: String
-        let basePos: String
-        let fantasy: [String]
-        let points: Double
-    }
 
     // --- PATCH: Normalize allowed position set before checking eligibility
     private func isEligible(_ c: Candidate, allowed: Set<String>) -> Bool {
