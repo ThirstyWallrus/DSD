@@ -13,12 +13,11 @@
 //   3 -> 4 : Extended fields (actualStarterPositionCounts, actualStarterWeeks,
 //            waiverMoves, faabSpent, tradesCompleted) + unified dual-flex logic.
 //            (This migration is idempotent; safe to run once per data set.)
+//   4 -> 5 : Extended starter / transaction metrics.
 //
 
 import Foundation
-
 // --- PATCH: Import PositionNormalizer globally
-import Foundation
 // --- PATCH: Import SlotPositionAssigner for global slot assignment
 // import SlotPositionAssigner // Uncomment and ensure SlotPositionAssigner.swift is available in your target
 
@@ -41,13 +40,13 @@ final class DataMigrationManager: ObservableObject {
     private let dataVersionKey = "dsd.data.version"
     private let currentDataVersion = 5   // UPDATED to 5 for extended starter / transaction metrics
 
-    private let offensivePositions: Set = ["QB","RB","WR","TE","K"]
-    private let defensivePositions: Set = ["DL","LB","DB"]
-    private let offensiveFlexSlots: Set = ["FLEX","WRRB_FLEX","REC_FLEX","SUPER_FLEX"]
+    private let offensivePositions: Set<String> = ["QB","RB","WR","TE","K"]
+    private let defensivePositions: Set<String> = ["DL","LB","DB"]
+    private let offensiveFlexSlots: Set<String> = ["FLEX","WRRB_FLEX","REC_FLEX","SUPER_FLEX"]
 
     private func isOffensiveSlot(_ slot: String) -> Bool {
         let u = canonicalFlexSlot(slot)
-        let defSlots: Set = ["DL", "LB", "DB", "IDP_FLEX", "DEF"]
+        let defSlots: Set<String> = ["DL", "LB", "DB", "IDP_FLEX", "DEF"]
         return !defSlots.contains(u)
     }
 
@@ -194,12 +193,18 @@ final class DataMigrationManager: ObservableObject {
 
         let lineupConfig = old.lineupConfig ?? inferredLineupConfig(from: old.roster)
         let slots = expandSlots(lineupConfig: lineupConfig)
-        
-        let playerCache: [String: RawSleeperPlayer] = [:]
 
         var actualStartersByWeek: [Int: [String]] = [:]
         var actualStarterPositionCounts: [String: Int] = [:]
         var actualStarterWeeks: Int = 0
+
+        // Helper to get a normalized position for a player id
+        func positionForPlayer(_ pid: String) -> String {
+            if let p = old.roster.first(where: { $0.id == pid }) {
+                return PositionNormalizer.normalize(p.position)
+            }
+            return PositionNormalizer.normalize("UNK")
+        }
 
         for week in regWeeks {
             let weekEntries = season.matchupsByWeek?[week] ?? []
@@ -208,87 +213,60 @@ final class DataMigrationManager: ObservableObject {
             let myPoints = myEntry.points ?? 0.0
             actualTotal += myPoints
 
-            // Offensive/Defensive Split using slots primarily
-            var off = 0.0
-            var defPF = 0.0  // Renamed to avoid conflict
             guard let starters = myEntry.starters,
                   let starterPoints = myEntry.players_points else { continue }
-            // NOTE: Removed the equality check between starters.count and starterPoints.count.
-            // players_points is a mapping keyed by player ID and may contain bench players or differ in size.
-            // We should not skip the week simply because counts differ — instead, use starterPoints[pid] ?? 0.0
-            if slots.count == starters.count {
-                for i in 0..()
+
+            // Actual totals & per-position accumulation
+            for pid in starters {
+                let pts = starterPoints[pid] ?? 0.0
+                let pos = positionForPlayer(pid)
+                if offensivePositions.contains(pos) { totalOffPF += pts }
+                else if defensivePositions.contains(pos) { totalDefPF += pts }
+
+                posPPW[pos, default: 0] += pts
+                posCounts[pos, default: 0] += 1
+                indivPPW[pos, default: 0] += pts
+                indivCounts[pos, default: 0] += 1
+            }
+
+            // Compute a week "max" using best available starter points against slot eligibility
+            var candidates: [(id: String, pos: String, points: Double)] = starterPoints.map { key, val in
+                (key, positionForPlayer(key), val)
+            }
+            candidates.sort { $0.points > $1.points }
+
+            var usedIds = Set<String>()
             var weekMax = 0.0
             var weekMaxOff = 0.0
             var weekMaxDef = 0.0
 
             for slot in slots {
                 let allowed = allowedPositions(for: slot)
-                let pick = candidates
-                    .filter { !used.contains($0) && isEligible(c: $0, allowed: allowed) }
-                    .max { $0.points < $1.points }
-                guard let cand = pick else { continue }
-                used.insert(cand)
-                // --- PATCH: Use SlotPositionAssigner.countedPosition for credited position ---
-                let candidatePositions = [cand.basePos] + cand.fantasy
-                let creditedPosition = SlotPositionAssigner.countedPosition(
-                    for: slot,
-                    candidatePositions: candidatePositions,
-                    base: cand.basePos
-                )
-                let normalized = PositionNormalizer.normalize(creditedPosition)
-                weekMax += cand.points
-                if offensivePositions.contains(creditedPosition) {
-                    weekMaxOff += cand.points
-                } else if defensivePositions.contains(creditedPosition) {
-                    weekMaxDef += cand.points
+                if let cand = candidates.first(where: { !usedIds.contains($0.id) && allowed.contains($0.pos) }) ?? candidates.first(where: { !usedIds.contains($0.id) }) {
+                    usedIds.insert(cand.id)
+                    weekMax += cand.points
+                    if offensivePositions.contains(cand.pos) { weekMaxOff += cand.points }
+                    else if defensivePositions.contains(cand.pos) { weekMaxDef += cand.points }
                 }
             }
+
             maxTotal += weekMax
             maxOff += weekMaxOff
             maxDef += weekMaxDef
 
-            // Actual starters per position (usage)
-            if let startersList = myEntry.starters, !startersList.isEmpty {
-                tempStarters[week] = startersList
-                var assignment: [MigCandidate: String] = [:]
-                var availableSlots = slots
-
-                let sortedStarters = startersList.compactMap { pid in
-                    old.roster.first { $0.id == pid }.map { MigCandidate(basePos: $0.position, fantasy: $0.altPositions ?? [], points: 0) }
-                }
-
-                for c in sortedStarters {
-                    let elig = eligibleSlots(for: c, availableSlots)
-                    if elig.isEmpty { continue }
-                    let specific = elig.filter { ["QB","RB","WR","TE","K","DL","LB","DB"].contains(PositionNormalizer.normalize($0)) }
-                    let chosen = specific.first ?? elig.first!
-                    assignment[c] = chosen
-                    if let idx = availableSlots.firstIndex(of: chosen) {
-                        availableSlots.remove(at: idx)
-                    }
-                }
-                
-                // PATCH: Use SlotPositionAssigner for slot assignment
-                for (c, slot) in assignment {
-                    let candidatePositions = [c.basePos] + c.fantasy
-                    let counted = SlotPositionAssigner.countedPosition(
-                        for: slot,
-                        candidatePositions: candidatePositions,
-                        base: c.basePos
-                    )
-                    let normalized = PositionNormalizer.normalize(counted)
-                    tempCounts[normalized, default: 0] += 1
-                }
-                
-                tempWeeks += 1
+            // Track actual starters and counts
+            tempStarters[week] = starters
+            for pid in starters {
+                let pos = positionForPlayer(pid)
+                tempCounts[pos, default: 0] += 1
             }
-            
-            if !tempCounts.isEmpty {
-                actualStarterPositionCounts = tempCounts
-                actualStarterWeeks = tempWeeks
-                actualStartersByWeek = tempStarters
-            }
+            tempWeeks += 1
+        }
+
+        if !tempCounts.isEmpty {
+            actualStarterPositionCounts = tempCounts
+            actualStarterWeeks = tempWeeks
+            actualStartersByWeek = tempStarters
         }
 
         let managementPercent = maxTotal > 0 ? (actualTotal / maxTotal) * 100 : 0
@@ -350,7 +328,7 @@ final class DataMigrationManager: ObservableObject {
 
     // MARK: Shared Logic (mirrors updated runtime logic)
 
-    private func allowedPositions(for slot: String) -> Set {
+    private func allowedPositions(for slot: String) -> Set<String> {
         switch canonicalFlexSlot(slot) {
         case "QB","RB","WR","TE","K","DL","LB","DB": return [canonicalFlexSlot(slot)]
         case "FLEX": return ["RB","WR","TE"]
@@ -367,22 +345,13 @@ final class DataMigrationManager: ObservableObject {
         canonicalFlexSlot(slot) == "IDP_FLEX"
     }
 
-    // PATCHED: Use slot assignment rules for duel-designated/flex positions
-    // NOTE: This local countedPosition is now deprecated for slot-to-position assignment, but left for continuity.
-    // private func countedPosition(for slot: String,
-    //                              candidatePositions: [String],
-    //                              base: String) -> String {
-    //     // Deprecated, use SlotPositionAssigner.countedPosition instead!
-    //     return SlotPositionAssigner.countedPosition(for: slot, candidatePositions: candidatePositions, base: base)
-    // }
-
     struct MigCandidate: Hashable {
         let basePos: String
         let fantasy: [String]
         let points: Double
     }
 
-    func isEligible(c: MigCandidate, allowed: Set) -> Bool {
+    func isEligible(c: MigCandidate, allowed: Set<String>) -> Bool {
         // PATCH: Use normalized position for eligibility checks
         let normalizedAllowed = Set(allowed.map { PositionNormalizer.normalize($0) })
         let allCandidate = [c.basePos] + c.fantasy
@@ -414,4 +383,16 @@ final class DataMigrationManager: ObservableObject {
         return 0
     }
 
+}
+
+// Small helper to map keys in dictionaries (used for lineup config canonicalization)
+private extension Dictionary where Key == String, Value == Int {
+    func mapKeys(_ transform: (String) -> String) -> [String: Int] {
+        var out: [String: Int] = [:]
+        for (k, v) in self {
+            let nk = transform(k)
+            out[nk, default: 0] += v
+        }
+        return out
+    }
 }
