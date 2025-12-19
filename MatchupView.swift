@@ -1093,7 +1093,7 @@ struct MatchupView: View {
                 Text("No lineup data").foregroundColor(.gray)
             }
 
-            let benchBlocks = team.flatMap { categorizedBench(for: $0.teamStanding, week: currentWeekNumber) }
+            let benchBlocks = team.map { categorizedBench(for: $0.teamStanding, week: currentWeekNumber) }
 
             Text("-----BENCH-----")
                 .font(.custom(pickSixPostScriptName, size: 14))
