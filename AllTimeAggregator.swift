@@ -44,11 +44,11 @@ struct AllTimeAggregator {
 
     // MARK: - Config / Position sets
 
-    private static let offensiveFlexSlots: Set = ["FLEX","WRRB_FLEX","REC_FLEX","SUPER_FLEX"]
+    private static let offensiveFlexSlots: Set<String> = ["FLEX","WRRB_FLEX","REC_FLEX","SUPER_FLEX"]
 
     static let allStatPositions: [String] = ["QB", "RB", "WR", "TE", "K", "DL", "LB", "DB"]
-    static let offensivePositions: Set = ["QB", "RB", "WR", "TE", "K"]
-    static let defensivePositions: Set = ["DL", "LB", "DB"]
+    static let offensivePositions: Set<String> = ["QB", "RB", "WR", "TE", "K"]
+    static let defensivePositions: Set<String> = ["DL", "LB", "DB"]
 
     // MARK: - Public Entry
 
@@ -273,22 +273,21 @@ struct AllTimeAggregator {
                 }()
 
                 for idx in 0..<paddedStarters.count {
-                    let pid = paddedStarters[idx]
-                    if pid == "0" { continue }
-                    let points = entry.players_points?[pid] ?? 0.0
+                    let starterId = paddedStarters[idx]
+                    guard starterId != "0" else { continue }
+                    let points = entry.players_points?[starterId] ?? 0.0
+                    let rawPlayer = playerCache[starterId]
+                    let posRaw = rawPlayer?.position ?? ""
+                    let forSlot: String = slots[safe: idx] ?? posRaw
+                    let candidatePositions = ([posRaw] + (rawPlayer?.fantasy_positions ?? [])).map { PositionNormalizer.normalize($0) }
+                    let creditedPos = SlotPositionAssigner.countedPosition(for: canonicalFlexSlot(forSlot), candidatePositions: candidatePositions, base: PositionNormalizer.normalize(posRaw))
+                    if offensivePositions.contains(PositionNormalizer.normalize(creditedPos)) { weekOffPF += points }
+                    else if defensivePositions.contains(PositionNormalizer.normalize(creditedPos)) { weekDefPF += points }
                     weekPF += points
 
-                    let slot = slots[safe: idx] ?? "FLEX"
-                    let rawPlayer = playerCache[pid]
-                    let candidatePositions = ([rawPlayer?.position ?? ""] + (rawPlayer?.fantasy_positions ?? [])).map { PositionNormalizer.normalize($0) }
-                    let credited = SlotPositionAssigner.countedPosition(for: canonicalFlexSlot(slot), candidatePositions: candidatePositions, base: PositionNormalizer.normalize(rawPlayer?.position ?? "UNK"))
-                    let norm = PositionNormalizer.normalize(credited)
-
-                    if offensivePositions.contains(norm) { weekOffPF += points }
-                    else if defensivePositions.contains(norm) { weekDefPF += points }
-
-                    posTotals[norm, default: 0] += points
-                    posStarts[norm, default: 0] += 1
+                    let normCredited = PositionNormalizer.normalize(creditedPos)
+                    posTotals[normCredited, default: 0] += points
+                    posStarts[normCredited, default: 0] += 1
                 }
 
                 totalPF += weekPF
@@ -300,12 +299,13 @@ struct AllTimeAggregator {
                 totalMaxOffPF += maxes.off
                 totalMaxDefPF += maxes.def
 
-                // Wins/losses/ties
+                // Points scored against (regular season)
                 if let matchupId = entry.matchup_id,
                    let oppEntry = entries.first(where: { $0.matchup_id == matchupId && $0.roster_id != rosterId }),
-                   let myPoints = entry.points, let oppPoints = oppEntry.points {
-                    if myPoints == oppPoints { ties += 1 }
-                    else if myPoints > oppPoints { wins += 1 }
+                   let oppPoints = oppEntry.points {
+                    totalPSA += oppPoints
+                    let myPoints = entry.points ?? 0.0
+                    if myPoints > oppPoints { wins += 1 }
                     else if myPoints < oppPoints { losses += 1 }
                 }
             }
@@ -412,7 +412,7 @@ struct AllTimeAggregator {
             }
         }
 
-        let flexAllowed: Set = ["RB", "WR", "TE"]
+        let flexAllowed: Set<String> = ["RB", "WR", "TE"]
         let flexCount = startingSlots.filter { offensiveFlexSlots.contains($0) }.count
         let flexCandidates = offPlayerList.filter { flexAllowed.contains($0.pos) }.sorted { $0.score > $1.score }
         maxOff += flexCandidates.prefix(flexCount).reduce(0.0) { $0 + $1.score }
