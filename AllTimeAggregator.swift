@@ -765,13 +765,6 @@ struct AllTimeAggregator {
     }
 }
 
-// Simple safe-subscripting extension used in several places
-extension Collection {
-    subscript(safe index: Index) -> Element? {
-        indices.contains(index) ? self[index] : nil
-    }
-}
-
 // Helper to map keys in a dictionary (used for canonical flex conversion)
 private extension Dictionary where Key == String, Value == Int {
     func mapKeys(_ transform: (String) -> String) -> [String: Int] {
