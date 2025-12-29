@@ -701,7 +701,7 @@ class SleeperLeagueManager: ObservableObject {
             var weeksCounted = 0
             var actualPosTotals: [String: Double] = [:]
             var actualPosStartCounts: [String: Int] = [:]
-            var actualPosWeeks: [String: Set] = [:]
+            var actualPosWeeks: [String: Set<Int>] = [:]
 
             // --- MAIN PATCHED SECTION: Use robust credited position for per-week actual lineup ---
             for week in weeksToUse {
