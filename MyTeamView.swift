@@ -566,13 +566,7 @@ struct MyTeamView: View {
     private var currentLineupSection: some View {
         sectionBox {
             let context = currentLineupContext()
-            let titleText: String = {
-                if let ctx = context {
-                    return "Current Lineup (Week \(ctx.week))"
-                } else {
-                    return "Current Lineup"
-                }
-            }()
+            let titleText: String = "Roster"
             MyTeamView.phattGradientText(Text(titleText), size: 18)
                 .frame(maxWidth: .infinity, alignment: .center)
 
