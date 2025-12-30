@@ -155,6 +155,25 @@ struct MatchupView: View {
         }
     }
 
+    // NEW: roster-specific meaningful lineup detection
+    private func rosterHasMeaningfulLineup(_ entries: [MatchupEntry]?, rosterId: Int) -> Bool {
+        guard let entries,
+              let entry = entries.first(where: { $0.roster_id == rosterId }) else { return false }
+        let starters = entry.starters ?? []
+        let players = entry.players ?? []
+        let points = entry.players_points ?? [:]
+        return !starters.isEmpty || !players.isEmpty || !points.isEmpty
+    }
+
+    private func latestMeaningfulWeek(for team: TeamStanding?, in season: SeasonData?) -> Int? {
+        guard let team,
+              let season,
+              let map = season.matchupsByWeek,
+              let rid = Int(team.id) else { return nil }
+        let weeks = map.keys.sorted(by: >)
+        return weeks.first(where: { wk in rosterHasMeaningfulLineup(map[wk], rosterId: rid) })
+    }
+
     // Week menu, use matchupsByWeek if available but only surface weeks that actually have data
     private var availableWeeks: [String] {
         guard let season = selectedSeasonData, let weeksDict = season.matchupsByWeek else {
@@ -210,23 +229,29 @@ struct MatchupView: View {
         return currentMatchupWeek
     }
 
-    // Week selector default logic:  prefer global current week explicitly (enforced by app)
+    // Week selector default logic: prefer latest meaningful Sleeper roster; fallback to global current week, then prior logic
     private func setDefaultWeekSelection() {
         DispatchQueue.main.async {
-            guard let _ = self.league else {
+            guard let season = self.selectedSeasonData else {
                 self.selectedWeek = ""
                 return
             }
 
-            let desiredWeek = max(1, leagueManager.globalCurrentWeek) // explicit preference for globalCurrentWeek
+            let desiredMeaningful = self.latestMeaningfulWeek(for: self.userTeamStanding, in: season)
+                ?? self.latestMeaningfulWeek(for: self.opponentTeamStanding, in: season)
+
+            let desiredWeek = desiredMeaningful
+                ?? (self.leagueManager.globalCurrentWeek > 0 ? self.leagueManager.globalCurrentWeek : nil)
+                ?? self.currentMatchupWeek
+
             let availableNums = self.availableWeeks
                 .compactMap { Int($0.replacingOccurrences(of: "Week ", with: "")) }
                 .sorted()
 
-            if availableNums.contains(desiredWeek) {
-                self.selectedWeek = "Week \(desiredWeek)"; return
+            if let dw = desiredWeek, availableNums.contains(dw) {
+                self.selectedWeek = "Week \(dw)"; return
             }
-            if let nearestPast = availableNums.filter({ $0 <= desiredWeek }).max() {
+            if let dw = desiredWeek, let nearestPast = availableNums.filter({ $0 <= dw }).max() {
                 self.selectedWeek = "Week \(nearestPast)"; return
             }
             if let first = availableNums.first {
@@ -383,20 +408,20 @@ struct MatchupView: View {
                 }
                 return starters
             }()
-            for idx in 0..<padded.count {
+            for idx in 0..<startingSlots.count {
+                let slot = startingSlots[idx]
+                let allowed = allowedPositions(for: slot)
                 let pid = padded[idx]
                 guard pid != "0" else { continue }
-                let slot = startingSlots[mpSafe: idx] ?? "FLEX"
-                let player = team.roster.first(where: { $0.id == pid })
-                    ?? (leagueManager.playerCache ?? [:])[pid].map { raw in
-                        Player(id: pid, position: raw.position ?? "UNK", altPositions: raw.fantasy_positions, weeklyScores: [])
-                    }
-                let basePos = PositionNormalizer.normalize(player?.position ?? "UNK")
-                let fantasy = (player?.altPositions ?? []).map { PositionNormalizer.normalize($0) }
-                let credited = PositionNormalizer.normalize(
-                    SlotPositionAssigner.countedPosition(for: slot, candidatePositions: fantasy, base: basePos)
-                )
-                if credited == normPos {
+                let playerPos: String
+                if let rosterPlayer = team.roster.first(where: { $0.id == pid }) {
+                    playerPos = PositionNormalizer.normalize(rosterPlayer.position)
+                } else if let raw = leagueManager.playerCache?[pid] ?? leagueManager.allPlayers[pid] {
+                    playerPos = PositionNormalizer.normalize(raw.position ?? "UNK")
+                } else {
+                    continue
+                }
+                if allowed.contains(playerPos) {
                     total += playersPoints[pid] ?? 0
                     count += 1
                 }
