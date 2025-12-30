@@ -140,14 +140,14 @@ struct MyTeamView: View {
         leagueManager.leagues.isEmpty || !authViewModel.isLoggedIn
     }
 
-    // MARK: - PHATT FONT + Gradient Styling Helpers
-    // Use FontLoader to resolve the PostScript name for "Phatt" (falls back to "Phatt" string).
+    // MARK: - PHATT / PICK SIX FONT + Gradient Styling Helpers
     private static var phattPostScriptName: String {
-        // FontLoader.postScriptName will print helpful diagnostics; if nil, fall back to friendly name
         return FontLoader.postScriptName(matching: "Phatt") ?? "Phatt"
     }
+    private static var pickSixPostScriptName: String {
+        return FontLoader.postScriptName(matching: "Pick Six") ?? "Pick Six"
+    }
 
-    // Fiery gradient colors
     private static var fieryGradient: LinearGradient {
         LinearGradient(
             gradient: Gradient(colors: [Color(hex: "#C24100"), Color(hex: "#F5C200"), Color(hex: "#C24100")]),
@@ -156,12 +156,22 @@ struct MyTeamView: View {
         )
     }
 
-    // Text style helper: bold Phatt + fiery gradient clipped to text (CSS-like background-clip:text)
-    // Made static so it can be used without instantiating MyTeamView (avoids binding initializer).
     static func phattGradientText(_ text: Text, size: CGFloat) -> some View {
-        // Create a consistently styled Text used for both mask and overlay reference.
         let styled = text
             .font(.custom(phattPostScriptName, size: size))
+            .fontWeight(.bold)
+
+        return styled
+            .foregroundColor(.clear)
+            .overlay(
+                fieryGradient
+                    .mask(styled)
+            )
+    }
+
+    static func pickSixGradientText(_ text: Text, size: CGFloat) -> some View {
+        let styled = text
+            .font(.custom(pickSixPostScriptName, size: size))
             .fontWeight(.bold)
 
         return styled
@@ -262,7 +272,6 @@ struct MyTeamView: View {
     // --- NEW MENU LAYOUT HERE ---
     private var headerBlock: some View {
         VStack(spacing: 18) {
-            // Use bold Phatt + fiery gradient for the team name title
             MyTeamView.phattGradientText(Text(displayTeamName()), size: 36)
                 .frame(maxWidth: .infinity)
                 .multilineTextAlignment(.center)
@@ -276,7 +285,6 @@ struct MyTeamView: View {
     // --- DSDDashboard-style Menu Geometry ---
     private var selectionMenus: some View {
         VStack(spacing: 10) {
-            // Top Row: League selector stretches full width
             GeometryReader { geo in
                 HStack {
                     leagueMenu
@@ -285,7 +293,6 @@ struct MyTeamView: View {
             }
             .frame(height: 50)
 
-            // Bottom Row: Year (25%), Team (25%), Week (25%), StatDrop (25%)
             GeometryReader { geo in
                 let spacing: CGFloat = menuSpacing * 3
                 let totalAvailable = geo.size.width - spacing
@@ -395,9 +402,6 @@ struct MyTeamView: View {
                         .foregroundColor(.white.opacity(0.7))
                         .font(.body)
                 } else if let team = selectedTeamSeason, let league = league {
-                    // New: use the view-specific context .myTeam, and pass an explicitWeek when user selected a week.
-                    // This ensures the stat drop is tailored to MyTeamView and can include week-specific look-ahead/preview content.
-                    // PASSING explicitWeek AND opponent: nil per requested behavior.
                     StatDropAnalysisBox(
                         team: team,
                         league: league,
@@ -428,7 +432,6 @@ struct MyTeamView: View {
 
     private var topHeader: some View {
         HStack(alignment: .lastTextBaseline, spacing: 12) {
-            // Title uses Phatt + gradient as well
             MyTeamView.phattGradientText(Text(displayTeamName()), size: 30)
                 .lineLimit(1)
                 .minimumScaleFactor(0.6)
@@ -444,7 +447,6 @@ struct MyTeamView: View {
     // MARK: Sections (same logic as prior version but referencing appSelection)
     private var managementSection: some View {
         sectionBox {
-            // Section title uses Phatt + gradient
             MyTeamView.phattGradientText(Text("Management %"), size: 20)
                 .frame(maxWidth: .infinity, alignment: .center)
             let (f, o, d) = managementTriplet()
@@ -485,7 +487,6 @@ struct MyTeamView: View {
 
     private var positionPPWSection: some View {
         sectionBox {
-            // Section title uses Phatt + gradient
             if selectedWeek == "SZN" {
                 MyTeamView.phattGradientText(Text("PPW Averages"), size: 18)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -503,7 +504,7 @@ struct MyTeamView: View {
                 Text(selectedWeek == "SZN" ? "Per Starter Slot Avg (Individual PPW)" : "Per Starter Slot Points (Individual Points in Week \(selectedWeek.replacingOccurrences(of: "Wk ", with: "")))"),
                 size: 16
             )
-                .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
             gridForPositions(valueProvider: individualPPW, leagueAvgProvider: leagueIndividualPPW)
         }
     }
@@ -558,7 +559,6 @@ struct MyTeamView: View {
                let season = league?.seasons.first(where: { $0.id == appSelection.selectedSeason }) ?? league?.seasons.sorted(by: { $0.id < $1.id }).last,
                let slots = league?.startingLineup,
                let myEntry = season.matchupsByWeek?[week]?.first(where: { $0.roster_id == Int(t.id) }) {
-                // PATCH: Use weekly player pool for assigned slots & bench
                 let allPlayers = leagueManager.playerCache ?? [:]
                 let startingSlots = slots.filter { !["BN", "IR", "TAXI"].contains($0) }
                 let assigned = assignPlayersToSlotsPatched(team: t, week: week, slots: startingSlots, myEntry: myEntry, playerCache: allPlayers)
@@ -579,8 +579,30 @@ struct MyTeamView: View {
                     }
                     .font(.caption)
                 }
+
+                // Bench separator
+                MyTeamView.pickSixGradientText(Text("-----BENCH-----"), size: 18)
+                    .frame(maxWidth: .infinity)
+                    .multilineTextAlignment(.center)
+                    .padding(.vertical, 6)
+
                 let starters = myEntry.starters ?? []
-                let bench = getBenchPlayersPatched(team: t, week: week, starters: starters, myEntry: myEntry, playerCache: allPlayers)
+                let benchRaw = getBenchPlayersPatched(team: t, week: week, starters: starters, myEntry: myEntry, playerCache: allPlayers)
+
+                let positionPriority: [String: Int] = [
+                    "QB": 0, "RB": 1, "WR": 2, "TE": 3, "DL": 4, "LB": 5, "DB": 6
+                ]
+                let bench = benchRaw.sorted { lhs, rhs in
+                    let lPos = PositionNormalizer.normalize(lhs.pos)
+                    let rPos = PositionNormalizer.normalize(rhs.pos)
+                    let lRank = positionPriority[lPos] ?? Int.max
+                    let rRank = positionPriority[rPos] ?? Int.max
+                    if lRank == rRank {
+                        return lhs.score > rhs.score
+                    }
+                    return lRank < rRank
+                }
+
                 ForEach(bench) { player in
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
                         Text("BN")
@@ -813,7 +835,6 @@ struct MyTeamView: View {
     private func positionAvg(_ pos: String) -> Double {
         let normPos = PositionNormalizer.normalize(pos)
         if selectedWeek == "SZN" {
-            // Season-long starter average
             return seasonPositionAverage(pos: normPos, teamOverride: selectedTeamSeason)
         } else if let week = getSelectedWeekNumber() {
             return weeklyPositionAverage(pos: normPos, week: week, teamOverride: selectedTeamSeason)
@@ -854,30 +875,21 @@ struct MyTeamView: View {
     }
 
     private func individualPPW(_ pos: String) -> Double {
-        // NOTE: Weekly calculation changed to use slot‑credited positions (SlotPositionAssigner)
-        // to match how season/all-time individual PPW is computed. This ensures numerator and denominator
-        // use the same credited position mapping rather than raw player.position.
         let normPos = PositionNormalizer.normalize(pos)
-        // All-time aggregated path (unchanged)
         if let a = aggregated { return a.individualPositionPPW[normPos] ?? 0 }
-        // Season path (unchanged)
         if selectedWeek == "SZN" {
             return selectedTeamSeason?.individualPositionAverages?[normPos] ?? 0
         }
-        // Weekly path: compute credited totals & counts using slot assignment
         else if let week = getSelectedWeekNumber(), let t = selectedTeamSeason, let league = league {
             guard let season = league.seasons.first(where: { $0.id == appSelection.selectedSeason }),
                   let myEntry = season.matchupsByWeek?[week]?.first(where: { $0.roster_id == Int(t.id) }) else {
-                // Fallback to previous behavior if matchup entry missing
                 let posPoints = positionPPW(normPos)
                 let numStarters = numberOfStarters(in: t, week: week, pos: normPos)
                 return numStarters > 0 ? posPoints / Double(numStarters) : 0
             }
 
-            // Use starting lineup / slots sanitized similarly to other places
             let slots = league.startingLineup.filter { !["BN", "IR", "TAXI"].contains($0) }
             let starters = myEntry.starters ?? []
-            // padded starters: ensure same length as slots
             let paddedStarters: [String] = {
                 if starters.count < slots.count {
                     return starters + Array(repeating: "0", count: slots.count - starters.count)
@@ -891,7 +903,6 @@ struct MyTeamView: View {
             var perPosTotals: [String: Double] = [:]
             var perPosCounts: [String: Int] = [:]
 
-            // If players_points present, prefer to use it; otherwise fallback to 0 values for starts
             let playersPoints = myEntry.players_points ?? [:]
 
             for idx in 0..<paddedStarters.count {
@@ -914,7 +925,6 @@ struct MyTeamView: View {
                 return total / Double(starts)
             }
 
-            // Final fallback: preserve old logic if no credited starts matched
             let posPoints = positionPPW(normPos)
             let numStarters = numberOfStarters(in: t, week: week, pos: normPos)
             return numStarters > 0 ? posPoints / Double(numStarters) : 0
@@ -974,7 +984,6 @@ struct MyTeamView: View {
         if selectedWeek == "SZN" {
             return baseLeagueAvg { $0.managementPercent }
         } else {
-            // No weekly management
             return 0
         }
     }
@@ -982,7 +991,6 @@ struct MyTeamView: View {
         if selectedWeek == "SZN" {
             return baseLeagueAvg { $0.offensiveManagementPercent ?? 0 }
         } else {
-            // No weekly management
             return 0
         }
     }
@@ -990,11 +998,9 @@ struct MyTeamView: View {
         if selectedWeek == "SZN" {
             return baseLeagueAvg { $0.defensiveManagementPercent ?? 0 }
         } else {
-            // No weekly management
             return 0
         }
     }
-    // League average using starter-based position averages
     private func leaguePosPPW(_ pos: String) -> Double {
         let normPos = PositionNormalizer.normalize(pos)
         if selectedWeek == "SZN" {
@@ -1125,7 +1131,6 @@ struct MyTeamView: View {
                 }
             }
         }
-        // If no raw full name, try to synthesize from id or position
         return fallbackId.isEmpty ? position : fallbackId
     }
 
@@ -1268,13 +1273,10 @@ struct MyTeamView: View {
 
 // MARK: Text Style Helpers
 private extension Text {
-    // Keep original convenience names, but route to the MyTeamView phattGradientText helper (static).
     @MainActor func sectionTitleStyle() -> some View {
-        // Use a slightly larger size for section titles
         MyTeamView.phattGradientText(self, size: 18)
     }
     @MainActor func sectionSubtitleStyle() -> some View {
-        // Slightly smaller nuance for subtitles
         MyTeamView.phattGradientText(self, size: 16)
     }
 }
@@ -1305,11 +1307,11 @@ private extension Color {
         Scanner(string: trimmed).scanHexInt64(&int)
         let a, r, g, b: UInt64
         switch trimmed.count {
-        case 3: // RGB (12-bit)
+        case 3:
             (a, r, g, b) = (255, (int >> 8) * 17, (int >> 4 & 0xF) * 17, (int & 0xF) * 17)
-        case 6: // RRGGBB (24-bit)
+        case 6:
             (a, r, g, b) = (255, int >> 16, int >> 8 & 0xFF, int & 0xFF)
-        case 8: // AARRGGBB (32-bit)
+        case 8:
             (a, r, g, b) = (int >> 24, int >> 16 & 0xFF, int >> 8 & 0xFF, int & 0xFF)
         default:
             (a, r, g, b) = (255, 0, 0, 0)
