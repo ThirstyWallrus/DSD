@@ -204,25 +204,11 @@ struct TeamStanding: Identifiable, Codable, Equatable {
 // MARK: - PositionStat
 
 struct PositionStat: Identifiable, Codable, Equatable {
-    let id: String
+    let id: String = UUID().uuidString
     let position: String
     let average: Double
     let leagueAverage: Double
     let rank: Int
-
-    init(
-        id: String = UUID().uuidString,
-        position: String,
-        average: Double,
-        leagueAverage: Double,
-        rank: Int
-    ) {
-        self.id = id
-        self.position = position
-        self.average = average
-        self.leagueAverage = leagueAverage
-        self.rank = rank
-    }
 }
 
 // MARK: - H2HStats
