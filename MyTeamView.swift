@@ -121,7 +121,6 @@ struct MyTeamView: View {
 
     private var availableWeeks: [String] {
         guard let team = selectedTeamSeason else { return ["SZN"] }
-        // Use all weeks in matchup data for this team, not just team.roster
         if let season = league?.seasons.first(where: { $0.id == appSelection.selectedSeason }),
            let mByWeek = season.matchupsByWeek {
             let weeks = mByWeek.keys.sorted()
@@ -409,7 +408,6 @@ struct MyTeamView: View {
             )
     }
 
-
     private var contentStack: some View {
         VStack(alignment: .leading, spacing: 24) {
             if isStatDropActive {
@@ -434,7 +432,6 @@ struct MyTeamView: View {
                 positionPPWSection
                 if selectedWeek == "SZN" {
                     perStartPPWSection
-                    averageStartersSection
                 } else {
                     lineupSection
                 }
@@ -524,42 +521,6 @@ struct MyTeamView: View {
             gridForPositions(valueProvider: individualPPW, leagueAvgProvider: leagueIndividualPPW)
         }
     }
-    private var averageStartersSection: some View {
-        sectionBox {
-            MyTeamView.phattGradientText(Text("Average Starters / Week"), size: 18)
-                .frame(maxWidth: .infinity, alignment: .center)
-            HStack {
-                MyTeamView.phattGradientTextDefault(Text("Pos"), size: UIFont.preferredFont(forTextStyle: .caption2).pointSize)
-                    .frame(width: 34, alignment: .center)
-                MyTeamView.phattGradientTextDefault(Text("Avg"), size: UIFont.preferredFont(forTextStyle: .caption2).pointSize)
-                    .frame(width: 60, alignment: .center)
-                MyTeamView.phattGradientTextDefault(Text("Fixed"), size: UIFont.preferredFont(forTextStyle: .caption2).pointSize)
-                    .frame(width: 38, alignment: .center)
-                MyTeamView.phattGradientTextDefault(Text("Flex"), size: UIFont.preferredFont(forTextStyle: .caption2).pointSize)
-                    .frame(width: 50, alignment: .center)
-                Spacer()
-            }
-            .font(.caption2)
-            .foregroundColor(.white.opacity(0.7))
-            .frame(maxWidth: .infinity, alignment: .center)
-            VStack(alignment: .leading, spacing: 6) {
-                ForEach(mainPositions, id: \.self) { pos in
-                    let avg = averageActualStarters(pos)
-                    let base = fixedSlotCounts()[pos] ?? 0
-                    let flexAvg = max(0, avg - Double(base))
-                    HStack {
-                        Text(pos).frame(width: 34, alignment: .leading)
-                        Text(String(format: "%.2f", avg)).foregroundColor(avgColor(avg: avg, base: base)).frame(width: 60, alignment: .trailing)
-                        Text("\(base)").frame(width: 38, alignment: .trailing)
-                        Text(String(format: "%.2f", flexAvg)).frame(width: 50, alignment: .trailing)
-                        Spacer()
-                    }
-                    .font(.caption.bold())
-                    .foregroundColor(.white)
-                }
-            }
-        }
-    }
 
     // MARK: Starter/Bench score coloring helpers
     private func leagueStarterAverageForPosition(week: Int, pos: String) -> Double {
@@ -582,20 +543,20 @@ struct MyTeamView: View {
                 }
                 return starters
             }()
-            for idx in 0..<padded.count {
+            for idx in 0..<startingSlots.count {
+                let slot = startingSlots[idx]
+                let allowed = allowedPositions(for: slot)
                 let pid = padded[idx]
                 guard pid != "0" else { continue }
-                let slot = startingSlots[safe: idx] ?? "FLEX"
-                let player = team.roster.first(where: { $0.id == pid })
-                    ?? (leagueManager.playerCache ?? [:])[pid].map { raw in
-                        Player(id: pid, position: raw.position ?? "UNK", altPositions: raw.fantasy_positions, weeklyScores: [])
-                    }
-                let basePos = PositionNormalizer.normalize(player?.position ?? "UNK")
-                let fantasy = (player?.altPositions ?? []).map { PositionNormalizer.normalize($0) }
-                let credited = PositionNormalizer.normalize(
-                    SlotPositionAssigner.countedPosition(for: slot, candidatePositions: fantasy, base: basePos)
-                )
-                if credited == normPos {
+                let playerPos: String
+                if let rosterPlayer = team.roster.first(where: { $0.id == pid }) {
+                    playerPos = PositionNormalizer.normalize(rosterPlayer.position)
+                } else if let raw = leagueManager.playerCache?[pid] ?? leagueManager.allPlayers[pid] {
+                    playerPos = PositionNormalizer.normalize(raw.position ?? "UNK")
+                } else {
+                    continue
+                }
+                if allowed.contains(playerPos) {
                     total += playersPoints[pid] ?? 0
                     count += 1
                 }
@@ -822,34 +783,6 @@ struct MyTeamView: View {
             return (0,0,0)
         }
     }
-    private func fixedSlotCounts() -> [String:Int] {
-        let posSet: Set = ["QB","RB","WR","TE","K","DL","LB","DB"]
-        if let config = selectedTeamSeason?.lineupConfig {
-            return config.reduce(into: [String:Int]()) { acc, pair in
-                let key = PositionNormalizer.normalize(pair.key)
-                if posSet.contains(key) {
-                    acc[key, default: 0] += pair.value
-                }
-            }
-        }
-        if let raw = league?.startingLineup {
-            return raw.reduce(into: [String:Int]()) { acc, slot in
-                let u = PositionNormalizer.normalize(slot)
-                if posSet.contains(u) {
-                    acc[u, default: 0] += 1
-                }
-            }
-        }
-        return [:]
-    }
-    private func avgColor(avg: Double, base: Int) -> Color {
-        if base == 0 {
-            return avg > 0 ? .cyan : .white.opacity(0.55)
-        }
-        if avg + 0.01 < Double(base) { return .red }
-        if abs(avg - Double(base)) < 0.05 { return .green }
-        return .yellow
-    }
 
     // Helper: credited starts for a week (slot -> counted position)
     private func creditedStarts(team: TeamStanding, week: Int) -> [(pos: String, points: Double)] {
@@ -874,19 +807,17 @@ struct MyTeamView: View {
         let cache = leagueManager.playerCache ?? [:]
         var credited: [(pos: String, points: Double)] = []
 
-        for idx in 0..<paddedStarters.count {
+        for idx in 0..<slots.count {
+            let slot = slots[idx]
             let pid = paddedStarters[idx]
             guard pid != "0" else { continue }
-            let rawSlot = slots[safe: idx] ?? "FLEX"
-            let player = team.roster.first(where: { $0.id == pid })
-                ?? cache[pid].map { raw in
-                    Player(id: pid, position: raw.position ?? "UNK", altPositions: raw.fantasy_positions, weeklyScores: [])
-                }
-            let basePos = PositionNormalizer.normalize(player?.position ?? "UNK")
-            let fantasy = (player?.altPositions ?? cache[pid]?.fantasy_positions ?? []).map { PositionNormalizer.normalize($0) }
-            let counted = SlotPositionAssigner.countedPosition(for: rawSlot, candidatePositions: fantasy, base: basePos)
-            let pts = playersPoints[pid] ?? 0
-            credited.append((pos: PositionNormalizer.normalize(counted), points: pts))
+            let raw = cache[pid]
+            let rosterPlayer = team.roster.first(where: { $0.id == pid })
+            let candidatePositions = ([rosterPlayer?.position ?? raw?.position ?? "UNK"] + (rosterPlayer?.altPositions ?? raw?.fantasy_positions ?? []))
+                .map { PositionNormalizer.normalize($0) }
+            let creditedPos = SlotPositionAssigner.countedPosition(for: slot, candidatePositions: candidatePositions, base: candidatePositions.first ?? "UNK")
+            let score = playersPoints[pid] ?? 0
+            credited.append((pos: PositionNormalizer.normalize(creditedPos), points: score))
         }
         return credited
     }
@@ -1002,20 +933,20 @@ struct MyTeamView: View {
             // If players_points present, prefer to use it; otherwise fallback to 0 values for starts
             let playersPoints = myEntry.players_points ?? [:]
 
-            for idx in 0..<paddedStarters.count {
+            for idx in 0..<slots.count {
+                let slot = slots[idx]
                 let pid = paddedStarters[idx]
                 guard pid != "0" else { continue }
-                let rawSlot = slots[safe: idx] ?? "FLEX"
-                let player = t.roster.first(where: { $0.id == pid })
-                    ?? allPlayers[pid].map { raw in
-                        Player(id: pid, position: raw.position ?? "UNK", altPositions: raw.fantasy_positions, weeklyScores: [])
-                    }
-                let basePos = PositionNormalizer.normalize(player?.position ?? "UNK")
-                let fantasy = (player?.altPositions ?? []).map { PositionNormalizer.normalize($0) }
-                let credited = SlotPositionAssigner.countedPosition(for: rawSlot, candidatePositions: fantasy, base: basePos)
-                let points = playersPoints[pid] ?? 0.0
-                perPosTotals[credited, default: 0] += points
-                perPosCounts[credited, default: 0] += 1
+
+                let raw = allPlayers[pid]
+                let rosterPlayer = t.roster.first(where: { $0.id == pid })
+                let candidatePositions = ([rosterPlayer?.position ?? raw?.position ?? "UNK"] + (rosterPlayer?.altPositions ?? raw?.fantasy_positions ?? []))
+                    .map { PositionNormalizer.normalize($0) }
+                let credited = SlotPositionAssigner.countedPosition(for: slot, candidatePositions: candidatePositions, base: candidatePositions.first ?? "UNK")
+                let normCredited = PositionNormalizer.normalize(credited)
+                let pts = playersPoints[pid] ?? 0
+                perPosTotals[normCredited, default: 0] += pts
+                perPosCounts[normCredited, default: 0] += 1
             }
 
             if let starts = perPosCounts[normPos], starts > 0, let total = perPosTotals[normPos] {
@@ -1030,25 +961,7 @@ struct MyTeamView: View {
             return 0
         }
     }
-    private func averageActualStarters(_ pos: String) -> Double {
-        let normPos = PositionNormalizer.normalize(pos)
-        if let agg = aggregated {
-            guard agg.actualStarterWeeks > 0 else { return 0 }
-            return Double(agg.actualStarterPositionCountsTotals[normPos] ?? 0) / Double(agg.actualStarterWeeks)
-        }
-        if selectedWeek == "SZN" {
-            if let t = selectedTeamSeason,
-               let weeks = t.actualStarterWeeks,
-               weeks > 0 {
-                return Double(t.actualStarterPositionCounts?[normPos] ?? 0) / Double(weeks)
-            }
-            return 0
-        } else if let week = getSelectedWeekNumber(), let t = selectedTeamSeason {
-            return Double(numberOfStarters(in: t, week: week, pos: normPos))
-        } else {
-            return 0
-        }
-    }
+
     private func pointsSummary() -> String {
         if selectedWeek == "SZN" {
             if let a = aggregated {
@@ -1366,9 +1279,9 @@ struct MyTeamView: View {
     }
 
     // PATCH: All offensive/defensive groupings use normalized positions
-    private let offensivePositions: Set = ["QB", "RB", "WR", "TE", "K"]
-    private let defensivePositions: Set = ["DL", "LB", "DB"]
-    private let offensiveFlexSlots: Set = [
+    private let offensivePositions: Set<String> = ["QB", "RB", "WR", "TE", "K"]
+    private let defensivePositions: Set<String> = ["DL", "LB", "DB"]
+    private let offensiveFlexSlots: Set<String> = [
         "FLEX","WRRB","WRRBTE","WRRB_TE","RBWR","RBWRTE",
         "SUPER_FLEX","QBRBWRTE","QBRBWR","QBSF","SFLX"
     ]
