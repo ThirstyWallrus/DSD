@@ -1580,20 +1580,27 @@ struct MyTeamView: View {
 
     // NEW: Season total points helper (full-season sum per player)
     private func seasonTotalPoints(for playerId: String, team: TeamStanding, season: SeasonData) -> Double {
-        // If player is on the roster, trust weeklyScores sum.
-        if let player = team.roster.first(where: { $0.id == playerId }) {
-            return player.weeklyScores.reduce(0.0) { $0 + ($1.points_half_ppr ?? $1.points) }
-        }
-        // Fallback: sum any players_points occurrences across the season's matchups for this team.
-        guard let map = season.matchupsByWeek else { return 0.0 }
-        var total: Double = 0.0
-        for (_, entries) in map {
-            if let entry = entries.first(where: { $0.roster_id == Int(team.id) }),
-               let pts = entry.players_points?[playerId] {
-                total += pts
+        // Primary: sum all players_points occurrences for this player across the entire season (all teams).
+        if let map = season.matchupsByWeek {
+            var total: Double = 0.0
+            for (_, entries) in map {
+                for entry in entries {
+                    if let pts = entry.players_points?[playerId] {
+                        total += pts
+                    }
+                }
             }
+            if total > 0 { return total }
         }
-        return total
+
+        // Fallback: if on roster, sum weeklyScores.
+        if let player = team.roster.first(where: { $0.id == playerId }) {
+            let rosterTotal = player.weeklyScores.reduce(0.0) { $0 + ($1.points_half_ppr ?? $1.points) }
+            if rosterTotal > 0 { return rosterTotal }
+        }
+
+        // Conservative fallback if no data found.
+        return 0.0
     }
 
     private func assignPlayersToSlotsCurrent(team: TeamStanding, week: Int, slots: [String], myEntry: MatchupEntry, playerCache: [String: RawSleeperPlayer], playersPoints: [String: Double]) -> [AssignedSlot] {
