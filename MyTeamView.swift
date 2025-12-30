@@ -389,8 +389,8 @@ struct MyTeamView: View {
             } else {
                 managementSection
                 positionPPWSection
-                perStartPPWSection
                 if selectedWeek == "SZN" {
+                    perStartPPWSection
                     averageStartersSection
                 } else {
                     lineupSection
