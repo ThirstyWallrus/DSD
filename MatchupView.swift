@@ -783,8 +783,8 @@ struct MatchupView: View {
 
     private func matchupStatsSection(user: TeamStanding, opp: TeamStanding) -> some View {
         let week = currentWeekNumber
-        let (uPF, uMax) = computeWeeklyLineupPointsPatched(team: user, week: week)
-        let (oPF, oMax) = computeWeeklyLineupPointsPatched(team: opp, week: week)
+        let (uPF, uMax, _, _, _, _) = computeWeeklyLineupPointsPatched(team: user, week: week)
+        let (oPF, oMax, _, _, _, _) = computeWeeklyLineupPointsPatched(team: opp, week: week)
 
         return HStack(spacing: 16) {
             VStack(alignment: .leading, spacing: 6) {
