@@ -240,29 +240,27 @@ struct MatchupView: View {
             let desiredMeaningful = self.latestMeaningfulWeek(for: self.userTeamStanding, in: season)
                 ?? self.latestMeaningfulWeek(for: self.opponentTeamStanding, in: season)
 
-            let desiredWeek = desiredMeaningful
-                ?? (self.leagueManager.globalCurrentWeek > 0 ? self.leagueManager.globalCurrentWeek : nil)
-                ?? self.currentMatchupWeek
+            let currentGlobal = self.leagueManager.globalCurrentWeek
+            let desiredWeek: Int? = {
+                if let mw = desiredMeaningful { return mw }
+                if currentGlobal > 0 { return currentGlobal }
+                return self.currentMatchupWeek
+            }()
 
             let availableNums = self.availableWeeks
                 .compactMap { Int($0.replacingOccurrences(of: "Week ", with: "")) }
                 .sorted()
 
             if let dw = desiredWeek, availableNums.contains(dw) {
-                self.selectedWeek = "Week \(dw)"; return
+                self.selectedWeek = "Week \(dw)"
+            } else if let dw = desiredWeek, let nearestPast = availableNums.filter({ $0 <= dw }).max() {
+                self.selectedWeek = "Week \(nearestPast)"
+            } else if let first = availableNums.first {
+                self.selectedWeek = "Week \(first)"
+            } else {
+                let fallback = self.currentMatchupWeek
+                self.selectedWeek = fallback > 0 ? "Week \(fallback)" : ""
             }
-            if let dw = desiredWeek, let nearestPast = availableNums.filter({ $0 <= dw }).max() {
-                self.selectedWeek = "Week \(nearestPast)"; return
-            }
-            if let first = availableNums.first {
-                self.selectedWeek = "Week \(first)"; return
-            }
-            // Fallback to computed currentMatchupWeek if nothing else found
-            let fallback = self.currentMatchupWeek
-            if fallback > 0 {
-                self.selectedWeek = "Week \(fallback)"; return
-            }
-            self.selectedWeek = ""
         }
     }
 
@@ -946,8 +944,77 @@ struct MatchupView: View {
 
     // MARK: - Helpers for management stats and names
     private func managementTotals(team: TeamStanding, week: Int) -> (Double, Double) {
-        let (pf, maxPF, _, _, _, _) = ManagementCalculator.computeManagementForWeek(team: team, week: week, league: self.league ?? team.league, leagueManager: leagueManager)
-        return (pf, maxPF)
+        guard
+            let season = selectedSeasonData ?? league?.seasons.first(where: { $0.id == appSelection.selectedSeason }) ?? league?.seasons.sorted(by: { $0.id < $1.id }).last,
+            let entry = season.matchupsByWeek?[week]?.first(where: { $0.roster_id == Int(team.id) })
+        else { return (0, 0) }
+
+        let starters = entry.starters ?? []
+        let playersPoints = entry.players_points ?? [:]
+        let actual = starters.reduce(0.0) { $0 + (playersPoints[$1] ?? 0.0) }
+
+        // Build candidate pool from the weekly roster (starters + bench + any players_points keys)
+        var pool = Set<String>()
+        pool.formUnion(entry.players ?? [])
+        pool.formUnion(starters)
+        pool.formUnion(playersPoints.keys)
+
+        let startingSlots = (league?.startingLineup ?? []).filter { !["BN", "IR", "TAXI"].contains($0) }
+
+        let playerCache = leagueManager.playerCache ?? [:]
+        let candidates: [(id: String, pos: String, alt: [String], score: Double)] = pool.map { pid in
+            if let rosterP = team.roster.first(where: { $0.id == pid }) {
+                return (
+                    id: pid,
+                    pos: PositionNormalizer.normalize(rosterP.position),
+                    alt: (rosterP.altPositions ?? []).map(PositionNormalizer.normalize),
+                    score: playersPoints[pid] ?? 0.0
+                )
+            } else if let raw = playerCache[pid] ?? leagueManager.allPlayers[pid] {
+                return (
+                    id: pid,
+                    pos: PositionNormalizer.normalize(raw.position ?? "UNK"),
+                    alt: (raw.fantasy_positions ?? []).map(PositionNormalizer.normalize),
+                    score: playersPoints[pid] ?? 0.0
+                )
+            } else {
+                return (id: pid, pos: PositionNormalizer.normalize("UNK"), alt: [], score: playersPoints[pid] ?? 0.0)
+            }
+        }
+
+        var strictSlots: [String] = []
+        var flexSlots: [String] = []
+        for slot in startingSlots {
+            let allowed = allowedPositions(for: slot)
+            if allowed.count == 1 &&
+                !idpFlexSlots.contains(canonicalFlexSlot(slot)) &&
+                !offensiveFlexSlots.contains(slot.uppercased()) {
+                strictSlots.append(slot)
+            } else {
+                flexSlots.append(slot)
+            }
+        }
+        let slotOrder = strictSlots + flexSlots
+
+        func isEligible(_ cand: (id: String, pos: String, alt: [String], score: Double), allowed: Set<String>) -> Bool {
+            let allowedSet = Set(allowed.map(PositionNormalizer.normalize))
+            if allowedSet.contains(cand.pos) { return true }
+            return !allowedSet.intersection(Set(cand.alt)).isEmpty
+        }
+
+        var used = Set<String>()
+        var maxTotal = 0.0
+        for slot in slotOrder {
+            let allowed = allowedPositions(for: slot)
+            if let best = candidates
+                .filter({ !used.contains($0.id) && isEligible($0, allowed: allowed) })
+                .max(by: { $0.score < $1.score }) {
+                used.insert(best.id)
+                maxTotal += best.score
+            }
+        }
+
+        return (actual, maxTotal)
     }
 
     private var userDisplayName: String {
