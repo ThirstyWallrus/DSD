@@ -398,7 +398,7 @@ struct MyTeamView: View {
             .bold()
             .foregroundColor(.orange)
             .font(.custom("Phatt", size: 16))
-        .frame(minHeight: 36)
+            .frame(minHeight: 36)
             .frame(maxWidth: .infinity)
             .padding(.horizontal, 10)
             .background(
@@ -1505,6 +1505,16 @@ struct MyTeamView: View {
     }
 
     // MARK: Current lineup helpers (tolerant of missing live points)
+    private func hasMeaningfulLineup(_ entries: [MatchupEntry]?, team: TeamStanding) -> Bool {
+        guard let entries,
+              let rosterId = Int(team.id),
+              let entry = entries.first(where: { $0.roster_id == rosterId }) else { return false }
+        let starters = entry.starters ?? []
+        let players = entry.players ?? []
+        let points = entry.players_points ?? [:]
+        return !starters.isEmpty || !players.isEmpty || !points.isEmpty
+    }
+
     private func currentLineupContext() -> (week: Int, assigned: [AssignedSlot], bench: [BenchPlayer])? {
         guard let league = league,
               let team = selectedTeamSeason else { return nil }
@@ -1519,13 +1529,15 @@ struct MyTeamView: View {
         }()
         guard let seasonUnwrapped = season, let map = seasonUnwrapped.matchupsByWeek else { return nil }
 
+        // Prefer the latest week that actually has lineup data for this team; fallback to globalCurrentWeek or last key.
+        let orderedWeeks = map.keys.sorted(by: >)
+        let meaningfulWeek = orderedWeeks.first(where: { wk in hasMeaningfulLineup(map[wk], team: team) })
         let preferredWeek = leagueManager.globalCurrentWeek
-        var weekToUse: Int?
-        if preferredWeek > 0, map[preferredWeek] != nil {
-            weekToUse = preferredWeek
-        } else {
-            weekToUse = map.keys.sorted().last
-        }
+        let weekToUse: Int? = {
+            if let meaningfulWeek { return meaningfulWeek }
+            if preferredWeek > 0, map[preferredWeek] != nil { return preferredWeek }
+            return orderedWeeks.last
+        }()
         guard let week = weekToUse,
               let entry = map[week]?.first(where: { $0.roster_id == Int(team.id) }) else { return nil }
         let slots = league.startingLineup
