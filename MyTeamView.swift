@@ -429,10 +429,10 @@ struct MyTeamView: View {
                 }
             } else {
                 managementSection
-                positionPPWSection
                 if selectedWeek == "SZN" {
-                    perStartPPWSection
+                    ppwCombinedSection
                 } else {
+                    positionPPWSection
                     lineupSection
                 }
                 transactionSection
@@ -498,27 +498,76 @@ struct MyTeamView: View {
             .accessibilityLabel(text)
     }
 
+    // MARK: Combined PPW + IPPW (SZN only)
+    private var ppwCombinedSection: some View {
+        sectionBox {
+            MyTeamView.phattGradientText(Text("PPW Averages"), size: 18)
+                .frame(maxWidth: .infinity, alignment: .center)
+
+            // Header row
+            HStack(spacing: 8) {
+                Text("Pos")
+                    .font(.caption.bold())
+                    .foregroundColor(.white.opacity(0.8))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Text("PPW")
+                    .font(.caption.bold())
+                    .foregroundColor(.white.opacity(0.8))
+                    .frame(maxWidth: .infinity)
+                Text("Lg PPW")
+                    .font(.caption.bold())
+                    .foregroundColor(.white.opacity(0.8))
+                    .frame(maxWidth: .infinity)
+                Text("IPPW")
+                    .font(.caption.bold())
+                    .foregroundColor(.white.opacity(0.8))
+                    .frame(maxWidth: .infinity)
+                Text("Lg IPPW")
+                    .font(.caption.bold())
+                    .foregroundColor(.white.opacity(0.8))
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+            }
+
+            Divider().background(Color.white.opacity(0.2))
+
+            VStack(spacing: 10) {
+                ForEach(mainPositions, id: \.self) { pos in
+                    let stats = combinedPositionStats(pos: pos)
+                    let ppwColor = tightColorVsLeague(stats.ppw, leagueAvg: stats.leaguePPW)
+                    let ippwColor = tightColorVsLeague(stats.ippw, leagueAvg: stats.leagueIPPW)
+                    HStack(spacing: 8) {
+                        Text(pos)
+                            .foregroundColor(positionColor(pos))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        Text(String(format: "%.2f", stats.ppw))
+                            .foregroundColor(ppwColor)
+                            .frame(maxWidth: .infinity)
+                        Text(String(format: "%.2f", stats.leaguePPW))
+                            .foregroundColor(.white.opacity(0.7))
+                            .frame(maxWidth: .infinity)
+                        Text(String(format: "%.2f", stats.ippw))
+                            .foregroundColor(ippwColor)
+                            .frame(maxWidth: .infinity)
+                        Text(String(format: "%.2f", stats.leagueIPPW))
+                            .foregroundColor(.white.opacity(0.7))
+                            .frame(maxWidth: .infinity, alignment: .trailing)
+                    }
+                    .font(.caption.bold())
+                }
+            }
+        }
+        // Stretch to screen edges (counter outer padding) without GeometryReader
+        .padding(.horizontal, -horizontalEdgePadding)
+        .frame(maxWidth: .infinity)
+    }
+
+    // MARK: Weekly position section (non-SZN)
     private var positionPPWSection: some View {
         sectionBox {
-            if selectedWeek == "SZN" {
-                MyTeamView.phattGradientText(Text("PPW Averages"), size: 18)
-                    .frame(maxWidth: .infinity, alignment: .center)
-            } else {
-                let wkText = selectedWeek.replacingOccurrences(of: "Wk ", with: "")
-                MyTeamView.phattGradientText(Text("Position Averages (Week \(wkText))"), size: 18)
-                    .frame(maxWidth: .infinity, alignment: .center)
-            }
+            let wkText = selectedWeek.replacingOccurrences(of: "Wk ", with: "")
+            MyTeamView.phattGradientText(Text("Position Averages (Week \(wkText))"), size: 18)
+                .frame(maxWidth: .infinity, alignment: .center)
             gridForPositions(valueProvider: positionAvg, leagueAvgProvider: leaguePosPPW)
-        }
-    }
-    private var perStartPPWSection: some View {
-        sectionBox {
-            MyTeamView.phattGradientText(
-                Text(selectedWeek == "SZN" ? "Per Starter Slot Avg (Individual PPW)" : "Per Starter Slot Points (Individual Points in Week \(selectedWeek.replacingOccurrences(of: "Wk ", with: "")))"),
-                size: 16
-            )
-            .frame(maxWidth: .infinity, alignment: .center)
-            gridForPositions(valueProvider: individualPPW, leagueAvgProvider: leagueIndividualPPW)
         }
     }
 
@@ -1148,6 +1197,121 @@ struct MyTeamView: View {
         }
         // If no raw full name, try to synthesize from id or position
         return fallbackId.isEmpty ? position : fallbackId
+    }
+
+    // MARK: Combined stats helpers (SZN)
+    private func combinedPositionStats(pos: String) -> (ppw: Double, leaguePPW: Double, ippw: Double, leagueIPPW: Double) {
+        let normPos = PositionNormalizer.normalize(pos)
+
+        // All Time mode uses aggregated caches when available
+        if let agg = aggregated, appSelection.selectedSeason == "All Time" {
+            let teamPPW = agg.positionAvgPPW[normPos] ?? 0
+            let teamIPPW = agg.individualPositionPPW[normPos] ?? 0
+
+            // League averages (weighted by weeks / starts when possible)
+            if let league = league, let allAgg = league.allTimeOwnerStats?.values {
+                var totalPPWPoints = 0.0
+                var totalPPWWeeks = 0.0
+                var totalIPPWPoints = 0.0
+                var totalStarts = 0.0
+
+                for entry in allAgg {
+                    let ppw = entry.positionAvgPPW[normPos] ?? 0
+                    let weeks = Double(max(entry.weeksPlayed, 0))
+                    totalPPWPoints += ppw * weeks
+                    totalPPWWeeks += weeks
+
+                    let ippw = entry.individualPositionPPW[normPos] ?? 0
+                    let starts = Double(entry.positionStartCounts[normPos] ?? 0)
+                    totalIPPWPoints += ippw * starts
+                    totalStarts += starts
+                }
+
+                let leaguePPW = totalPPWWeeks > 0 ? totalPPWPoints / totalPPWWeeks : 0
+                let leagueIPPW = totalStarts > 0 ? totalIPPWPoints / totalStarts : 0
+                return (teamPPW, leaguePPW, teamIPPW, leagueIPPW)
+            }
+            return (teamPPW, 0, teamIPPW, 0)
+        }
+
+        guard let league = league,
+              let season = league.seasons.first(where: { $0.id == appSelection.selectedSeason }),
+              let team = selectedTeamSeason else {
+            return (0,0,0,0)
+        }
+
+        // Team season aggregates
+        let teamTotals = seasonPositionTotals(for: team, season: season, pos: normPos)
+        let teamPPW = teamTotals.weekCount > 0 ? teamTotals.totalPoints / Double(teamTotals.weekCount) : 0
+        let teamIPPW = teamTotals.startCount > 0 ? teamTotals.totalPoints / Double(teamTotals.startCount) : 0
+
+        // League season aggregates
+        var leagueTotalPoints = 0.0
+        var leagueWeekCount = 0
+        var leagueStartPoints = 0.0
+        var leagueStartCount = 0
+
+        for t in seasonTeams {
+            let totals = seasonPositionTotals(for: t, season: season, pos: normPos)
+            leagueTotalPoints += totals.totalPoints
+            leagueWeekCount += totals.weekCount
+            leagueStartPoints += totals.totalPoints
+            leagueStartCount += totals.startCount
+        }
+
+        let leaguePPW = leagueWeekCount > 0 ? leagueTotalPoints / Double(leagueWeekCount) : 0
+        let leagueIPPW = leagueStartCount > 0 ? leagueStartPoints / Double(leagueStartCount) : 0
+
+        return (teamPPW, leaguePPW, teamIPPW, leagueIPPW)
+    }
+
+    private func seasonPositionTotals(for team: TeamStanding, season: SeasonData, pos: String) -> (totalPoints: Double, weekCount: Int, startCount: Int) {
+        var totalPoints = 0.0
+        var weeksWithStarts = 0
+        var totalStarts = 0
+
+        let weeks = season.matchupsByWeek?.keys.sorted() ?? []
+        for week in weeks {
+            let starts = creditedStarts(team: team, week: week).filter { $0.pos == pos }
+            guard !starts.isEmpty else { continue }
+            let weekPoints = starts.reduce(0.0) { $0 + $1.points }
+            totalPoints += weekPoints
+            weeksWithStarts += 1
+            totalStarts += starts.count
+        }
+
+        return (totalPoints, weeksWithStarts, totalStarts)
+    }
+
+    private func tightColorVsLeague(_ value: Double, leagueAvg: Double) -> Color {
+        if value > leagueAvg + 1.0 { return .green }
+        if value < leagueAvg - 1.0 { return .red }
+        return .yellow
+    }
+
+    // MARK: Weekly Computation Helpers continued
+    private func allowedPositions(for slot: String) -> Set<String> {
+        switch slot.uppercased() {
+        case "QB","RB","WR","TE","K","DL","LB","DB": return Set([PositionNormalizer.normalize(slot)])
+        case "FLEX","WRRB","WRRBTE","WRRB_TE","RBWR","RBWRTE": return Set(["RB","WR","TE"].map(PositionNormalizer.normalize))
+        case "SUPER_FLEX","QBRBWRTE","QBRBWR","QBSF","SFLX": return Set(["QB","RB","WR","TE"].map(PositionNormalizer.normalize))
+        case "IDP": return Set(["DL","LB","DB"])
+        default:
+            if slot.uppercased().contains("IDP") { return Set(["DL","LB","DB"]) }
+            return Set([PositionNormalizer.normalize(slot)])
+        }
+    }
+
+    private func isIDPFlex(_ slot: String) -> Bool {
+        let s = slot.uppercased()
+        return s.contains("IDP") && s != "DL" && s != "LB" && s != "DB"
+    }
+
+    private func isEligible(_ c: (id: String, pos: String, altPos: [String], score: Double), allowed: Set<String>) -> Bool {
+        let normBase = PositionNormalizer.normalize(c.pos)
+        let normAlt = c.altPos.map { PositionNormalizer.normalize($0) }
+        if allowed.contains(normBase) { return true }
+        return !allowed.intersection(Set(normAlt)).isEmpty
     }
 
     // MARK: PATCHED: Use weekly player pool, not just team.roster, for all per-week actual lineup and bench logic.
