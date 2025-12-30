@@ -743,44 +743,57 @@ struct MyTeamView: View {
         return .yellow
     }
 
-    private func positionPoints(in team: TeamStanding, week: Int, pos: String) -> Double {
-        // PATCH: Use normalized position for all grouping, including weekly player pool
-        let normPos = PositionNormalizer.normalize(pos)
+    // Helper: credited starts for a week (slot -> counted position)
+    private func creditedStarts(team: TeamStanding, week: Int) -> [(pos: String, points: Double)] {
         guard let league = league,
               let season = league.seasons.first(where: { $0.id == appSelection.selectedSeason }),
               let myEntry = season.matchupsByWeek?[week]?.first(where: { $0.roster_id == Int(team.id) }),
               let starters = myEntry.starters,
-              let playersPoints = myEntry.players_points
-        else { return 0 }
-        let allPlayers = leagueManager.playerCache ?? [:]
-        var total = 0.0
-        for pid in starters {
+              let playersPoints = myEntry.players_points else {
+            return []
+        }
+
+        let slots = league.startingLineup.filter { !["BN","IR","TAXI"].contains($0) }
+        let paddedStarters: [String] = {
+            if starters.count < slots.count {
+                return starters + Array(repeating: "0", count: slots.count - starters.count)
+            } else if starters.count > slots.count {
+                return Array(starters.prefix(slots.count))
+            }
+            return starters
+        }()
+
+        let cache = leagueManager.playerCache ?? [:]
+        var credited: [(pos: String, points: Double)] = []
+
+        for idx in 0..<paddedStarters.count {
+            let pid = paddedStarters[idx]
+            guard pid != "0" else { continue }
+            let rawSlot = slots[safe: idx] ?? "FLEX"
             let player = team.roster.first(where: { $0.id == pid })
-                ?? allPlayers[pid].map { raw in
+                ?? cache[pid].map { raw in
                     Player(id: pid, position: raw.position ?? "UNK", altPositions: raw.fantasy_positions, weeklyScores: [])
                 }
-            if PositionNormalizer.normalize(player?.position ?? "UNK") == normPos {
-                total += playersPoints[pid] ?? 0
-            }
+            let basePos = PositionNormalizer.normalize(player?.position ?? "UNK")
+            let fantasy = (player?.altPositions ?? cache[pid]?.fantasy_positions ?? []).map { PositionNormalizer.normalize($0) }
+            let counted = SlotPositionAssigner.countedPosition(for: rawSlot, candidatePositions: fantasy, base: basePos)
+            let pts = playersPoints[pid] ?? 0
+            credited.append((pos: PositionNormalizer.normalize(counted), points: pts))
         }
-        return total
+        return credited
+    }
+
+    private func positionPoints(in team: TeamStanding, week: Int, pos: String) -> Double {
+        let normPos = PositionNormalizer.normalize(pos)
+        return creditedStarts(team: team, week: week)
+            .filter { $0.pos == normPos }
+            .reduce(0.0) { $0 + $1.points }
     }
     private func numberOfStarters(in team: TeamStanding, week: Int, pos: String) -> Int {
-        // PATCH: Use normalized position for count
         let normPos = PositionNormalizer.normalize(pos)
-        guard let league = league,
-              let season = league.seasons.first(where: { $0.id == appSelection.selectedSeason }),
-              let myEntry = season.matchupsByWeek?[week]?.first(where: { $0.roster_id == Int(team.id) }),
-              let starters = myEntry.starters
-        else { return 0 }
-        let allPlayers = leagueManager.playerCache ?? [:]
-        return starters.filter { playerId in
-            let player = team.roster.first(where: { $0.id == playerId })
-                ?? allPlayers[playerId].map { raw in
-                    Player(id: playerId, position: raw.position ?? "UNK", altPositions: raw.fantasy_positions, weeklyScores: [])
-                }
-            return PositionNormalizer.normalize(player?.position ?? "UNK") == normPos
-        }.count
+        return creditedStarts(team: team, week: week)
+            .filter { $0.pos == normPos }
+            .count
     }
 
     // Added: per-position PPW helper (restored)
@@ -811,58 +824,30 @@ struct MyTeamView: View {
         }
     }
 
-    // Starter average for a specific week (this team or override)
+    // Starter average for a specific week (this team or override) using credited positions
     private func weeklyPositionAverage(pos: String, week: Int, teamOverride: TeamStanding? = nil) -> Double {
-        guard let t = teamOverride ?? selectedTeamSeason,
-              let league = league,
-              let season = league.seasons.first(where: { $0.id == appSelection.selectedSeason }),
-              let entry = season.matchupsByWeek?[week]?.first(where: { $0.roster_id == Int(t.id) }),
-              let starters = entry.starters,
-              let playersPoints = entry.players_points
-        else { return 0 }
-
-        let cache = leagueManager.playerCache ?? [:]
-        var total: Double = 0
-        var count: Int = 0
-        for pid in starters {
-            let player = t.roster.first(where: { $0.id == pid })
-                ?? cache[pid].map { raw in Player(id: pid, position: raw.position ?? "UNK", altPositions: raw.fantasy_positions, weeklyScores: []) }
-            let pPos = PositionNormalizer.normalize(player?.position ?? "UNK")
-            if pPos == pos {
-                total += playersPoints[pid] ?? 0
-                count += 1
-            }
-        }
-        return count > 0 ? total / Double(count) : 0
+        guard let t = teamOverride ?? selectedTeamSeason else { return 0 }
+        let credited = creditedStarts(team: t, week: week).filter { $0.pos == pos }
+        guard !credited.isEmpty else { return 0 }
+        let total = credited.reduce(0.0) { $0 + $1.points }
+        return total / Double(credited.count)
     }
 
-    // Starter average across the season (this team or override)
+    // Starter average across the season (this team or override) using credited positions
     private func seasonPositionAverage(pos: String, teamOverride: TeamStanding? = nil) -> Double {
         guard let t = teamOverride ?? selectedTeamSeason,
               let league = league,
               let season = league.seasons.first(where: { $0.id == appSelection.selectedSeason }),
-              let map = season.matchupsByWeek
-        else {
+              let map = season.matchupsByWeek else {
             return teamOverride?.positionAverages?[pos] ?? selectedTeamSeason?.positionAverages?[pos] ?? 0
         }
 
-        let cache = leagueManager.playerCache ?? [:]
         var total: Double = 0
         var count: Int = 0
-        for (_, entries) in map {
-            if let entry = entries.first(where: { $0.roster_id == Int(t.id) }),
-               let starters = entry.starters,
-               let playersPoints = entry.players_points {
-                for pid in starters {
-                    let player = t.roster.first(where: { $0.id == pid })
-                        ?? cache[pid].map { raw in Player(id: pid, position: raw.position ?? "UNK", altPositions: raw.fantasy_positions, weeklyScores: []) }
-                    let pPos = PositionNormalizer.normalize(player?.position ?? "UNK")
-                    if pPos == pos {
-                        total += playersPoints[pid] ?? 0
-                        count += 1
-                    }
-                }
-            }
+        for (week, _) in map {
+            let credited = creditedStarts(team: t, week: week).filter { $0.pos == pos }
+            total += credited.reduce(0.0) { $0 + $1.points }
+            count += credited.count
         }
         if count > 0 { return total / Double(count) }
         return t.positionAverages?[pos] ?? 0
