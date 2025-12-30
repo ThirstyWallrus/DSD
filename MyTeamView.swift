@@ -1578,6 +1578,24 @@ struct MyTeamView: View {
         return (week: week, assigned: assigned, bench: bench)
     }
 
+    // NEW: Season total points helper (full-season sum per player)
+    private func seasonTotalPoints(for playerId: String, team: TeamStanding, season: SeasonData) -> Double {
+        // If player is on the roster, trust weeklyScores sum.
+        if let player = team.roster.first(where: { $0.id == playerId }) {
+            return player.weeklyScores.reduce(0.0) { $0 + ($1.points_half_ppr ?? $1.points) }
+        }
+        // Fallback: sum any players_points occurrences across the season's matchups for this team.
+        guard let map = season.matchupsByWeek else { return 0.0 }
+        var total: Double = 0.0
+        for (_, entries) in map {
+            if let entry = entries.first(where: { $0.roster_id == Int(team.id) }),
+               let pts = entry.players_points?[playerId] {
+                total += pts
+            }
+        }
+        return total
+    }
+
     private func assignPlayersToSlotsCurrent(team: TeamStanding, week: Int, slots: [String], myEntry: MatchupEntry, playerCache: [String: RawSleeperPlayer], playersPoints: [String: Double]) -> [AssignedSlot] {
         guard let starters = myEntry.starters, let playersPool = myEntry.players else { return [] }
         var results: [AssignedSlot] = []
@@ -1633,9 +1651,9 @@ struct MyTeamView: View {
     }
 
     // PATCH: All offensive/defensive groupings use normalized positions
-    private let offensivePositions: Set<String> = ["QB", "RB", "WR", "TE", "K"]
-    private let defensivePositions: Set<String> = ["DL", "LB", "DB"]
-    private let offensiveFlexSlots: Set<String> = [
+    private let offensivePositions: Set = ["QB", "RB", "WR", "TE", "K"]
+    private let defensivePositions: Set = ["DL", "LB", "DB"]
+    private let offensiveFlexSlots: Set = [
         "FLEX","WRRB","WRRBTE","WRRB_TE","RBWR","RBWRTE",
         "SUPER_FLEX","QBRBWRTE","QBRBWR","QBSF","SFLX"
     ]
