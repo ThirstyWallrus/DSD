@@ -383,7 +383,7 @@ struct MyTeamView: View {
             .bold()
             .foregroundColor(.orange)
             .font(.custom("Phatt", size: 16))
-            .frame(minHeight: 36)
+        .frame(minHeight: 36)
             .frame(maxWidth: .infinity)
             .padding(.horizontal, 10)
             .background(
@@ -447,6 +447,7 @@ struct MyTeamView: View {
     // MARK: Sections (same logic as prior version but referencing appSelection)
     private var managementSection: some View {
         sectionBox {
+            // Section title uses Phatt + gradient
             MyTeamView.phattGradientText(Text("Management %"), size: 20)
                 .frame(maxWidth: .infinity, alignment: .center)
             let (f, o, d) = managementTriplet()
@@ -487,6 +488,7 @@ struct MyTeamView: View {
 
     private var positionPPWSection: some View {
         sectionBox {
+            // Section title uses Phatt + gradient
             if selectedWeek == "SZN" {
                 MyTeamView.phattGradientText(Text("PPW Averages"), size: 18)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -504,7 +506,7 @@ struct MyTeamView: View {
                 Text(selectedWeek == "SZN" ? "Per Starter Slot Avg (Individual PPW)" : "Per Starter Slot Points (Individual Points in Week \(selectedWeek.replacingOccurrences(of: "Wk ", with: "")))"),
                 size: 16
             )
-            .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
             gridForPositions(valueProvider: individualPPW, leagueAvgProvider: leagueIndividualPPW)
         }
     }
@@ -539,6 +541,58 @@ struct MyTeamView: View {
             }
         }
     }
+
+    // MARK: Starter/Bench score coloring helpers
+    private func leagueStarterAverageForPosition(week: Int, pos: String) -> Double {
+        guard let league = league,
+              let season = league.seasons.first(where: { $0.id == appSelection.selectedSeason }),
+              let map = season.matchupsByWeek else { return 0 }
+        let normPos = PositionNormalizer.normalize(pos)
+        let startingSlots = league.startingLineup.filter { !["BN","IR","TAXI"].contains($0) }
+        var total: Double = 0
+        var count: Int = 0
+        for team in seasonTeams {
+            guard let entry = map[week]?.first(where: { $0.roster_id == Int(team.id) }) else { continue }
+            let starters = entry.starters ?? []
+            let playersPoints = entry.players_points ?? [:]
+            let padded: [String] = {
+                if starters.count < startingSlots.count {
+                    return starters + Array(repeating: "0", count: startingSlots.count - starters.count)
+                } else if starters.count > startingSlots.count {
+                    return Array(starters.prefix(startingSlots.count))
+                }
+                return starters
+            }()
+            for idx in 0..<padded.count {
+                let pid = padded[idx]
+                guard pid != "0" else { continue }
+                let slot = startingSlots[safe: idx] ?? "FLEX"
+                let player = team.roster.first(where: { $0.id == pid })
+                    ?? (leagueManager.playerCache ?? [:])[pid].map { raw in
+                        Player(id: pid, position: raw.position ?? "UNK", altPositions: raw.fantasy_positions, weeklyScores: [])
+                    }
+                let basePos = PositionNormalizer.normalize(player?.position ?? "UNK")
+                let fantasy = (player?.altPositions ?? []).map { PositionNormalizer.normalize($0) }
+                let credited = PositionNormalizer.normalize(
+                    SlotPositionAssigner.countedPosition(for: slot, candidatePositions: fantasy, base: basePos)
+                )
+                if credited == normPos {
+                    total += playersPoints[pid] ?? 0
+                    count += 1
+                }
+            }
+        }
+        return count > 0 ? total / Double(count) : 0
+    }
+
+    private func scoreColor(for score: Double, position: String, week: Int) -> Color {
+        let avg = leagueStarterAverageForPosition(week: week, pos: position)
+        if avg == 0 { return .white }
+        if score > avg + 1 { return .green }
+        if score < avg - 1 { return .red }
+        return .yellow
+    }
+
     private var lineupSection: some View {
         sectionBox {
             MyTeamView.phattGradientText(Text("Lineup (Week \(selectedWeek.replacingOccurrences(of: "Wk ", with: "")))"), size: 18)
@@ -559,10 +613,19 @@ struct MyTeamView: View {
                let season = league?.seasons.first(where: { $0.id == appSelection.selectedSeason }) ?? league?.seasons.sorted(by: { $0.id < $1.id }).last,
                let slots = league?.startingLineup,
                let myEntry = season.matchupsByWeek?[week]?.first(where: { $0.roster_id == Int(t.id) }) {
+                // PATCH: Use weekly player pool for assigned slots & bench
                 let allPlayers = leagueManager.playerCache ?? [:]
                 let startingSlots = slots.filter { !["BN", "IR", "TAXI"].contains($0) }
                 let assigned = assignPlayersToSlotsPatched(team: t, week: week, slots: startingSlots, myEntry: myEntry, playerCache: allPlayers)
                 ForEach(assigned) { item in
+                    let creditedPos = PositionNormalizer.normalize(
+                        SlotPositionAssigner.countedPosition(
+                            for: item.slot,
+                            candidatePositions: ([item.playerPos] + item.altPositions).map { PositionNormalizer.normalize($0) },
+                            base: PositionNormalizer.normalize(item.playerPos)
+                        )
+                    )
+                    let scoreTint = scoreColor(for: item.score, position: creditedPos, week: week)
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
                         Text(item.slot)
                             .frame(maxWidth: .infinity / 3, alignment: .leading)
@@ -575,6 +638,7 @@ struct MyTeamView: View {
                         }
                         .frame(maxWidth: .infinity / 3, alignment: .leading)
                         Text(String(format: "%.2f", item.score))
+                            .foregroundColor(scoreTint)
                             .frame(maxWidth: .infinity / 3, alignment: .trailing)
                     }
                     .font(.caption)
@@ -604,6 +668,8 @@ struct MyTeamView: View {
                 }
 
                 ForEach(bench) { player in
+                    let posNorm = PositionNormalizer.normalize(player.pos)
+                    let scoreTint = scoreColor(for: player.score, position: posNorm, week: week)
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
                         Text("BN")
                             .frame(maxWidth: .infinity / 3, alignment: .leading)
@@ -616,6 +682,7 @@ struct MyTeamView: View {
                         }
                         .frame(maxWidth: .infinity / 3, alignment: .leading)
                         Text(String(format: "%.2f", player.score))
+                            .foregroundColor(scoreTint)
                             .frame(maxWidth: .infinity / 3, alignment: .trailing)
                     }
                     .font(.caption)
@@ -835,6 +902,7 @@ struct MyTeamView: View {
     private func positionAvg(_ pos: String) -> Double {
         let normPos = PositionNormalizer.normalize(pos)
         if selectedWeek == "SZN" {
+            // Season-long starter average
             return seasonPositionAverage(pos: normPos, teamOverride: selectedTeamSeason)
         } else if let week = getSelectedWeekNumber() {
             return weeklyPositionAverage(pos: normPos, week: week, teamOverride: selectedTeamSeason)
@@ -875,21 +943,30 @@ struct MyTeamView: View {
     }
 
     private func individualPPW(_ pos: String) -> Double {
+        // NOTE: Weekly calculation changed to use slot‑credited positions (SlotPositionAssigner)
+        // to match how season/all-time individual PPW is computed. This ensures numerator and denominator
+        // use the same credited position mapping rather than raw player.position.
         let normPos = PositionNormalizer.normalize(pos)
+        // All-time aggregated path (unchanged)
         if let a = aggregated { return a.individualPositionPPW[normPos] ?? 0 }
+        // Season path (unchanged)
         if selectedWeek == "SZN" {
             return selectedTeamSeason?.individualPositionAverages?[normPos] ?? 0
         }
+        // Weekly path: compute credited totals & counts using slot assignment
         else if let week = getSelectedWeekNumber(), let t = selectedTeamSeason, let league = league {
             guard let season = league.seasons.first(where: { $0.id == appSelection.selectedSeason }),
                   let myEntry = season.matchupsByWeek?[week]?.first(where: { $0.roster_id == Int(t.id) }) else {
+                // Fallback to previous behavior if matchup entry missing
                 let posPoints = positionPPW(normPos)
                 let numStarters = numberOfStarters(in: t, week: week, pos: normPos)
                 return numStarters > 0 ? posPoints / Double(numStarters) : 0
             }
 
+            // Use starting lineup / slots sanitized similarly to other places
             let slots = league.startingLineup.filter { !["BN", "IR", "TAXI"].contains($0) }
             let starters = myEntry.starters ?? []
+            // padded starters: ensure same length as slots
             let paddedStarters: [String] = {
                 if starters.count < slots.count {
                     return starters + Array(repeating: "0", count: slots.count - starters.count)
@@ -903,6 +980,7 @@ struct MyTeamView: View {
             var perPosTotals: [String: Double] = [:]
             var perPosCounts: [String: Int] = [:]
 
+            // If players_points present, prefer to use it; otherwise fallback to 0 values for starts
             let playersPoints = myEntry.players_points ?? [:]
 
             for idx in 0..<paddedStarters.count {
@@ -925,6 +1003,7 @@ struct MyTeamView: View {
                 return total / Double(starts)
             }
 
+            // Final fallback: preserve old logic if no credited starts matched
             let posPoints = positionPPW(normPos)
             let numStarters = numberOfStarters(in: t, week: week, pos: normPos)
             return numStarters > 0 ? posPoints / Double(numStarters) : 0
@@ -984,6 +1063,7 @@ struct MyTeamView: View {
         if selectedWeek == "SZN" {
             return baseLeagueAvg { $0.managementPercent }
         } else {
+            // No weekly management
             return 0
         }
     }
@@ -991,6 +1071,7 @@ struct MyTeamView: View {
         if selectedWeek == "SZN" {
             return baseLeagueAvg { $0.offensiveManagementPercent ?? 0 }
         } else {
+            // No weekly management
             return 0
         }
     }
@@ -998,9 +1079,11 @@ struct MyTeamView: View {
         if selectedWeek == "SZN" {
             return baseLeagueAvg { $0.defensiveManagementPercent ?? 0 }
         } else {
+            // No weekly management
             return 0
         }
     }
+    // League average using starter-based position averages
     private func leaguePosPPW(_ pos: String) -> Double {
         let normPos = PositionNormalizer.normalize(pos)
         if selectedWeek == "SZN" {
@@ -1131,6 +1214,7 @@ struct MyTeamView: View {
                 }
             }
         }
+        // If no raw full name, try to synthesize from id or position
         return fallbackId.isEmpty ? position : fallbackId
     }
 
@@ -1307,11 +1391,11 @@ private extension Color {
         Scanner(string: trimmed).scanHexInt64(&int)
         let a, r, g, b: UInt64
         switch trimmed.count {
-        case 3:
+        case 3: // RGB (12-bit)
             (a, r, g, b) = (255, (int >> 8) * 17, (int >> 4 & 0xF) * 17, (int & 0xF) * 17)
-        case 6:
+        case 6: // RRGGBB (24-bit)
             (a, r, g, b) = (255, int >> 16, int >> 8 & 0xFF, int & 0xFF)
-        case 8:
+        case 8: // AARRGGBB (32-bit)
             (a, r, g, b) = (int >> 24, int >> 16 & 0xFF, int >> 8 & 0xFF, int & 0xFF)
         default:
             (a, r, g, b) = (255, 0, 0, 0)
