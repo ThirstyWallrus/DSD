@@ -430,9 +430,8 @@ struct MyTeamView: View {
             } else {
                 managementSection
                 combinedPPWSection
-                if selectedWeek == "SZN" {
-                    // PPW card is season/all-time based; keep lineup below for weekly selection
-                } else {
+                seasonLineupSection   // NEW: season-total lineup card just below PPW
+                if selectedWeek != "SZN" {
                     lineupSection
                 }
                 transactionSection
@@ -557,6 +556,95 @@ struct MyTeamView: View {
                 )
         )
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    // MARK: New Season Totals Lineup Section
+    private var seasonLineupSection: some View {
+        sectionBox {
+            MyTeamView.phattGradientText(Text("Lineup (Season Totals)"), size: 18)
+                .frame(maxWidth: .infinity, alignment: .center)
+            HStack {
+                MyTeamView.phattGradientTextDefault(Text("Slot"))
+                    .frame(maxWidth: .infinity / 3, alignment: .center)
+                MyTeamView.phattGradientTextDefault(Text("Name"))
+                    .frame(maxWidth: .infinity / 3, alignment: .center)
+                MyTeamView.phattGradientTextDefault(Text("Pts (Season)"))
+                    .frame(maxWidth: .infinity / 3, alignment: .center)
+            }
+            if let seasonId = resolvedSeasonIdForTotals(),
+               let team = selectedTeamSeason,
+               let lineup = seasonLineupAssignments(team: team, seasonId: seasonId) {
+                ForEach(lineup.assigned) { item in
+                    let creditedPos = PositionNormalizer.normalize(
+                        SlotPositionAssigner.countedPosition(
+                            for: item.slot,
+                            candidatePositions: ([item.playerPos] + item.altPositions).map { PositionNormalizer.normalize($0) },
+                            base: PositionNormalizer.normalize(item.playerPos)
+                        )
+                    )
+                    let leagueColor = .white // Season totals are not compared per-week; keep neutral
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text(item.slot)
+                            .frame(maxWidth: .infinity / 3, alignment: .leading)
+                        HStack(spacing: 4) {
+                            Text(item.displayName)
+                                .font(.caption)
+                            Text(positionDisplayLabel(base: item.playerPos, altPositions: item.altPositions))
+                                .font(.caption2)
+                                .foregroundColor(positionColor(creditedPos))
+                        }
+                        .frame(maxWidth: .infinity / 3, alignment: .leading)
+                        Text(String(format: "%.2f", item.score))
+                            .foregroundColor(leagueColor)
+                            .frame(maxWidth: .infinity / 3, alignment: .trailing)
+                    }
+                    .font(.caption)
+                }
+
+                MyTeamView.pickSixGradientText(Text("-----BENCH-----"), size: 18)
+                    .frame(maxWidth: .infinity)
+                    .multilineTextAlignment(.center)
+                    .padding(.vertical, 6)
+
+                let positionPriority: [String: Int] = [
+                    "QB": 0, "RB": 1, "WR": 2, "TE": 3, "DL": 4, "LB": 5, "DB": 6
+                ]
+                let bench = lineup.bench.sorted { lhs, rhs in
+                    let lPos = PositionNormalizer.normalize(lhs.pos)
+                    let rPos = PositionNormalizer.normalize(rhs.pos)
+                    let lRank = positionPriority[lPos] ?? Int.max
+                    let rRank = positionPriority[rPos] ?? Int.max
+                    if lRank == rRank {
+                        return lhs.score > rhs.score
+                    }
+                    return lRank < rRank
+                }
+
+                ForEach(bench) { player in
+                    let posNorm = PositionNormalizer.normalize(player.pos)
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text("BN")
+                            .frame(maxWidth: .infinity / 3, alignment: .leading)
+                        HStack(spacing: 4) {
+                            Text(player.displayName)
+                                .font(.caption)
+                            Text(positionDisplayLabel(base: player.pos, altPositions: player.altPositions))
+                                .font(.caption2)
+                                .foregroundColor(positionColor(player.pos))
+                        }
+                        .frame(maxWidth: .infinity / 3, alignment: .leading)
+                        Text(String(format: "%.2f", player.score))
+                            .foregroundColor(.white)
+                            .frame(maxWidth: .infinity / 3, alignment: .trailing)
+                    }
+                    .font(.caption)
+                }
+            } else {
+                Text("No data available.")
+                    .foregroundColor(.white.opacity(0.5))
+                    .font(.caption)
+            }
+        }
     }
 
     // MARK: Starter/Bench score coloring helpers
@@ -1207,6 +1295,90 @@ struct MyTeamView: View {
         if diff > 1.0 { return .green }
         if diff < -1.0 { return .red }
         return .yellow
+    }
+
+    // MARK: Season totals helpers
+    private func resolvedSeasonIdForTotals() -> String? {
+        if appSelection.selectedSeason == "All Time" {
+            return currentSeasonId.isEmpty ? nil : currentSeasonId
+        }
+        return appSelection.selectedSeason
+    }
+
+    private func seasonTotalPoints(for player: Player, seasonId: String) -> Double {
+        // Player.weeklyScores are assumed to be for the current season context; no season discriminator is available.
+        // Sum all weeklyScores for the player as best-effort season total.
+        player.weeklyScores.reduce(0.0) { $0 + ($1.points_half_ppr ?? $1.points) }
+    }
+
+    private func seasonLineupAssignments(team: TeamStanding, seasonId: String) -> (assigned: [AssignedSlot], bench: [BenchPlayer])? {
+        guard let league = league else { return nil }
+        let startingSlots = league.startingLineup.filter { !["BN","IR","TAXI"].contains($0) }
+        guard !startingSlots.isEmpty else { return nil }
+
+        let playerCache = leagueManager.playerCache ?? [:]
+        // Build candidate pool with season totals
+        let candidates: [(id: String, pos: String, alt: [String], score: Double, name: String)] = team.roster.map { p in
+            let raw = playerCache[p.id]
+            let name = displayName(for: p, raw: raw, fallbackId: p.id, position: p.position)
+            let total = seasonTotalPoints(for: p, seasonId: seasonId)
+            return (id: p.id,
+                    pos: PositionNormalizer.normalize(p.position),
+                    alt: (p.altPositions ?? raw?.fantasy_positions ?? []).map { PositionNormalizer.normalize($0) },
+                    score: total,
+                    name: name)
+        }
+
+        var strictSlots: [String] = []
+        var flexSlots: [String] = []
+        for slot in startingSlots {
+            let allowed = allowedPositions(for: slot)
+            if allowed.count == 1 &&
+                !isIDPFlex(slot) &&
+                !offensiveFlexSlots.contains(slot.uppercased()) {
+                strictSlots.append(slot)
+            } else {
+                flexSlots.append(slot)
+            }
+        }
+        let optimalOrder = strictSlots + flexSlots
+
+        var used = Set<String>()
+        var assigned: [AssignedSlot] = []
+
+        for slot in optimalOrder {
+            let allowed = allowedPositions(for: slot)
+            let pick = candidates
+                .filter { !used.contains($0.id) && isEligible((id: $0.id, pos: $0.pos, altPos: $0.alt, score: $0.score), allowed: allowed) }
+                .max { $0.score < $1.score }
+            guard let best = pick else { continue }
+            used.insert(best.id)
+            assigned.append(
+                AssignedSlot(
+                    playerId: best.id,
+                    slot: slot,
+                    playerPos: best.pos,
+                    altPositions: best.alt,
+                    displayName: best.name,
+                    score: best.score
+                )
+            )
+        }
+
+        // Bench: remaining candidates
+        let bench = candidates
+            .filter { !used.contains($0.id) }
+            .map { cand in
+                BenchPlayer(
+                    id: cand.id,
+                    pos: cand.pos,
+                    altPositions: cand.alt,
+                    displayName: cand.name,
+                    score: cand.score
+                )
+            }
+
+        return (assigned: assigned, bench: bench)
     }
 
     // MARK: PATCHED: Use weekly player pool, not just team.roster, for all per-week actual lineup and bench logic.
