@@ -530,7 +530,11 @@ struct MyTeamView: View {
                     .bold()
                     .frame(maxWidth: .infinity / 4, alignment: .trailing)
             }
-            if let week = getSelectedWeekNumber(), let t = selectedTeamSeason, let slots = league?.startingLineup, let season = league?.seasons.first(where: { $0.teams.contains(where: { $0.id == t.id }) }), let myEntry = season.matchupsByWeek?[week]?.first(where: { $0.roster_id == Int(t.id) }) {
+            if let week = getSelectedWeekNumber(),
+               let t = selectedTeamSeason,
+               let season = league?.seasons.first(where: { $0.id == appSelection.selectedSeason }) ?? league?.seasons.sorted(by: { $0.id < $1.id }).last,
+               let slots = league?.startingLineup,
+               let myEntry = season.matchupsByWeek?[week]?.first(where: { $0.roster_id == Int(t.id) }) {
                 // PATCH: Use weekly player pool for assigned slots & bench
                 let allPlayers = leagueManager.playerCache ?? [:]
                 let startingSlots = slots.filter { !["BN", "IR", "TAXI"].contains($0) }
@@ -540,6 +544,7 @@ struct MyTeamView: View {
                         Text(item.slot)
                             .frame(maxWidth: .infinity / 4, alignment: .leading)
                         Text(PositionNormalizer.normalize(item.playerPos))
+                            .foregroundColor(positionColor(item.playerPos))
                             .frame(maxWidth: .infinity / 4, alignment: .center)
                         Text(item.displayName)
                             .frame(maxWidth: .infinity / 4, alignment: .leading)
@@ -555,6 +560,7 @@ struct MyTeamView: View {
                         Text("BN")
                             .frame(maxWidth: .infinity / 4, alignment: .leading)
                         Text(PositionNormalizer.normalize(player.pos))
+                            .foregroundColor(positionColor(player.pos))
                             .frame(maxWidth: .infinity / 4, alignment: .center)
                         Text(player.displayName)
                             .frame(maxWidth: .infinity / 4, alignment: .leading)
@@ -1095,7 +1101,7 @@ struct MyTeamView: View {
             return (0,0,0,0,0,0)
         }
         let playerCache = leagueManager.playerCache ?? [:]
-        let startingSlots = league.startingLineup.filter { !["BN", "IR", "TAXI"].contains($0) }
+        let startingSlots = league.startingLineup.filter { !["BN","IR","TAXI"].contains($0) }
         // --- ACTUAL ---
         let starters = myEntry.starters ?? []
         var actualTotal = 0.0
