@@ -383,7 +383,7 @@ struct MyTeamView: View {
             .bold()
             .foregroundColor(.orange)
             .font(.custom("Phatt", size: 16))
-        .frame(minHeight: 36)
+            .frame(minHeight: 36)
             .frame(maxWidth: .infinity)
             .padding(.horizontal, 10)
             .background(
@@ -634,7 +634,7 @@ struct MyTeamView: View {
                                 .font(.caption)
                             Text(positionDisplayLabel(base: item.playerPos, altPositions: item.altPositions))
                                 .font(.caption2)
-                                .foregroundColor(positionColor(item.playerPos))
+                                .foregroundColor(positionColor(creditedPos)) // slot-based color
                         }
                         .frame(maxWidth: .infinity / 3, alignment: .leading)
                         Text(String(format: "%.2f", item.score))
