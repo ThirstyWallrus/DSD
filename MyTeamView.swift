@@ -187,7 +187,7 @@ struct MyTeamView: View {
         let resolvedSize = size ?? UIFont.preferredFont(forTextStyle: .body).pointSize
         let styled = text
             .font(.custom(phattPostScriptName, size: resolvedSize))
-            .fontWeight(.bold)
+        .fontWeight(.bold)
 
         return styled
             .foregroundColor(.clear)
@@ -582,7 +582,7 @@ struct MyTeamView: View {
                             base: PositionNormalizer.normalize(item.playerPos)
                         )
                     )
-                    let leagueColor = .white // Season totals are not compared per-week; keep neutral
+                    let leagueColor: Color = .white // Season totals are not compared per-week; keep neutral
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
                         Text(item.slot)
                             .frame(maxWidth: .infinity / 3, alignment: .leading)
