@@ -39,6 +39,57 @@ private func duelDesignation(for slot: String) -> String? {
     return nil
 }
 
+// MARK: - Shared lineup helpers (mirrors MyTeamView behavior)
+
+private func positionColor(_ pos: String) -> Color {
+    switch PositionNormalizer.normalize(pos) {
+    case "QB": return .red
+    case "RB": return .green
+    case "WR": return .blue
+    case "TE": return .yellow
+    case "K":  return .purple.opacity(0.6)
+    case "DL": return .orange
+    case "LB": return .purple
+    case "DB": return .pink
+    default: return .white
+    }
+}
+
+private func positionDisplayLabel(base: String, altPositions: [String]) -> String {
+    let normBase = PositionNormalizer.normalize(base)
+    var seen = Set<String>()
+    var parts: [String] = []
+
+    func appendIfNew(_ pos: String) {
+        let norm = PositionNormalizer.normalize(pos)
+        guard !norm.isEmpty, norm != "UNK", !seen.contains(norm) else { return }
+        seen.insert(norm)
+        parts.append(norm)
+    }
+
+    appendIfNew(normBase)
+    for alt in altPositions { appendIfNew(alt) }
+    return parts.isEmpty ? normBase : parts.joined(separator: "/")
+}
+
+private struct AssignedSlot: Identifiable {
+    let id = UUID()
+    let playerId: String
+    let slot: String
+    let playerPos: String
+    let altPositions: [String]
+    let displayName: String
+    let score: Double
+}
+
+private struct BenchPlayer: Identifiable {
+    let id: String
+    let pos: String
+    let altPositions: [String]
+    let displayName: String
+    let score: Double
+}
+
 struct MatchupView: View {
     enum LineupTab: Hashable {
         case user
@@ -51,29 +102,7 @@ struct MatchupView: View {
     @EnvironmentObject var authViewModel: AuthViewModel
     @Binding var selectedTab: Tab
 
-    // MARK: - Utility Models
-    struct LineupPlayer: Identifiable {
-        let id: String
-        let displaySlot: String
-        let creditedPosition: String
-        let position: String
-        let slot: String
-        let points: Double
-        let isBench: Bool
-        let slotColor: Color?
-    }
-    struct TeamDisplay {
-        let id: String
-        let name: String
-        let lineup: [LineupPlayer]
-        let bench: [LineupPlayer]
-        let totalPoints: Double
-        let maxPoints: Double
-        let managementPercent: Double
-        let teamStanding: TeamStanding
-    }
-
-    // Layout constants
+    // MARK: - Utility Models (simplified to management stats only)
     fileprivate let horizontalEdgePadding: CGFloat = 16
     fileprivate let menuSpacing: CGFloat = 12
     fileprivate let maxContentWidth: CGFloat = 860
@@ -248,430 +277,167 @@ struct MatchupView: View {
         opponentTeamStandingForWeek(currentWeekNumber)
     }
 
-    // MARK: - Lineup ordering & helpers
+    // MARK: - Layout helpers reused from MyTeamView
 
-    // Small helper to expand lineupConfig dict -> ordered slot list (keeps parity with other files)
-    private func expandSlots(_ config: [String: Int]) -> [String] {
-        let sanitized = SlotUtils.sanitizeStartingLineupConfig(config).mapKeys { canonicalFlexSlot($0) }
-        return sanitized.flatMap { Array(repeating: $0.key, count: $0.value) }
+    private func allowedPositions(for slot: String) -> Set<String> {
+        switch slot.uppercased() {
+        case "QB","RB","WR","TE","K","DL","LB","DB": return Set([PositionNormalizer.normalize(slot)])
+        case "FLEX","WRRB","WRRBTE","WRRB_TE","RBWR","RBWRTE": return Set(["RB","WR","TE"].map(PositionNormalizer.normalize))
+        case "SUPER_FLEX","QBRBWRTE","QBRBWR","QBSF","SFLX": return Set(["QB","RB","WR","TE"].map(PositionNormalizer.normalize))
+        case "IDP": return Set(["DL","LB","DB"])
+        default:
+            if slot.uppercased().contains("IDP") { return Set(["DL","LB","DB"]) }
+            return Set([PositionNormalizer.normalize(slot)])
+        }
     }
 
-    // Formats a player's display name as "F.  Lastname" using playerCache if available.
-    private func formatPlayerDisplayName(pid: String, team: TeamStanding?) -> String {
-        if let raw = leagueManager.playerCache?[pid], let full = raw.full_name, !full.isEmpty {
-            let parts = full.split(separator: " ").map(String.init).filter { !$0.isEmpty }
-            if parts.count == 1 {
-                let name = parts[0]
-                let initial = name.prefix(1)
-                return "\(initial). \(name)"
-            } else {
-                let first = parts.first ??  ""
-                let last = parts.last ?? ""
-                let initial = first.prefix(1)
-                return "\(initial). \(last)"
+    private func displayName(for player: Player?, raw: RawSleeperPlayer?, fallbackId: String, position: String) -> String {
+        let full = raw?.full_name
+        if let full, !full.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let parts = full.split(separator: " ").map(String.init)
+            if let first = parts.first {
+                let initial = first.first.map { String($0) } ?? ""
+                let last = parts.dropFirst().last ?? ""
+                if !last.isEmpty {
+                    return "\(initial). \(last)"
+                } else {
+                    return full
+                }
             }
         }
-        return pid
+        return fallbackId.isEmpty ? position : fallbackId
     }
 
-    // Returns starters ordered according to requested slot sequence while being tolerant of actual slots.
-    private func startersOrdered(for team: TeamStanding, week: Int) -> [LineupPlayer] {
-        // Resolve slots for this team
-        let resolvedSlots:  [String] = {
-            if let lg = self.league, !lg.startingLineup.isEmpty {
-                return SlotUtils.sanitizeStartingSlots(lg.startingLineup).map(canonicalFlexSlot)
+    private func assignPlayersToSlotsPatched(team: TeamStanding, week: Int, slots: [String], myEntry: MatchupEntry, playerCache: [String: RawSleeperPlayer]) -> [AssignedSlot] {
+        guard let starters = myEntry.starters, let playersPoints = myEntry.players_points, let playersPool = myEntry.players else { return [] }
+        var results: [AssignedSlot] = []
+        let playerDict: [String: Player] = {
+            var dict = [String: Player]()
+            for pid in playersPool {
+                if let player = team.roster.first(where: { $0.id == pid }) {
+                    dict[pid] = player
+                } else if let raw = playerCache[pid] {
+                    dict[pid] = Player(id: pid, position: raw.position ?? "UNK", altPositions: raw.fantasy_positions, weeklyScores: [])
+                }
             }
-            if let cfg = team.lineupConfig, !cfg.isEmpty {
-                return expandSlots(cfg)
-            }
-            return []
+            return dict
         }()
-
-        let season = selectedSeasonData
-        let entriesForWeek = season?.matchupsByWeek?[week]
-        let rosterId = Int(team.id) ?? -1
-        let myEntry = entriesForWeek?.first(where: { $0.roster_id == rosterId })
-        let startersFromEntry:  [String]?  = myEntry?.starters
-        var starters = startersFromEntry ?? team.actualStartersByWeek?[week] ?? []
-        if starters.isEmpty {
-            // nothing to order
-            return []
-        }
-
-        // Build player score map (players_points preferred, else weeklyScores)
-        var playerScores: [String: Double] = [:]
-        if let pp = myEntry?.players_points, !pp.isEmpty {
-            playerScores = pp
-        } else {
-            for p in team.roster {
-                if let s = p.weeklyScores.first(where: { $0.week == week }) {
-                    playerScores[p.id] = s.points_half_ppr ??  s.points
-                }
+        let paddedStarters: [String] = {
+            if starters.count < slots.count {
+                return starters + Array(repeating: "0", count: slots.count - starters.count)
+            } else if starters.count > slots.count {
+                return Array(starters.prefix(slots.count))
             }
+            return starters
+        }()
+        for (index, slot) in slots.enumerated() {
+            let player_id = paddedStarters[index]
+            guard player_id != "0", let p = playerDict[player_id] else { continue }
+            let raw = playerCache[player_id]
+            let name = displayName(for: p, raw: raw, fallbackId: player_id, position: p.position)
+            let score = playersPoints[player_id] ?? 0
+            let altPos = p.altPositions ?? raw?.fantasy_positions ?? []
+            results.append(AssignedSlot(playerId: player_id, slot: slot, playerPos: p.position, altPositions: altPos, displayName: name, score: score))
         }
-
-        // Candidate metadata:  base pos, fantasy positions
-        struct C {
-            let id: String
-            let basePos: String
-            let fantasy: [String]
-            let points: Double
-            let slotPlayed: String?  // slot token if we can map by position index
-        }
-
-        // Build map for quick lookup from team roster or player cache
-        var rosterMap: [String: Player] = [:]
-        for p in team.roster { rosterMap[p.id] = p }
-
-        // Map starters to candidate list
-        var candidates: [C] = []
-        for pid in starters {
-            let pts = playerScores[pid] ??  0.0
-            if let raw = leagueManager.playerCache?[pid] {
-                let base = PositionNormalizer.normalize(raw.position ??  "UNK")
-                let fantasy = (raw.fantasy_positions ?? []).map { PositionNormalizer.normalize($0) }
-                candidates.append(C(id: pid, basePos: base, fantasy: fantasy, points: pts, slotPlayed: nil))
-            } else if let p = rosterMap[pid] {
-                let base = PositionNormalizer.normalize(p.position)
-                let fantasy = (p.altPositions ?? []).map { PositionNormalizer.normalize($0) }
-                candidates.append(C(id: pid, basePos: base, fantasy: fantasy, points: pts, slotPlayed:  nil))
-            } else {
-                candidates.append(C(id: pid, basePos: PositionNormalizer.normalize("UNK"), fantasy: [], points: pts, slotPlayed: nil))
-            }
-        }
-
-        // Build pools
-        var qbPool = candidates.filter { $0.basePos == "QB" }
-        var rbPool = candidates.filter { $0.basePos == "RB" }
-        var wrPool = candidates.filter { $0.basePos == "WR" }
-        var tePool = candidates.filter { $0.basePos == "TE" }
-        var kPool = candidates.filter { $0.basePos == "K" }
-        var dlPool = candidates.filter { $0.basePos == "DL" }
-        var lbPool = candidates.filter { $0.basePos == "LB" }
-        var dbPool = candidates.filter { $0.basePos == "DB" }
-
-        // Offensive flex pools
-        var wrRbFlexPool = candidates.filter {
-            ["RB", "WR"].contains($0.basePos) ||
-            !$0.fantasy.filter({ ["RB", "WR"].contains($0) }).isEmpty
-        }
-        var wrTeFlexPool = candidates.filter {
-            ["WR", "TE"].contains($0.basePos) ||
-            !$0.fantasy.filter({ ["WR", "TE"].contains($0) }).isEmpty
-        }
-        var wrRbTeFlexPool = candidates.filter {
-            ["RB", "WR", "TE"].contains($0.basePos) ||
-            !$0.fantasy.filter({ ["RB", "WR", "TE"].contains($0) }).isEmpty
-        }
-        var offensiveFlexPool = wrRbTeFlexPool
-        // Super flex candidates: include QBs too
-        var superFlexPool = candidates.filter { ["QB", "RB", "WR", "TE"].contains($0.basePos) || !$0.fantasy.filter({ ["QB", "RB", "WR", "TE"].contains($0) }).isEmpty }
-
-        // IDP flex:  defensive candidates beyond DL/LB/DB fixed starters
-        var idpFlexPool = candidates.filter { ["DL", "LB", "DB"].contains($0.basePos) }
-
-        // Helper to pop a best candidate from a pool (highest points)
-        func popBest(from pool: inout [C]) -> C? {
-            if pool.isEmpty { return nil }
-            pool.sort { $0.points > $1.points }
-            return pool.removeFirst()
-        }
-
-        // Sequence defined by request; uses canonical tokens only
-        let sequenceTokens: [String] = [
-            "QB",
-            "RB","RB",
-            "WR","WR",
-            "TE",
-            // Offensive flexes grouped here (below TE, above K)
-            "WRRB_FLEX",      // WR/RB flex
-            "REC_FLEX",       // WR/TE flex
-            "FLEX",           // WR/RB/TE flex
-            "SUPER_FLEX",     // QB/WR/RB/TE flex
-            "K",
-            "DL","DL","DL",
-            "LB","LB","LB",
-            "DB","DB","DB",
-            "IDP_FLEX"
-        ]
-
-        var ordered: [LineupPlayer] = []
-        var usedIds = Set()
-
-        for rawToken in sequenceTokens {
-            let token = canonicalFlexSlot(rawToken)
-            var picked:  C?  = nil
-            switch token {
-            case "QB":  picked = popBest(from: &qbPool)
-            case "RB": picked = popBest(from: &rbPool)
-            case "WR": picked = popBest(from: &wrPool)
-            case "TE": picked = popBest(from: &tePool)
-            case "K": picked = popBest(from: &kPool)
-            case "DL": picked = popBest(from: &dlPool)
-            case "LB": picked = popBest(from: &lbPool)
-            case "DB": picked = popBest(from: &dbPool)
-            case "WRRB_FLEX":
-                picked = popBest(from: &wrRbFlexPool)
-            case "REC_FLEX":
-                picked = popBest(from: &wrTeFlexPool)
-            case "FLEX":
-                picked = popBest(from: &offensiveFlexPool)
-            case "SUPER_FLEX":
-                picked = popBest(from: &superFlexPool)
-                if picked == nil {
-                    picked = popBest(from: &offensiveFlexPool)
-                }
-            case "IDP_FLEX":
-                picked = popBest(from: &idpFlexPool)
-            default:
-                break
-            }
-            if let p = picked, !usedIds.contains(p.id) {
-                usedIds.insert(p.id)
-                let credited = SlotPositionAssigner.countedPosition(for: token, candidatePositions: p.fantasy, base: p.basePos)
-                let displaySlot = credited
-                let name = formatPlayerDisplayName(pid:  p.id, team: team)
-                let points = p.points
-                ordered.append(LineupPlayer(id: p.id, displaySlot: "\(credited) \(name)", creditedPosition: credited, position: p.basePos, slot: token, points: points, isBench: false, slotColor: positionColor(credited)))
-            }
-        }
-
-        for c in candidates where !usedIds.contains(c.id) {
-            usedIds.insert(c.id)
-            let credited = SlotPositionAssigner.countedPosition(for: "FLEX", candidatePositions:  c.fantasy, base: c.basePos)
-            let name = formatPlayerDisplayName(pid:  c.id, team: team)
-            ordered.append(LineupPlayer(id: c.id, displaySlot: "\(credited) \(name)", creditedPosition: credited, position: c.basePos, slot: "FLEX", points: c.points, isBench: false, slotColor: positionColor(credited)))
-        }
-
-        if lineupDebugEnabled {
-            let slotAssignmentsForDebug:  [(slot: String, player: Player? )] = ordered.map { lp in
-                if let p = team.roster.first(where: { $0.id == lp.id }) {
-                    return (slot: lp.slot, player: p)
-                }
-                return (slot: lp.slot, player: nil)
-            }
-            debugLogTeamLineup(team: team, week: week, slots: resolvedSlots, starters: starters, slotAssignments: slotAssignmentsForDebug, finalOrdered: ordered)
-        }
-
-        return ordered
+        return results
     }
 
-    // MARK: - Week-scoped bench helpers
-
-    private struct WeekPlayerMeta: Hashable {
-        let id: String
-        let position: String
-        let altPositions: [String]
-    }
-
-    private func weekContext(for team: TeamStanding, week: Int) -> (entry: MatchupEntry?, starters: [String], pool: [WeekPlayerMeta]) {
-        let season = selectedSeasonData
-        let entriesForWeek = season?.matchupsByWeek?[week]
-        let rosterId = Int(team.id) ?? -1
-        let myEntry = entriesForWeek?.first(where: { $0.roster_id == rosterId })
-
-        let starters = myEntry?.starters ?? team.actualStartersByWeek?[week] ?? []
-        var ids = Set(starters)
-
-        if let players = myEntry?.players { ids.formUnion(players) }
-        if let pp = myEntry?.players_points { ids.formUnion(pp.keys) }
-        if let actual = team.actualStartersByWeek?[week] { ids.formUnion(actual) }
-
-        // Build week-specific player metas without pulling the entire current roster
-        var pool: [WeekPlayerMeta] = []
-        for id in ids {
-            if let p = team.roster.first(where: { $0.id == id }) {
-                pool.append(WeekPlayerMeta(id: id, position: p.position, altPositions: p.altPositions ?? []))
-            } else if let raw = leagueManager.playerCache?[id] {
-                pool.append(WeekPlayerMeta(id: id, position: raw.position ?? "UNK", altPositions: raw.fantasy_positions ?? []))
-            } else {
-                pool.append(WeekPlayerMeta(id: id, position: "UNK", altPositions: []))
+    private func getBenchPlayersPatched(team: TeamStanding, week: Int, starters: [String], myEntry: MatchupEntry, playerCache: [String: RawSleeperPlayer]) -> [BenchPlayer] {
+        guard let playersPoints = myEntry.players_points, let playersPool = myEntry.players else { return [] }
+        let starterSet = Set(starters)
+        var res: [BenchPlayer] = []
+        for pid in playersPool where !starterSet.contains(pid) {
+            let p = team.roster.first(where: { $0.id == pid })
+                ?? playerCache[pid].map { raw in
+                    Player(id: pid, position: raw.position ?? "UNK", altPositions: raw.fantasy_positions, weeklyScores: [])
+                }
+            let raw = playerCache[pid]
+            if let p = p {
+                let name = displayName(for: p, raw: raw, fallbackId: pid, position: p.position)
+                let score = playersPoints[pid] ?? 0
+                let altPos = p.altPositions ?? raw?.fantasy_positions ?? []
+                res.append(BenchPlayer(id: pid, pos: p.position, altPositions: altPos, displayName: name, score: score))
             }
         }
-
-        // Stable ordering
-        pool.sort { $0.id < $1.id }
-
-        return (entry: myEntry, starters: starters, pool: pool)
+        return res.sorted { $0.score > $1.score }
     }
 
-    // Categorize bench into bench / IR / TAXI using explicit tokens and playerCache heuristics
-    private func categorizedBench(for team: TeamStanding, week: Int) -> (bench: [LineupPlayer], ir: [LineupPlayer], taxi:  [LineupPlayer]) {
-        let ctx = weekContext(for: team, week: week)
-        let myEntry = ctx.entry
-
-        var playerScores: [String: Double] = [:]
-        if let pp = myEntry?.players_points, !pp.isEmpty {
-            playerScores = pp
-        } else {
-            for wp in ctx.pool {
-                if playerScores[wp.id] == nil,
-                   let p = team.roster.first(where: { $0.id == wp.id }),
-                   let s = p.weeklyScores.first(where: { $0.week == week }) {
-                    playerScores[wp.id] = s.points_half_ppr ?? s.points
+    private func leagueStarterAverageForPosition(week: Int, pos: String) -> Double {
+        guard let league = league,
+              let season = league.seasons.first(where: { $0.id == appSelection.selectedSeason }),
+              let map = season.matchupsByWeek else { return 0 }
+        let normPos = PositionNormalizer.normalize(pos)
+        let startingSlots = league.startingLineup.filter { !["BN","IR","TAXI"].contains($0) }
+        var total: Double = 0
+        var count: Int = 0
+        for team in seasonTeams {
+            guard let entry = map[week]?.first(where: { $0.roster_id == Int(team.id) }) else { continue }
+            let starters = entry.starters ?? []
+            let playersPoints = entry.players_points ?? [:]
+            let padded: [String] = {
+                if starters.count < startingSlots.count {
+                    return starters + Array(repeating: "0", count: startingSlots.count - starters.count)
+                } else if starters.count > startingSlots.count {
+                    return Array(starters.prefix(startingSlots.count))
                 }
-            }
-        }
-
-        let startersSet = Set(ctx.starters)
-        let benchPlayers: [WeekPlayerMeta] = ctx.pool.filter { !startersSet.contains($0.id) }
-
-        var benchList: [LineupPlayer] = []
-        var irList: [LineupPlayer] = []
-        var taxiList: [LineupPlayer] = []
-
-        for player in benchPlayers {
-            let pid = player.id
-            let name = formatPlayerDisplayName(pid:  pid, team: team)
-            let pts = playerScores[pid] ??  0.0
-            let normPos = PositionNormalizer.normalize(player.position)
-            let displaySlotBase = normPos
-
-            let token = explicitSlotTokenForBenchPlayer(playerId: pid, team: team, week: week, myEntry: myEntry)
-            if let t = token {
-                if t.uppercased() == "IR" {
-                    irList.append(LineupPlayer(id: pid, displaySlot: "IR \(displaySlotBase) \(name)", creditedPosition:  displaySlotBase, position: displaySlotBase, slot: "IR", points: pts, isBench: true, slotColor:  .gray))
-                    continue
-                } else if t.uppercased() == "TAXI" || t.uppercased().contains("TAXI") {
-                    taxiList.append(LineupPlayer(id: pid, displaySlot: "Taxi \(displaySlotBase) \(name)", creditedPosition:  displaySlotBase, position: displaySlotBase, slot: "TAXI", points: pts, isBench: true, slotColor:  .gray))
-                    continue
-                }
-            }
-
-            if let raw = leagueManager.playerCache?[pid] {
-                if let pos = raw.position?.uppercased(), pos.contains("IR") {
-                    irList.append(LineupPlayer(id: pid, displaySlot: "IR \(displaySlotBase) \(name)", creditedPosition: displaySlotBase, position: displaySlotBase, slot: "IR", points:  pts, isBench: true, slotColor: .gray))
-                    continue
-                }
-                if let fantasy = raw.fantasy_positions {
-                    if fantasy.contains(where: { $0.uppercased().contains("TAXI") }) {
-                        taxiList.append(LineupPlayer(id: pid, displaySlot: "Taxi \(displaySlotBase) \(name)", creditedPosition:  displaySlotBase, position: displaySlotBase, slot: "TAXI", points: pts, isBench:  true, slotColor: .gray))
-                        continue
+                return starters
+            }()
+            for idx in 0..<padded.count {
+                let pid = padded[idx]
+                guard pid != "0" else { continue }
+                let slot = startingSlots[safe: idx] ?? "FLEX"
+                let player = team.roster.first(where: { $0.id == pid })
+                    ?? (leagueManager.playerCache ?? [:])[pid].map { raw in
+                        Player(id: pid, position: raw.position ?? "UNK", altPositions: raw.fantasy_positions, weeklyScores: [])
                     }
-                }
-            }
-
-            benchList.append(LineupPlayer(id: pid, displaySlot: "\(displaySlotBase) \(name)", creditedPosition: displaySlotBase, position: displaySlotBase, slot: "BN", points: pts, isBench: true, slotColor:  .white))
-        }
-
-        let benchOrder = ["QB","RB","WR","TE","K","DL","LB","DB"]
-        benchList.sort { a, b in
-            let ai = benchOrder.firstIndex(of: a.creditedPosition) ?? benchOrder.count
-            let bi = benchOrder.firstIndex(of: b.creditedPosition) ?? benchOrder.count
-            if ai != bi { return ai < bi }
-            return a.points > b.points
-        }
-
-        irList.sort { $0.points > $1.points }
-        taxiList.sort { $0.points > $1.points }
-
-        return (bench: benchList, ir: irList, taxi: taxiList)
-    }
-
-    /// Returns the full ordered lineup for a team for a given week.
-    private func orderedLineup(for team: TeamStanding, week: Int) -> [LineupPlayer] {
-        return startersOrdered(for: team, week: week)
-    }
-
-    /// Returns the bench, ordered as specified (legacy usage compatible)
-    private func orderedBench(for team: TeamStanding, week: Int) -> [LineupPlayer] {
-        let ctx = weekContext(for: team, week: week)
-        let myEntry = ctx.entry
-        let startersSet = Set(ctx.starters)
-
-        var playerScores: [String: Double] = [:]
-        if let pp = myEntry?.players_points, !pp.isEmpty {
-            playerScores = pp
-        } else {
-            for wp in ctx.pool {
-                if playerScores[wp.id] == nil,
-                   let p = team.roster.first(where: { $0.id == wp.id }),
-                   let s = p.weeklyScores.first(where: { $0.week == week }) {
-                    playerScores[wp.id] = s.points_half_ppr ?? s.points
+                let basePos = PositionNormalizer.normalize(player?.position ?? "UNK")
+                let fantasy = (player?.altPositions ?? []).map { PositionNormalizer.normalize($0) }
+                let credited = PositionNormalizer.normalize(
+                    SlotPositionAssigner.countedPosition(for: slot, candidatePositions: fantasy, base: basePos)
+                )
+                if credited == normPos {
+                    total += playersPoints[pid] ?? 0
+                    count += 1
                 }
             }
         }
-
-        let benchPlayers = ctx.pool.filter { !startersSet.contains($0.id) }
-        var bench: [LineupPlayer] = benchPlayers.map { player in
-            let normPos = PositionNormalizer.normalize(player.position)
-            let name = formatPlayerDisplayName(pid:  player.id, team: team)
-            return LineupPlayer(
-                id: player.id,
-                displaySlot: "\(normPos) \(name)",
-                creditedPosition: normPos,
-                position: normPos,
-                slot: "BN",
-                points: playerScores[player.id] ?? 0,
-                isBench: true,
-                slotColor: nil
-            )
-        }
-        bench.sort { a, b in
-            let ai = ["QB", "RB", "WR", "TE", "K", "DL", "LB", "DB"].firstIndex(of: a.creditedPosition) ?? 99
-            let bi = ["QB", "RB", "WR", "TE", "K", "DL", "LB", "DB"].firstIndex(of: b.creditedPosition) ?? 99
-            if ai != bi { return ai < bi }
-            return a.points > b.points
-        }
-        return bench
+        return count > 0 ? total / Double(count) : 0
     }
 
-    // MARK: - TeamDisplay construction
-    private func teamDisplay(for team: TeamStanding, week: Int) -> TeamDisplay {
-        let lineup = orderedLineup(for:  team, week: week)
-        let bench = orderedBench(for: team, week: week)
-        let (actualTotal, maxTotal, _, _, _, _) = ManagementCalculator.computeManagementForWeek(team: team, week: week, league: self.league ??  team.league, leagueManager: leagueManager)
-        let managementPercent = maxTotal > 0 ? (actualTotal / maxTotal * 100) : 0.0
-        return TeamDisplay(
-            id: team.id,
-            name: team.name,
-            lineup: lineup,
-            bench: bench,
-            totalPoints: actualTotal,
-            maxPoints: maxTotal,
-            managementPercent: managementPercent,
-            teamStanding: team
-        )
-    }
-    private var userTeam: TeamDisplay?  {
-        userTeamStanding.map { teamDisplay(for: $0, week: currentWeekNumber) }
-    }
-    private var opponentTeam: TeamDisplay? {
-        opponentTeamStanding.map { teamDisplay(for: $0, week: currentWeekNumber) }
+    private func scoreColor(for score: Double, position: String, week: Int) -> Color {
+        let avg = leagueStarterAverageForPosition(week: week, pos: position)
+        if avg == 0 { return .white }
+        if score > avg + 1 { return .green }
+        if score < avg - 1 { return .red }
+        return .yellow
     }
 
-    // MARK: - Username Extraction
-    private var userDisplayName: String {
-        if let dsdUser = authViewModel.currentUsername,
-           let sleeper = UserDefaults.standard.string(forKey: "sleeperUsername_\(dsdUser)"),
-           !sleeper.isEmpty {
-            return sleeper
+    private func lineupData(for team: TeamStanding, week: Int) -> (assigned: [AssignedSlot], bench: [BenchPlayer]) {
+        guard let season = league?.seasons.first(where: { $0.id == appSelection.selectedSeason }) ?? league?.seasons.sorted(by: { $0.id < $1.id }).last,
+              let slots = league?.startingLineup,
+              let myEntry = season.matchupsByWeek?[week]?.first(where: { $0.roster_id == Int(team.id) }) else {
+            return ([], [])
         }
-        if let currentUsername = appSelection.selectedTeam?.name, !currentUsername.isEmpty {
-            return currentUsername
-        }
-        if let leagueName = appSelection.selectedLeague?.name, !leagueName.isEmpty {
-            return leagueName
-        }
-        return "Your"
-    }
-    private var userTeamName: String {
-        if let team = userTeamStanding { return team.name }
-        return "Team"
-    }
-    private var opponentDisplayName: String {
-        if let opp = opponentTeamStanding {
-            if let stats = opp.league?.allTimeOwnerStats?[opp.ownerId], !stats.latestDisplayName.isEmpty {
-                return stats.latestDisplayName
-            } else if !opp.name.isEmpty {
-                return opp.name
+        let allPlayers = leagueManager.playerCache ?? [:]
+        let startingSlots = slots.filter { !["BN", "IR", "TAXI"].contains($0) }
+        let assigned = assignPlayersToSlotsPatched(team: team, week: week, slots: startingSlots, myEntry: myEntry, playerCache: allPlayers)
+        let starters = myEntry.starters ?? []
+        let benchRaw = getBenchPlayersPatched(team: team, week: week, starters: starters, myEntry: myEntry, playerCache: allPlayers)
+
+        let positionPriority: [String: Int] = [
+            "QB": 0, "RB": 1, "WR": 2, "TE": 3, "DL": 4, "LB": 5, "DB": 6
+        ]
+        let bench = benchRaw.sorted { lhs, rhs in
+            let lPos = PositionNormalizer.normalize(lhs.pos)
+            let rPos = PositionNormalizer.normalize(rhs.pos)
+            let lRank = positionPriority[lPos] ?? Int.max
+            let rRank = positionPriority[rPos] ?? Int.max
+            if lRank == rRank {
+                return lhs.score > rhs.score
             }
+            return lRank < rRank
         }
-        return "Opponent"
-    }
-    private var opponentTeamName: String {
-        if let team = opponentTeamStanding { return team.name }
-        return "Team"
+        return (assigned, bench)
     }
 
     // MARK: - UI
@@ -970,8 +736,8 @@ struct MatchupView: View {
 
     private var lineupTabBar: some View {
         HStack(spacing: 8) {
-            lineupTabButton(.user, title: "\(userDisplayName)'s Lineup", enabled: userTeam != nil)
-            lineupTabButton(.opponent, title: "\(opponentDisplayName)'s Lineup", enabled: opponentTeam != nil)
+            lineupTabButton(.user, title: "\(userDisplayName)'s Lineup", enabled: userTeamStanding != nil)
+            lineupTabButton(.opponent, title: "\(opponentDisplayName)'s Lineup", enabled: opponentTeamStanding != nil)
             lineupTabButton(.rol, title: "R.O.L.", enabled: true)
         }
     }
@@ -980,9 +746,9 @@ struct MatchupView: View {
     private var lineupTabContent: some View {
         switch lineupTab {
         case .user:
-            teamCombinedLineupBenchBox(team: userTeam, accent: Color.cyan, title: "\(userDisplayName)'s Lineup")
+            teamLineupBox(team: userTeamStanding, title: "\(userDisplayName)'s Lineup")
         case .opponent:
-            teamCombinedLineupBenchBox(team: opponentTeam, accent: Color.yellow, title: "\(opponentDisplayName)'s Lineup")
+            teamLineupBox(team: opponentTeamStanding, title: "\(opponentDisplayName)'s Lineup")
         case .rol:
             VStack(alignment: .center, spacing: 8) {
                 Text("R.O.L.")
@@ -999,51 +765,52 @@ struct MatchupView: View {
 
     private func matchupStatsSection(user: TeamStanding, opp: TeamStanding) -> some View {
         HStack(spacing: 16) {
-            // Left column: user
             VStack(alignment: .leading, spacing: 6) {
                 HStack {
                     Text(user.name).foregroundColor(.cyan).bold()
                     Spacer()
                 }
                 let week = currentWeekNumber
-                let uDisplay = teamDisplay(for: user, week:  week)
+                let (uPF, uMax) = managementTotals(team: user, week: week)
                 HStack {
                     Text("Points").foregroundColor(.white.opacity(0.9))
                     Spacer()
-                    Text(String(format: "%.2f", uDisplay.totalPoints)).foregroundColor(.green)
+                    Text(String(format: "%.2f", uPF)).foregroundColor(.green)
                 }
                 HStack {
                     Text("Max Points").foregroundColor(.white.opacity(0.9))
                     Spacer()
-                    Text(String(format: "%.2f", uDisplay.maxPoints)).foregroundColor(.white.opacity(0.85))
+                    Text(String(format: "%.2f", uMax)).foregroundColor(.white.opacity(0.85))
                 }
                 HStack {
                     Text("Mgmt %").foregroundColor(.white.opacity(0.9))
                     Spacer()
-                    Text(String(format: "%.2f%%", uDisplay.managementPercent)).foregroundColor(Color.mgmtPercentColor(uDisplay.managementPercent))
+                    let mgmt = uMax > 0 ? (uPF / uMax * 100) : 0
+                    Text(String(format: "%.2f%%", mgmt)).foregroundColor(Color.mgmtPercentColor(mgmt))
                 }
             }
             .frame(maxWidth: .infinity)
-            // Right column: opponent
+
             VStack(alignment: .trailing, spacing: 6) {
                 HStack {
                     Spacer()
                     Text(opp.name).foregroundColor(.yellow).bold()
                 }
                 let week = currentWeekNumber
-                let oDisplay = teamDisplay(for: opp, week: week)
+                let (oPF, oMax) = managementTotals(team: opp, week: week)
                 HStack {
-                    Text(String(format: "%.2f", oDisplay.totalPoints)).foregroundColor(.green)
+                    Text(String(format: "%.2f", oPF)).foregroundColor(.green)
                     Spacer()
                     Text("Points").foregroundColor(.white.opacity(0.9))
                 }
                 HStack {
-                    Text(String(format: "%.2f", oDisplay.maxPoints)).foregroundColor(.white.opacity(0.85))
+                    Text(String(format: "%.2f", oMax)).foregroundColor(.white.opacity(0.85))
                     Spacer()
                     Text("Max Points").foregroundColor(.white.opacity(0.9))
                 }
                 HStack {
-                    Text(String(format: "%.2f%%", oDisplay.managementPercent)).foregroundColor(Color.mgmtPercentColor(oDisplay.managementPercent))
+                    let mgmt = oMax > 0 ? (oPF / oMax * 100) : 0
+                    Text(String(format: "%.2f%%", mgmt)).foregroundColor(Color.mgmtPercentColor(mgmt))
                     Spacer()
                     Text("Mgmt %").foregroundColor(.white.opacity(0.9))
                 }
@@ -1054,310 +821,136 @@ struct MatchupView: View {
         .background(RoundedRectangle(cornerRadius: 12).fill(Color.black.opacity(0.25)))
     }
 
-    // MARK: — Fixed-width combined lineup & bench box (no GeometryReader)
-    private func teamCombinedLineupBenchBox(team: TeamDisplay?, accent: Color, title: String) -> some View {
-        // Fixed column widths that work proportionally within the parent's maxWidth constraint
-        let slotW: CGFloat = 140
-        let scoreW: CGFloat = 55
-
-        return VStack(alignment: .leading, spacing: 8) {
-            let (head, tail) = splitTitle(title)
-            VStack(spacing: 2) {
-                Text(head)
-                    .font(.headline.bold())
-                    .foregroundColor(.orange)
-                    .multilineTextAlignment(.center)
-                Text(tail)
-                    .font(.subheadline)
-                    .foregroundColor(.white.opacity(0.9))
-                    .multilineTextAlignment(.center)
-            }
-            .frame(maxWidth: .infinity)
-
-            if let lineup = team?.lineup, !lineup.isEmpty {
-                ForEach(lineup) { player in
-                    HStack {
-                        Text(player.displaySlot)
-                            .foregroundColor(player.slotColor ??  positionColor(player.creditedPosition))
-                            .frame(width: slotW, alignment: .leading)
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.7)
-                        Spacer()
-                        Text(String(format: "%.2f", player.points))
-                            .foregroundColor(.green)
-                            .frame(width: scoreW, alignment:  .trailing)
-                    }
-                    .font(.caption)
-                }
-            } else {
-                Text("No lineup data").foregroundColor(.gray)
-            }
-
-            let benchBlocks = team.map { categorizedBench(for: $0.teamStanding, week: currentWeekNumber) }
-
-            Text("-----BENCH-----")
-                .font(.custom(pickSixPostScriptName, size: 14))
-                .foregroundColor(.white.opacity(0.9))
+    private func teamLineupBox(team: TeamStanding?, title: String) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            MyTeamView.phattGradientText(Text(title), size: 18)
                 .frame(maxWidth: .infinity)
                 .multilineTextAlignment(.center)
-                .padding(.vertical, 6)
 
-            if let bench = benchBlocks?.bench, !bench.isEmpty {
-                ForEach(bench) { player in
-                    HStack {
-                        Text(player.displaySlot)
-                            .foregroundColor(positionColor(player.creditedPosition))
-                            .frame(width: slotW, alignment: .leading)
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.7)
-                        Spacer()
-                        Text(String(format: "%.2f", player.points))
-                            .foregroundColor(.green.opacity(0.7))
-                            .frame(width: scoreW, alignment: .trailing)
-                    }
-                    .font(.caption)
-                }
-            } else {
-                Text("No bench players").foregroundColor(.gray)
+            HStack {
+                MyTeamView.phattGradientTextDefault(Text("Slot"))
+                    .frame(maxWidth: .infinity / 3, alignment: .center)
+                MyTeamView.phattGradientTextDefault(Text("Name"))
+                    .frame(maxWidth: .infinity / 3, alignment: .center)
+                MyTeamView.phattGradientTextDefault(Text("Score"))
+                    .frame(maxWidth: .infinity / 3, alignment: .center)
             }
 
-            Text("-----IR-----")
-                .font(.custom(pickSixPostScriptName, size: 14))
-                .foregroundColor(.white.opacity(0.9))
-                .frame(maxWidth: .infinity)
-                .multilineTextAlignment(.center)
-                .padding(.vertical, 6)
-
-            if let ir = benchBlocks?.ir, !ir.isEmpty {
-                ForEach(ir) { player in
-                    HStack {
-                        Text(player.displaySlot)
-                            .foregroundColor(.gray)
-                            .frame(width: slotW, alignment: .leading)
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.7)
-                        Spacer()
-                        Text(String(format: "%.2f", player.points))
-                            .foregroundColor(.green.opacity(0.7))
-                            .frame(width: scoreW, alignment: .trailing)
-                    }
-                    .font(.caption)
-                }
-            } else {
-                Text("No IR players").foregroundColor(.gray)
-            }
-
-            Text("-----TAXI-----")
-                .font(.custom(pickSixPostScriptName, size: 14))
-                .foregroundColor(.white.opacity(0.9))
-                .frame(maxWidth: .infinity)
-                .multilineTextAlignment(.center)
-                .padding(.vertical, 6)
-
-            if let taxi = benchBlocks?.taxi, !taxi.isEmpty {
-                ForEach(taxi) { player in
-                    HStack {
-                        Text(player.displaySlot)
-                            .foregroundColor(.gray)
-                            .frame(width: slotW, alignment: .leading)
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.7)
-                        Spacer()
-                        Text(String(format: "%.2f", player.points))
-                            .foregroundColor(.green.opacity(0.7))
-                            .frame(width: scoreW, alignment: .trailing)
-                    }
-                    .font(.caption)
-                }
-            } else {
-                Text("No Taxi players").foregroundColor(.gray)
-            }
-        }
-        .foregroundColor(.white)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 4)
-        .padding(.vertical, 6)
-    }
-
-    private func splitTitle(_ title: String) -> (String, String) {
-        let parts = title.split(separator: " ")
-        guard parts.count >= 2 else { return (title, "") }
-        let suffix = String(parts.last!)
-        let head = parts.dropLast().joined(separator: " ")
-        return (head, suffix)
-    }
-
-    // MARK: - Helper implementations reused from earlier file parts
-
-    private func explicitSlotTokenForBenchPlayer(playerId: String, team: TeamStanding, week: Int, myEntry: MatchupEntry?) -> String? {
-        let taxiTokens:  Set = ["TAXI", "TAXI_SLOT", "TAXI-SLOT", "TAXI SLOT"]
-        let irToken = "IR"
-        func canonicalizeToken(_ raw: String) -> String {
-            let up = raw.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
-            if up.contains("IR") { return irToken }
-            if up.contains("TAXI") || taxiTokens.contains(up) { return "TAXI" }
-            return up
-        }
-        if let entry = myEntry, let slotsMap = entry.players_slots, !slotsMap.isEmpty {
-            if let rawToken = slotsMap[playerId] {
-                let canonical = canonicalizeToken(rawToken)
-                if lineupDebugEnabled {
-                    print("[BenchSlotDetect] players_slots -> player:\(playerId) token: '\(rawToken)' canonical:'\(canonical)' (team:  \(team.name), week: \(week))")
-                }
-                if canonical == irToken { return irToken }
-                if canonical == "TAXI" { return "TAXI" }
-                return canonical
-            } else {
-                if lineupDebugEnabled {
-                    print("[BenchSlotDetect] players_slots present for team \(team.name) week \(week) but no entry for player \(playerId)")
-                }
-            }
-        }
-        if let p = team.roster.first(where: { $0.id == playerId }) {
-            let checks = ([p.position] + (p.altPositions ?? [])).compactMap { $0 }.map { $0.uppercased() }
-            for c in checks {
-                let canonical = canonicalizeToken(c)
-                if canonical == irToken {
-                    if lineupDebugEnabled { print("[BenchSlotDetect] roster. altPositions -> player:\(playerId) matched IR via '\(c)'") }
-                    return irToken
-                }
-                if canonical == "TAXI" {
-                    if lineupDebugEnabled { print("[BenchSlotDetect] roster.altPositions -> player:\(playerId) matched TAXI via '\(c)'") }
-                    return "TAXI"
-                }
-            }
-        }
-        if let raw = leagueManager.playerCache?[playerId] {
-            if let pos = raw.position?.uppercased(), pos.contains("IR") {
-                if lineupDebugEnabled { print("[BenchSlotDetect] playerCache. position -> player:\(playerId) matched IR via '\(pos)'") }
-                return irToken
-            }
-            if let fantasy = raw.fantasy_positions {
-                for alt in fantasy {
-                    let canonical = canonicalizeToken(alt)
-                    if canonical == irToken {
-                        if lineupDebugEnabled { print("[BenchSlotDetect] playerCache. fantasy_positions -> player:\(playerId) matched IR via '\(alt)'") }
-                        return irToken
-                    }
-                    if canonical == "TAXI" {
-                        if lineupDebugEnabled { print("[BenchSlotDetect] playerCache.fantasy_positions -> player:\(playerId) matched TAXI via '\(alt)'") }
-                        return "TAXI"
-                    }
-                }
-            }
-        }
-        if lineupDebugEnabled {
-            print("[BenchSlotDetect] No explicit IR/TAXI token detected for player \(playerId) (team: \(team.name), week: \(week))")
-        }
-        return nil
-    }
-
-    private func positionColor(_ pos: String) -> Color {
-        switch pos {
-        case "QB": return .red
-        case "RB": return .green
-        case "WR": return .blue
-        case "TE": return .yellow
-        case "K":  return .purple.opacity(0.6)
-        case "DL": return .orange
-        case "LB": return .purple
-        case "DB": return .pink
-        default: return .white
-        }
-    }
-
-    // MARK: - Head-to-Head mini view content (shows HeadToHeadStatsSection)
-    private var headToHeadContent: some View {
-        Group {
-            if let user = userTeamStanding, let opp = opponentTeamStanding, let lg = league {
-                VStack(spacing: 8) {
-                    MyTeamView.phattGradientText(Text("Head-To-Head"), size: 18)
-                        .frame(maxWidth: .infinity)
-                        .multilineTextAlignment(.center)
-
-                    HeadToHeadStatsSection(
-                        user: user,
-                        opp: opp,
-                        league: lg
+            if let t = team {
+                let lineup = lineupData(for: t, week: currentWeekNumber)
+                ForEach(lineup.assigned) { item in
+                    let creditedPos = PositionNormalizer.normalize(
+                        SlotPositionAssigner.countedPosition(
+                            for: item.slot,
+                            candidatePositions: ([item.playerPos] + item.altPositions).map { PositionNormalizer.normalize($0) },
+                            base: PositionNormalizer.normalize(item.playerPos)
+                        )
                     )
+                    let scoreTint = scoreColor(for: item.score, position: creditedPos, week: currentWeekNumber)
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text(item.slot)
+                            .frame(maxWidth: .infinity / 3, alignment: .leading)
+                        HStack(spacing: 4) {
+                            Text(item.displayName)
+                                .font(.caption)
+                            Text(positionDisplayLabel(base: item.playerPos, altPositions: item.altPositions))
+                                .font(.caption2)
+                                .foregroundColor(positionColor(creditedPos))
+                        }
+                        .frame(maxWidth: .infinity / 3, alignment: .leading)
+                        Text(String(format: "%.2f", item.score))
+                            .foregroundColor(scoreTint)
+                            .frame(maxWidth: .infinity / 3, alignment: .trailing)
+                    }
+                    .font(.caption)
+                }
+
+                MyTeamView.pickSixGradientText(Text("-----BENCH-----"), size: 18)
+                    .frame(maxWidth: .infinity)
+                    .multilineTextAlignment(.center)
+                    .padding(.vertical, 6)
+
+                ForEach(lineup.bench) { player in
+                    let posNorm = PositionNormalizer.normalize(player.pos)
+                    let scoreTint = scoreColor(for: player.score, position: posNorm, week: currentWeekNumber)
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text("BN")
+                            .frame(maxWidth: .infinity / 3, alignment: .leading)
+                        HStack(spacing: 4) {
+                            Text(player.displayName)
+                                .font(.caption)
+                            Text(positionDisplayLabel(base: player.pos, altPositions: player.altPositions))
+                                .font(.caption2)
+                                .foregroundColor(positionColor(player.pos))
+                        }
+                        .frame(maxWidth: .infinity / 3, alignment: .leading)
+                        Text(String(format: "%.2f", player.score))
+                            .foregroundColor(scoreTint)
+                            .frame(maxWidth: .infinity / 3, alignment: .trailing)
+                    }
+                    .font(.caption)
                 }
             } else {
-                Text("No head-to-head data available.")
-                    .foregroundColor(.white.opacity(0.7))
+                Text("No data available.")
+                    .foregroundColor(.white.opacity(0.5))
+                    .font(.caption)
             }
         }
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: 14)
+                .fill(Color.white.opacity(0.04))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14)
+                        .stroke(Color.white.opacity(0.06), lineWidth: 1)
+                )
+        )
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    // MARK: - Debug helpers
-    private func debugLogTeamLineup(
-        team: TeamStanding,
-        week: Int,
-        slots: [String],
-        starters: [String],
-        slotAssignments: [(slot: String, player: Player?)],
-        finalOrdered: [LineupPlayer]
-    ) {
-        let prefix = "DSD:: LineupDebug"
-        print("\(prefix) Team:  \(team.name) (id=\(team.id)) week=\(week)")
-        let sanitizedLeagueSlots = SlotUtils.sanitizeStartingSlots(team.league?.startingLineup ?? []).map(canonicalFlexSlot)
-        if !sanitizedLeagueSlots.isEmpty {
-            print("\(prefix) league.startingLineup count=\(sanitizedLeagueSlots.count) -> \(sanitizedLeagueSlots)")
-        } else {
-            print("\(prefix) league.startingLineup: none")
+    // MARK: - Helpers for management stats and names
+    private func managementTotals(team: TeamStanding, week: Int) -> (Double, Double) {
+        let (pf, maxPF, _, _, _, _) = ManagementCalculator.computeManagementForWeek(team: team, week: week, league: self.league ?? team.league, leagueManager: leagueManager)
+        return (pf, maxPF)
+    }
+
+    private var userDisplayName: String {
+        if let dsdUser = authViewModel.currentUsername,
+           let sleeper = UserDefaults.standard.string(forKey: "sleeperUsername_\(dsdUser)"),
+           !sleeper.isEmpty {
+            return sleeper
         }
-        print("\(prefix) team.lineupConfig:  \(team.lineupConfig ??  [:])")
-        print("\(prefix) expanded slots (used here) count=\(slots.count) -> \(slots)")
-        print("\(prefix) actualStartersByWeek[\(week)]: \(team.actualStartersByWeek?[week] ?? [])")
-        print("\(prefix) starters from actualStartersByWeek used in orderedLineup: \(starters) (count:  \(starters.count))")
-        let paddedStarters:  [String] = {
-            if starters.count < slots.count {
-                return starters + Array(repeating: "0", count: slots.count - starters.count)
-            } else if starters.count > slots.count {
-                return Array(starters.prefix(slots.count))
-            }
-            return starters
-        }()
-        print("\(prefix) paddedStarters count=\(paddedStarters.count) -> \(paddedStarters)")
-        if paddedStarters.contains("0") {
-            print("\(prefix) WARNING: paddedStarters contains placeholder(s) '0' (some starters are missing or matchup data incomplete)")
+        if let currentUsername = appSelection.selectedTeam?.name, !currentUsername.isEmpty {
+            return currentUsername
         }
-        let rosterIds = Set(team.roster.map { $0.id })
-        let missingInRoster = starters.filter { $0 != "0" && !rosterIds.contains($0) && leagueManager.playerCache?[$0] == nil }
-        if !missingInRoster.isEmpty {
-            print("\(prefix) NOTE: starter IDs not found in team's roster (they may have been traded/released or otherwise not present locally): \(missingInRoster)")
+        if let leagueName = appSelection.selectedLeague?.name, !leagueName.isEmpty {
+            return leagueName
         }
-        print("\(prefix) Slot assignments (slot -> playerId/name or nil):")
-        for (slot, player) in slotAssignments {
-            if let p = player {
-                print("\(prefix) \(slot) -> \(p.id) / \(p.position) / \(p.id)")
-            } else {
-                print("\(prefix) \(slot) -> (unassigned)")
+        return "Your"
+    }
+    private var userTeamName: String {
+        if let team = userTeamStanding { return team.name }
+        return "Team"
+    }
+    private var opponentDisplayName: String {
+        if let opp = opponentTeamStanding {
+            if let stats = opp.league?.allTimeOwnerStats?[opp.ownerId], !stats.latestDisplayName.isEmpty {
+                return stats.latestDisplayName
+            } else if !opp.name.isEmpty {
+                return opp.name
             }
         }
-        let assignedPlayerIds = slotAssignments.compactMap { $0.player?.id }
-        let unassignedStarters = starters.filter { !assignedPlayerIds.contains($0) && $0 != "0" }
-        if !unassignedStarters.isEmpty {
-            print("\(prefix) UNASSIGNED starter ids after slot assignment: \(unassignedStarters)")
-        }
-        print("\(prefix) final ordered lineup count=\(finalOrdered.count) (expected slots: \(slots.count))")
-        print("\(prefix) final ordered lineup player ids: \(finalOrdered.map { $0.id })")
-        if finalOrdered.count != slots.count {
-            print("\(prefix) WARNING: final ordered lineup count (\(finalOrdered.count)) != expected slots count (\(slots.count))")
-        } else {
-            print("\(prefix) final ordered lineup length matches expected slots")
-        }
-        print("\(prefix) roster size=\(team.roster.count), bench candidates (non-starters) count=\(team.roster.filter { !(team.actualStartersByWeek?[week] ?? []).contains($0.id) }.count)")
+        return "Opponent"
+    }
+    private var opponentTeamName: String {
+        if let team = opponentTeamStanding { return team.name }
+        return "Team"
     }
 }
 
-// Small helper to map keys in dictionaries (used for lineup config canonicalization)
-private extension Dictionary where Key == String, Value == Int {
-    func mapKeys(_ transform: (String) -> String) -> [String: Int] {
-        var out: [String: Int] = [:]
-        for (k, v) in self {
-            let nk = transform(k)
-            out[nk, default: 0] += v
-        }
-        return out
+// MARK: - Safe index helper
+private extension Collection {
+    subscript(safe index: Index) -> Element? {
+        return indices.contains(index) ? self[index] : nil
     }
 }
