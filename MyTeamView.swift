@@ -12,6 +12,7 @@
 //
 
 import SwiftUI
+import UIKit
 
 // MARK: - Position Color Helper (patched to use normalized position)
 private func positionColor(_ pos: String) -> Color {
@@ -172,6 +173,21 @@ struct MyTeamView: View {
     static func pickSixGradientText(_ text: Text, size: CGFloat) -> some View {
         let styled = text
             .font(.custom(pickSixPostScriptName, size: size))
+            .fontWeight(.bold)
+
+        return styled
+            .foregroundColor(.clear)
+            .overlay(
+                fieryGradient
+                    .mask(styled)
+            )
+    }
+
+    // New: gradient text using current text-style size to avoid size changes
+    static func phattGradientTextDefault(_ text: Text, size: CGFloat? = nil) -> some View {
+        let resolvedSize = size ?? UIFont.preferredFont(forTextStyle: .body).pointSize
+        let styled = text
+            .font(.custom(phattPostScriptName, size: resolvedSize))
             .fontWeight(.bold)
 
         return styled
@@ -447,7 +463,6 @@ struct MyTeamView: View {
     // MARK: Sections (same logic as prior version but referencing appSelection)
     private var managementSection: some View {
         sectionBox {
-            // Section title uses Phatt + gradient
             MyTeamView.phattGradientText(Text("Management %"), size: 20)
                 .frame(maxWidth: .infinity, alignment: .center)
             let (f, o, d) = managementTriplet()
@@ -488,14 +503,13 @@ struct MyTeamView: View {
 
     private var positionPPWSection: some View {
         sectionBox {
-            // Section title uses Phatt + gradient
             if selectedWeek == "SZN" {
                 MyTeamView.phattGradientText(Text("PPW Averages"), size: 18)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .frame(maxWidth: .infinity, alignment: .center)
             } else {
                 let wkText = selectedWeek.replacingOccurrences(of: "Wk ", with: "")
                 MyTeamView.phattGradientText(Text("Position Averages (Week \(wkText))"), size: 18)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .frame(maxWidth: .infinity, alignment: .center)
             }
             gridForPositions(valueProvider: positionAvg, leagueAvgProvider: leaguePosPPW)
         }
@@ -506,23 +520,28 @@ struct MyTeamView: View {
                 Text(selectedWeek == "SZN" ? "Per Starter Slot Avg (Individual PPW)" : "Per Starter Slot Points (Individual Points in Week \(selectedWeek.replacingOccurrences(of: "Wk ", with: "")))"),
                 size: 16
             )
-                .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .center)
             gridForPositions(valueProvider: individualPPW, leagueAvgProvider: leagueIndividualPPW)
         }
     }
     private var averageStartersSection: some View {
         sectionBox {
             MyTeamView.phattGradientText(Text("Average Starters / Week"), size: 18)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .center)
             HStack {
-                Text("Pos").frame(width: 34, alignment: .leading)
-                Text("Avg").frame(width: 60, alignment: .trailing)
-                Text("Fixed").frame(width: 38, alignment: .trailing)
-                Text("Flex").frame(width: 50, alignment: .trailing)
+                MyTeamView.phattGradientTextDefault(Text("Pos"), size: UIFont.preferredFont(forTextStyle: .caption2).pointSize)
+                    .frame(width: 34, alignment: .center)
+                MyTeamView.phattGradientTextDefault(Text("Avg"), size: UIFont.preferredFont(forTextStyle: .caption2).pointSize)
+                    .frame(width: 60, alignment: .center)
+                MyTeamView.phattGradientTextDefault(Text("Fixed"), size: UIFont.preferredFont(forTextStyle: .caption2).pointSize)
+                    .frame(width: 38, alignment: .center)
+                MyTeamView.phattGradientTextDefault(Text("Flex"), size: UIFont.preferredFont(forTextStyle: .caption2).pointSize)
+                    .frame(width: 50, alignment: .center)
                 Spacer()
             }
             .font(.caption2)
             .foregroundColor(.white.opacity(0.7))
+            .frame(maxWidth: .infinity, alignment: .center)
             VStack(alignment: .leading, spacing: 6) {
                 ForEach(mainPositions, id: \.self) { pos in
                     let avg = averageActualStarters(pos)
@@ -596,17 +615,14 @@ struct MyTeamView: View {
     private var lineupSection: some View {
         sectionBox {
             MyTeamView.phattGradientText(Text("Lineup (Week \(selectedWeek.replacingOccurrences(of: "Wk ", with: "")))"), size: 18)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .center)
             HStack {
-                Text("Slot")
-                    .bold()
-                    .frame(maxWidth: .infinity / 3, alignment: .leading)
-                Text("Name")
-                    .bold()
-                    .frame(maxWidth: .infinity / 3, alignment: .leading)
-                Text("Score")
-                    .bold()
-                    .frame(maxWidth: .infinity / 3, alignment: .trailing)
+                MyTeamView.phattGradientTextDefault(Text("Slot"))
+                    .frame(maxWidth: .infinity / 3, alignment: .center)
+                MyTeamView.phattGradientTextDefault(Text("Name"))
+                    .frame(maxWidth: .infinity / 3, alignment: .center)
+                MyTeamView.phattGradientTextDefault(Text("Score"))
+                    .frame(maxWidth: .infinity / 3, alignment: .center)
             }
             if let week = getSelectedWeekNumber(),
                let t = selectedTeamSeason,
@@ -697,6 +713,7 @@ struct MyTeamView: View {
     private var transactionSection: some View {
         sectionBox {
             MyTeamView.phattGradientText(Text("Transactions"), size: 18)
+                .frame(maxWidth: .infinity, alignment: .center)
             VStack(alignment: .leading, spacing: 4) {
                 if appSelection.selectedSeason == "All Time", let agg = aggregated {
                     let waiverAll = agg.totalWaiverMoves
@@ -735,6 +752,7 @@ struct MyTeamView: View {
     private var totalsSection: some View {
         sectionBox {
             MyTeamView.phattGradientText(Text("Totals"), size: 18)
+                .frame(maxWidth: .infinity, alignment: .center)
             Text(pointsSummary())
                 .foregroundColor(.white)
                 .font(.caption)
@@ -744,6 +762,7 @@ struct MyTeamView: View {
     private var strengthsWeaknessesSection: some View {
         sectionBox {
             MyTeamView.phattGradientText(Text("Profile"), size: 18)
+                .frame(maxWidth: .infinity, alignment: .center)
             if let a = aggregated {
                 profileLines(record: a.recordString,
                             seasons: a.seasonsIncluded.count,
