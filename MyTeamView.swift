@@ -519,16 +519,13 @@ struct MyTeamView: View {
             HStack {
                 Text("Slot")
                     .bold()
-                    .frame(maxWidth: .infinity / 4, alignment: .leading)
-                Text("Pos")
-                    .bold()
-                    .frame(maxWidth: .infinity / 4, alignment: .center)
+                    .frame(maxWidth: .infinity / 3, alignment: .leading)
                 Text("Name")
                     .bold()
-                    .frame(maxWidth: .infinity / 4, alignment: .leading)
+                    .frame(maxWidth: .infinity / 3, alignment: .leading)
                 Text("Score")
                     .bold()
-                    .frame(maxWidth: .infinity / 4, alignment: .trailing)
+                    .frame(maxWidth: .infinity / 3, alignment: .trailing)
             }
             if let week = getSelectedWeekNumber(),
                let t = selectedTeamSeason,
@@ -540,32 +537,38 @@ struct MyTeamView: View {
                 let startingSlots = slots.filter { !["BN", "IR", "TAXI"].contains($0) }
                 let assigned = assignPlayersToSlotsPatched(team: t, week: week, slots: startingSlots, myEntry: myEntry, playerCache: allPlayers)
                 ForEach(assigned) { item in
-                    HStack {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
                         Text(item.slot)
-                            .frame(maxWidth: .infinity / 4, alignment: .leading)
-                        Text(PositionNormalizer.normalize(item.playerPos))
-                            .foregroundColor(positionColor(item.playerPos))
-                            .frame(maxWidth: .infinity / 4, alignment: .center)
-                        Text(item.displayName)
-                            .frame(maxWidth: .infinity / 4, alignment: .leading)
+                            .frame(maxWidth: .infinity / 3, alignment: .leading)
+                        HStack(spacing: 4) {
+                            Text(item.displayName)
+                                .font(.caption)
+                            Text(PositionNormalizer.normalize(item.playerPos))
+                                .font(.caption2)
+                                .foregroundColor(positionColor(item.playerPos))
+                        }
+                        .frame(maxWidth: .infinity / 3, alignment: .leading)
                         Text(String(format: "%.2f", item.score))
-                            .frame(maxWidth: .infinity / 4, alignment: .trailing)
+                            .frame(maxWidth: .infinity / 3, alignment: .trailing)
                     }
                     .font(.caption)
                 }
                 let starters = myEntry.starters ?? []
                 let bench = getBenchPlayersPatched(team: t, week: week, starters: starters, myEntry: myEntry, playerCache: allPlayers)
                 ForEach(bench) { player in
-                    HStack {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
                         Text("BN")
-                            .frame(maxWidth: .infinity / 4, alignment: .leading)
-                        Text(PositionNormalizer.normalize(player.pos))
-                            .foregroundColor(positionColor(player.pos))
-                            .frame(maxWidth: .infinity / 4, alignment: .center)
-                        Text(player.displayName)
-                            .frame(maxWidth: .infinity / 4, alignment: .leading)
+                            .frame(maxWidth: .infinity / 3, alignment: .leading)
+                        HStack(spacing: 4) {
+                            Text(player.displayName)
+                                .font(.caption)
+                            Text(PositionNormalizer.normalize(player.pos))
+                                .font(.caption2)
+                                .foregroundColor(positionColor(player.pos))
+                        }
+                        .frame(maxWidth: .infinity / 3, alignment: .leading)
                         Text(String(format: "%.2f", player.score))
-                            .frame(maxWidth: .infinity / 4, alignment: .trailing)
+                            .frame(maxWidth: .infinity / 3, alignment: .trailing)
                     }
                     .font(.caption)
                 }
