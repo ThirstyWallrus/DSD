@@ -429,9 +429,9 @@ struct MyTeamView: View {
                 }
             } else {
                 managementSection
-                positionPPWSection
+                combinedPPWSection
                 if selectedWeek == "SZN" {
-                    perStartPPWSection
+                    // PPW card is season/all-time based; keep lineup below for weekly selection
                 } else {
                     lineupSection
                 }
@@ -498,28 +498,65 @@ struct MyTeamView: View {
             .accessibilityLabel(text)
     }
 
-    private var positionPPWSection: some View {
-        sectionBox {
-            if selectedWeek == "SZN" {
-                MyTeamView.phattGradientText(Text("PPW Averages"), size: 18)
-                    .frame(maxWidth: .infinity, alignment: .center)
-            } else {
-                let wkText = selectedWeek.replacingOccurrences(of: "Wk ", with: "")
-                MyTeamView.phattGradientText(Text("Position Averages (Week \(wkText))"), size: 18)
-                    .frame(maxWidth: .infinity, alignment: .center)
+    // MARK: Combined PPW / IPPW Section
+    private var combinedPPWSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            MyTeamView.phattGradientText(Text("PPW Averages"), size: 18)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            HStack(spacing: 8) {
+                Text("Pos").frame(width: 44, alignment: .leading)
+                Text("PPW").frame(width: 66, alignment: .trailing)
+                Text("Lg PPW").frame(width: 74, alignment: .trailing)
+                Text("IPPW").frame(width: 70, alignment: .trailing)
+                Text("Lg IPPW").frame(width: 82, alignment: .trailing)
             }
-            gridForPositions(valueProvider: positionAvg, leagueAvgProvider: leaguePosPPW)
+            .font(.caption.bold())
+            .foregroundColor(.white.opacity(0.7))
+
+            Divider().background(Color.white.opacity(0.1))
+
+            ForEach(mainPositions, id: \.self) { pos in
+                let metrics = positionMetrics(for: pos)
+                let leagueMetrics = leaguePositionMetrics(for: pos)
+                HStack(spacing: 8) {
+                    Text(pos)
+                        .foregroundColor(positionColor(pos))
+                        .frame(width: 44, alignment: .leading)
+
+                    Text(String(format: "%.2f", metrics.ppw))
+                        .foregroundColor(colorRelative(to: leagueMetrics.ppw, value: metrics.ppw))
+                        .frame(width: 66, alignment: .trailing)
+                        .monospacedDigit()
+
+                    Text(String(format: "%.2f", leagueMetrics.ppw))
+                        .foregroundColor(.white.opacity(0.7))
+                        .frame(width: 74, alignment: .trailing)
+                        .monospacedDigit()
+
+                    Text(String(format: "%.2f", metrics.ippw))
+                        .foregroundColor(colorRelative(to: leagueMetrics.ippw, value: metrics.ippw))
+                        .frame(width: 70, alignment: .trailing)
+                        .monospacedDigit()
+
+                    Text(String(format: "%.2f", leagueMetrics.ippw))
+                        .foregroundColor(.white.opacity(0.7))
+                        .frame(width: 82, alignment: .trailing)
+                        .monospacedDigit()
+                }
+                .font(.caption.bold())
+            }
         }
-    }
-    private var perStartPPWSection: some View {
-        sectionBox {
-            MyTeamView.phattGradientText(
-                Text(selectedWeek == "SZN" ? "Per Starter Slot Avg (Individual PPW)" : "Per Starter Slot Points (Individual Points in Week \(selectedWeek.replacingOccurrences(of: "Wk ", with: "")))"),
-                size: 16
-            )
-            .frame(maxWidth: .infinity, alignment: .center)
-            gridForPositions(valueProvider: individualPPW, leagueAvgProvider: leagueIndividualPPW)
-        }
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: 14)
+                .fill(Color.white.opacity(0.04))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14)
+                        .stroke(Color.white.opacity(0.06), lineWidth: 1)
+                )
+        )
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     // MARK: Starter/Bench score coloring helpers
@@ -1015,75 +1052,14 @@ struct MyTeamView: View {
             return 0
         }
     }
-    // League average using starter-based position averages
-    private func leaguePosPPW(_ pos: String) -> Double {
-        let normPos = PositionNormalizer.normalize(pos)
-        if selectedWeek == "SZN" {
-            let vals: [Double] = seasonTeams.map { team in
-                seasonPositionAverage(pos: normPos, teamOverride: team)
-            }
-            return average(vals)
-        } else if let week = getSelectedWeekNumber() {
-            let vals: [Double] = seasonTeams.map { team in
-                weeklyPositionAverage(pos: normPos, week: week, teamOverride: team)
-            }
-            return average(vals)
-        } else {
-            return 0
-        }
-    }
-    private func leagueIndividualPPW(_ pos: String) -> Double {
-        let normPos = PositionNormalizer.normalize(pos)
-        if selectedWeek == "SZN" {
-            return average(seasonTeams.compactMap { $0.individualPositionAverages?[normPos] })
-        } else if let week = getSelectedWeekNumber() {
-            let teamIndPPW = seasonTeams.map { team in
-                let posPoints = positionPPW(normPos)
-                let numStarters = numberOfStarters(in: team, week: week, pos: normPos)
-                return numStarters > 0 ? posPoints / Double(numStarters) : 0
-            }
-            return average(teamIndPPW)
-        } else {
-            return 0
-        }
-    }
+
     private func baseLeagueAvg(_ selector: (TeamStanding) -> Double) -> Double { average(seasonTeams.map(selector)) }
-    private func colorVsLeague(_ value: Double, leagueAvg: Double) -> Color {
-        if value > leagueAvg + 3 { return .green }
-        if value < leagueAvg - 3 { return .red }
-        return .yellow
-    }
-    private func gridForPositions(valueProvider: @escaping (String) -> Double,
-                                  leagueAvgProvider: @escaping (String) -> Double) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            ForEach(mainPositions, id: \.self) { pos in
-                let val = valueProvider(pos)
-                let avg = leagueAvgProvider(pos)
-                HStack {
-                    Text(pos)
-                        .foregroundColor(positionColor(pos))
-                        .frame(width: 40, alignment: .leading)
-                    Text(String(format: "%.2f", val))
-                        .foregroundColor(colorVsLeague(val, leagueAvg: avg))
-                        .frame(width: 70, alignment: .leading)
-                    Text("Lg \(String(format: "%.2f", avg))")
-                        .foregroundColor(.white.opacity(0.5))
-                        .font(.caption2)
-                    Spacer()
-                }
-                .font(.caption.bold())
-            }
-        }
-        .padding(10)
-        .background(
-            RoundedRectangle(cornerRadius: 10)
-                .fill(Color.white.opacity(0.05))
-        )
-    }
+
     private func average(_ arr: [Double]) -> Double {
         guard !arr.isEmpty else { return 0 }
         return arr.reduce(0,+) / Double(arr.count)
     }
+
     private func sectionBox<Content: View>(@ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 12, content: content)
             .padding(14)
@@ -1148,6 +1124,89 @@ struct MyTeamView: View {
         }
         // If no raw full name, try to synthesize from id or position
         return fallbackId.isEmpty ? position : fallbackId
+    }
+
+    // MARK: Position metrics helpers (PPW & IPPW)
+    private func positionMetrics(for pos: String) -> (ppw: Double, ippw: Double) {
+        let normPos = PositionNormalizer.normalize(pos)
+        // All Time uses aggregated owner stats if available
+        if appSelection.selectedSeason == "All Time", let agg = aggregated {
+            let ppw = agg.positionAvgPPW[normPos] ?? 0
+            let ippw = agg.individualPositionPPW[normPos] ?? 0
+            return (ppw, ippw)
+        }
+
+        guard let team = selectedTeamSeason,
+              let league = league,
+              let season = league.seasons.first(where: { $0.id == appSelection.selectedSeason }),
+              let weeksMap = season.matchupsByWeek else {
+            return (0, 0)
+        }
+
+        var totalPoints = 0.0
+        var weekCount = 0
+        var startCount = 0
+
+        for week in weeksMap.keys.sorted() {
+            let starts = creditedStarts(team: team, week: week).filter { $0.pos == normPos }
+            if !starts.isEmpty {
+                weekCount += 1
+                startCount += starts.count
+                totalPoints += starts.reduce(0.0) { $0 + $1.points }
+            }
+        }
+
+        let ppw = weekCount > 0 ? totalPoints / Double(weekCount) : 0
+        let ippw = startCount > 0 ? totalPoints / Double(startCount) : 0
+        return (ppw, ippw)
+    }
+
+    private func leaguePositionMetrics(for pos: String) -> (ppw: Double, ippw: Double) {
+        let normPos = PositionNormalizer.normalize(pos)
+
+        // All Time: average across all owner aggregates if present
+        if appSelection.selectedSeason == "All Time",
+           let league = league,
+           let aggregates = league.allTimeOwnerStats?.values, !aggregates.isEmpty {
+            let teamPPWs = aggregates.map { $0.positionAvgPPW[normPos] ?? 0 }
+            let teamIPPWs = aggregates.map { $0.individualPositionPPW[normPos] ?? 0 }
+            let ppw = average(teamPPWs)
+            let ippw = average(teamIPPWs)
+            return (ppw, ippw)
+        }
+
+        guard let league = league,
+              let season = league.seasons.first(where: { $0.id == appSelection.selectedSeason }),
+              let weeksMap = season.matchupsByWeek else {
+            return (0, 0)
+        }
+
+        var totalPoints = 0.0
+        var weekCount = 0
+        var startCount = 0
+
+        for team in seasonTeams {
+            for week in weeksMap.keys.sorted() {
+                let starts = creditedStarts(team: team, week: week).filter { $0.pos == normPos }
+                if !starts.isEmpty {
+                    weekCount += 1       // team-week with at least one start at this position
+                    startCount += starts.count
+                    totalPoints += starts.reduce(0.0) { $0 + $1.points }
+                }
+            }
+        }
+
+        let ppw = weekCount > 0 ? totalPoints / Double(weekCount) : 0
+        let ippw = startCount > 0 ? totalPoints / Double(startCount) : 0
+        return (ppw, ippw)
+    }
+
+    private func colorRelative(to leagueAvg: Double, value: Double) -> Color {
+        guard leagueAvg != 0 else { return .white }
+        let diff = value - leagueAvg
+        if diff > 1.0 { return .green }
+        if diff < -1.0 { return .red }
+        return .yellow
     }
 
     // MARK: PATCHED: Use weekly player pool, not just team.roster, for all per-week actual lineup and bench logic.
