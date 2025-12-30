@@ -29,10 +29,32 @@ private func positionColor(_ pos: String) -> Color {
     }
 }
 
+// MARK: - Position display helper (dual designations)
+private func positionDisplayLabel(base: String, altPositions: [String]) -> String {
+    let normBase = PositionNormalizer.normalize(base)
+    var seen = Set<String>()
+    var parts: [String] = []
+
+    func appendIfNew(_ pos: String) {
+        let norm = PositionNormalizer.normalize(pos)
+        guard !norm.isEmpty, norm != "UNK", !seen.contains(norm) else { return }
+        seen.insert(norm)
+        parts.append(norm)
+    }
+
+    appendIfNew(normBase)
+    for alt in altPositions {
+        appendIfNew(alt)
+    }
+    return parts.isEmpty ? normBase : parts.joined(separator: "/")
+}
+
 struct AssignedSlot: Identifiable {
     let id = UUID()
+    let playerId: String
     let slot: String
     let playerPos: String
+    let altPositions: [String]
     let displayName: String
     let score: Double
 }
@@ -40,6 +62,7 @@ struct AssignedSlot: Identifiable {
 struct BenchPlayer: Identifiable {
     let id: String
     let pos: String
+    let altPositions: [String]
     let displayName: String
     let score: Double
 }
@@ -546,7 +569,7 @@ struct MyTeamView: View {
                         HStack(spacing: 4) {
                             Text(item.displayName)
                                 .font(.caption)
-                            Text(PositionNormalizer.normalize(item.playerPos))
+                            Text(positionDisplayLabel(base: item.playerPos, altPositions: item.altPositions))
                                 .font(.caption2)
                                 .foregroundColor(positionColor(item.playerPos))
                         }
@@ -565,7 +588,7 @@ struct MyTeamView: View {
                         HStack(spacing: 4) {
                             Text(player.displayName)
                                 .font(.caption)
-                            Text(PositionNormalizer.normalize(player.pos))
+                            Text(positionDisplayLabel(base: player.pos, altPositions: player.altPositions))
                                 .font(.caption2)
                                 .foregroundColor(positionColor(player.pos))
                         }
@@ -1151,7 +1174,8 @@ struct MyTeamView: View {
             let raw = playerCache[player_id]
             let name = displayName(for: p, raw: raw, fallbackId: player_id, position: p.position)
             let score = playersPoints[player_id] ?? 0
-            results.append(AssignedSlot(slot: slot, playerPos: p.position, displayName: name, score: score))
+            let altPos = p.altPositions ?? raw?.fantasy_positions ?? []
+            results.append(AssignedSlot(playerId: player_id, slot: slot, playerPos: p.position, altPositions: altPos, displayName: name, score: score))
         }
         return results
     }
@@ -1169,7 +1193,8 @@ struct MyTeamView: View {
             if let p = p {
                 let name = displayName(for: p, raw: raw, fallbackId: pid, position: p.position)
                 let score = playersPoints[pid] ?? 0
-                res.append(BenchPlayer(id: pid, pos: p.position, displayName: name, score: score))
+                let altPos = p.altPositions ?? raw?.fantasy_positions ?? []
+                res.append(BenchPlayer(id: pid, pos: p.position, altPositions: altPos, displayName: name, score: score))
             }
         }
         return res.sorted { $0.score > $1.score }
