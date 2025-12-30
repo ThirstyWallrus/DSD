@@ -72,7 +72,8 @@ private func positionDisplayLabel(base: String, altPositions: [String]) -> Strin
     return parts.isEmpty ? normBase : parts.joined(separator: "/")
 }
 
-private struct AssignedSlot: Identifiable {
+// Renamed to avoid module-level collisions with MyTeamView
+private struct MatchupAssignedSlot: Identifiable {
     let id = UUID()
     let playerId: String
     let slot: String
@@ -82,7 +83,7 @@ private struct AssignedSlot: Identifiable {
     let score: Double
 }
 
-private struct BenchPlayer: Identifiable {
+private struct MatchupBenchPlayer: Identifiable {
     let id: String
     let pos: String
     let altPositions: [String]
@@ -308,9 +309,9 @@ struct MatchupView: View {
         return fallbackId.isEmpty ? position : fallbackId
     }
 
-    private func assignPlayersToSlotsPatched(team: TeamStanding, week: Int, slots: [String], myEntry: MatchupEntry, playerCache: [String: RawSleeperPlayer]) -> [AssignedSlot] {
+    private func assignPlayersToSlotsPatched(team: TeamStanding, week: Int, slots: [String], myEntry: MatchupEntry, playerCache: [String: RawSleeperPlayer]) -> [MatchupAssignedSlot] {
         guard let starters = myEntry.starters, let playersPoints = myEntry.players_points, let playersPool = myEntry.players else { return [] }
-        var results: [AssignedSlot] = []
+        var results: [MatchupAssignedSlot] = []
         let playerDict: [String: Player] = {
             var dict = [String: Player]()
             for pid in playersPool {
@@ -337,15 +338,15 @@ struct MatchupView: View {
             let name = displayName(for: p, raw: raw, fallbackId: player_id, position: p.position)
             let score = playersPoints[player_id] ?? 0
             let altPos = p.altPositions ?? raw?.fantasy_positions ?? []
-            results.append(AssignedSlot(playerId: player_id, slot: slot, playerPos: p.position, altPositions: altPos, displayName: name, score: score))
+            results.append(MatchupAssignedSlot(playerId: player_id, slot: slot, playerPos: p.position, altPositions: altPos, displayName: name, score: score))
         }
         return results
     }
 
-    private func getBenchPlayersPatched(team: TeamStanding, week: Int, starters: [String], myEntry: MatchupEntry, playerCache: [String: RawSleeperPlayer]) -> [BenchPlayer] {
+    private func getBenchPlayersPatched(team: TeamStanding, week: Int, starters: [String], myEntry: MatchupEntry, playerCache: [String: RawSleeperPlayer]) -> [MatchupBenchPlayer] {
         guard let playersPoints = myEntry.players_points, let playersPool = myEntry.players else { return [] }
         let starterSet = Set(starters)
-        var res: [BenchPlayer] = []
+        var res: [MatchupBenchPlayer] = []
         for pid in playersPool where !starterSet.contains(pid) {
             let p = team.roster.first(where: { $0.id == pid })
                 ?? playerCache[pid].map { raw in
@@ -356,7 +357,7 @@ struct MatchupView: View {
                 let name = displayName(for: p, raw: raw, fallbackId: pid, position: p.position)
                 let score = playersPoints[pid] ?? 0
                 let altPos = p.altPositions ?? raw?.fantasy_positions ?? []
-                res.append(BenchPlayer(id: pid, pos: p.position, altPositions: altPos, displayName: name, score: score))
+                res.append(MatchupBenchPlayer(id: pid, pos: p.position, altPositions: altPos, displayName: name, score: score))
             }
         }
         return res.sorted { $0.score > $1.score }
@@ -385,7 +386,7 @@ struct MatchupView: View {
             for idx in 0..<padded.count {
                 let pid = padded[idx]
                 guard pid != "0" else { continue }
-                let slot = startingSlots[safe: idx] ?? "FLEX"
+                let slot = startingSlots[mpSafe: idx] ?? "FLEX"
                 let player = team.roster.first(where: { $0.id == pid })
                     ?? (leagueManager.playerCache ?? [:])[pid].map { raw in
                         Player(id: pid, position: raw.position ?? "UNK", altPositions: raw.fantasy_positions, weeklyScores: [])
@@ -412,7 +413,7 @@ struct MatchupView: View {
         return .yellow
     }
 
-    private func lineupData(for team: TeamStanding, week: Int) -> (assigned: [AssignedSlot], bench: [BenchPlayer]) {
+    private func lineupData(for team: TeamStanding, week: Int) -> (assigned: [MatchupAssignedSlot], bench: [MatchupBenchPlayer]) {
         guard let season = league?.seasons.first(where: { $0.id == appSelection.selectedSeason }) ?? league?.seasons.sorted(by: { $0.id < $1.id }).last,
               let slots = league?.startingLineup,
               let myEntry = season.matchupsByWeek?[week]?.first(where: { $0.roster_id == Int(team.id) }) else {
@@ -674,6 +675,16 @@ struct MatchupView: View {
                     .font(.body)
             }
         }
+    }
+
+    // Placeholder to satisfy missing symbol; keeps UI stable without altering behavior.
+    private var headToHeadContent: some View {
+        VStack(spacing: 12) {
+            Text("Head to Head view is coming soon.")
+                .foregroundColor(.white.opacity(0.8))
+                .font(.subheadline)
+        }
+        .frame(maxWidth: .infinity, alignment: .center)
     }
 
     // MARK: - Matchup Content (top:  Matchup Stats, below: Lineups)
@@ -948,9 +959,9 @@ struct MatchupView: View {
     }
 }
 
-// MARK: - Safe index helper
+// MARK: - Safe index helper (renamed to avoid collisions)
 private extension Collection {
-    subscript(safe index: Index) -> Element? {
+    subscript(mpSafe index: Index) -> Element? {
         return indices.contains(index) ? self[index] : nil
     }
 }
