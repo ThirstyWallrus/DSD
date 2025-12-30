@@ -760,6 +760,19 @@ struct MyTeamView: View {
         }.count
     }
 
+    // Added: per-position PPW helper (restored)
+    private func positionPPW(_ pos: String) -> Double {
+        let normPos = PositionNormalizer.normalize(pos)
+        if let a = aggregated { return a.positionAvgPPW[normPos] ?? 0 }
+        if selectedWeek == "SZN" {
+            return selectedTeamSeason?.positionAverages?[normPos] ?? 0
+        } else if let week = getSelectedWeekNumber(), let t = selectedTeamSeason {
+            return positionPoints(in: t, week: week, pos: normPos)
+        } else {
+            return 0
+        }
+    }
+
     // Starter-based position average for current selection
     private func positionAvg(_ pos: String) -> Double {
         let normPos = PositionNormalizer.normalize(pos)
