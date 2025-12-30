@@ -187,7 +187,7 @@ struct MyTeamView: View {
         let resolvedSize = size ?? UIFont.preferredFont(forTextStyle: .body).pointSize
         let styled = text
             .font(.custom(phattPostScriptName, size: resolvedSize))
-        .fontWeight(.bold)
+            .fontWeight(.bold)
 
         return styled
             .foregroundColor(.clear)
@@ -429,9 +429,10 @@ struct MyTeamView: View {
                 }
             } else {
                 managementSection
-                combinedPPWSection
-                seasonLineupSection   // NEW: season-total lineup card just below PPW
-                if selectedWeek != "SZN" {
+                positionPPWSection
+                if selectedWeek == "SZN" {
+                    perStartPPWSection
+                } else {
                     lineupSection
                 }
                 transactionSection
@@ -497,153 +498,27 @@ struct MyTeamView: View {
             .accessibilityLabel(text)
     }
 
-    // MARK: Combined PPW / IPPW Section
-    private var combinedPPWSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            MyTeamView.phattGradientText(Text("PPW Averages"), size: 18)
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-            HStack(spacing: 8) {
-                Text("Pos").frame(width: 44, alignment: .leading)
-                Text("PPW").frame(width: 66, alignment: .trailing)
-                Text("Lg PPW").frame(width: 74, alignment: .trailing)
-                Text("IPPW").frame(width: 70, alignment: .trailing)
-                Text("Lg IPPW").frame(width: 82, alignment: .trailing)
-            }
-            .font(.caption.bold())
-            .foregroundColor(.white.opacity(0.7))
-
-            Divider().background(Color.white.opacity(0.1))
-
-            ForEach(mainPositions, id: \.self) { pos in
-                let metrics = positionMetrics(for: pos)
-                let leagueMetrics = leaguePositionMetrics(for: pos)
-                HStack(spacing: 8) {
-                    Text(pos)
-                        .foregroundColor(positionColor(pos))
-                        .frame(width: 44, alignment: .leading)
-
-                    Text(String(format: "%.2f", metrics.ppw))
-                        .foregroundColor(colorRelative(to: leagueMetrics.ppw, value: metrics.ppw))
-                        .frame(width: 66, alignment: .trailing)
-                        .monospacedDigit()
-
-                    Text(String(format: "%.2f", leagueMetrics.ppw))
-                        .foregroundColor(.white.opacity(0.7))
-                        .frame(width: 74, alignment: .trailing)
-                        .monospacedDigit()
-
-                    Text(String(format: "%.2f", metrics.ippw))
-                        .foregroundColor(colorRelative(to: leagueMetrics.ippw, value: metrics.ippw))
-                        .frame(width: 70, alignment: .trailing)
-                        .monospacedDigit()
-
-                    Text(String(format: "%.2f", leagueMetrics.ippw))
-                        .foregroundColor(.white.opacity(0.7))
-                        .frame(width: 82, alignment: .trailing)
-                        .monospacedDigit()
-                }
-                .font(.caption.bold())
-            }
-        }
-        .padding(14)
-        .background(
-            RoundedRectangle(cornerRadius: 14)
-                .fill(Color.white.opacity(0.04))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 14)
-                        .stroke(Color.white.opacity(0.06), lineWidth: 1)
-                )
-        )
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    // MARK: New Season Totals Lineup Section
-    private var seasonLineupSection: some View {
+    private var positionPPWSection: some View {
         sectionBox {
-            MyTeamView.phattGradientText(Text("Lineup (Season Totals)"), size: 18)
-                .frame(maxWidth: .infinity, alignment: .center)
-            HStack {
-                MyTeamView.phattGradientTextDefault(Text("Slot"))
-                    .frame(maxWidth: .infinity / 3, alignment: .center)
-                MyTeamView.phattGradientTextDefault(Text("Name"))
-                    .frame(maxWidth: .infinity / 3, alignment: .center)
-                MyTeamView.phattGradientTextDefault(Text("Pts (Season)"))
-                    .frame(maxWidth: .infinity / 3, alignment: .center)
-            }
-            if let seasonId = resolvedSeasonIdForTotals(),
-               let team = selectedTeamSeason,
-               let lineup = seasonLineupAssignments(team: team, seasonId: seasonId) {
-                ForEach(lineup.assigned) { item in
-                    let creditedPos = PositionNormalizer.normalize(
-                        SlotPositionAssigner.countedPosition(
-                            for: item.slot,
-                            candidatePositions: ([item.playerPos] + item.altPositions).map { PositionNormalizer.normalize($0) },
-                            base: PositionNormalizer.normalize(item.playerPos)
-                        )
-                    )
-                    let leagueColor: Color = .white // Season totals are not compared per-week; keep neutral
-                    HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        Text(item.slot)
-                            .frame(maxWidth: .infinity / 3, alignment: .leading)
-                        HStack(spacing: 4) {
-                            Text(item.displayName)
-                                .font(.caption)
-                            Text(positionDisplayLabel(base: item.playerPos, altPositions: item.altPositions))
-                                .font(.caption2)
-                                .foregroundColor(positionColor(creditedPos))
-                        }
-                        .frame(maxWidth: .infinity / 3, alignment: .leading)
-                        Text(String(format: "%.2f", item.score))
-                            .foregroundColor(leagueColor)
-                            .frame(maxWidth: .infinity / 3, alignment: .trailing)
-                    }
-                    .font(.caption)
-                }
-
-                MyTeamView.pickSixGradientText(Text("-----BENCH-----"), size: 18)
-                    .frame(maxWidth: .infinity)
-                    .multilineTextAlignment(.center)
-                    .padding(.vertical, 6)
-
-                let positionPriority: [String: Int] = [
-                    "QB": 0, "RB": 1, "WR": 2, "TE": 3, "DL": 4, "LB": 5, "DB": 6
-                ]
-                let bench = lineup.bench.sorted { lhs, rhs in
-                    let lPos = PositionNormalizer.normalize(lhs.pos)
-                    let rPos = PositionNormalizer.normalize(rhs.pos)
-                    let lRank = positionPriority[lPos] ?? Int.max
-                    let rRank = positionPriority[rPos] ?? Int.max
-                    if lRank == rRank {
-                        return lhs.score > rhs.score
-                    }
-                    return lRank < rRank
-                }
-
-                ForEach(bench) { player in
-                    let posNorm = PositionNormalizer.normalize(player.pos)
-                    HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        Text("BN")
-                            .frame(maxWidth: .infinity / 3, alignment: .leading)
-                        HStack(spacing: 4) {
-                            Text(player.displayName)
-                                .font(.caption)
-                            Text(positionDisplayLabel(base: player.pos, altPositions: player.altPositions))
-                                .font(.caption2)
-                                .foregroundColor(positionColor(player.pos))
-                        }
-                        .frame(maxWidth: .infinity / 3, alignment: .leading)
-                        Text(String(format: "%.2f", player.score))
-                            .foregroundColor(.white)
-                            .frame(maxWidth: .infinity / 3, alignment: .trailing)
-                    }
-                    .font(.caption)
-                }
+            if selectedWeek == "SZN" {
+                MyTeamView.phattGradientText(Text("PPW Averages"), size: 18)
+                    .frame(maxWidth: .infinity, alignment: .center)
             } else {
-                Text("No data available.")
-                    .foregroundColor(.white.opacity(0.5))
-                    .font(.caption)
+                let wkText = selectedWeek.replacingOccurrences(of: "Wk ", with: "")
+                MyTeamView.phattGradientText(Text("Position Averages (Week \(wkText))"), size: 18)
+                    .frame(maxWidth: .infinity, alignment: .center)
             }
+            gridForPositions(valueProvider: positionAvg, leagueAvgProvider: leaguePosPPW)
+        }
+    }
+    private var perStartPPWSection: some View {
+        sectionBox {
+            MyTeamView.phattGradientText(
+                Text(selectedWeek == "SZN" ? "Per Starter Slot Avg (Individual PPW)" : "Per Starter Slot Points (Individual Points in Week \(selectedWeek.replacingOccurrences(of: "Wk ", with: "")))"),
+                size: 16
+            )
+            .frame(maxWidth: .infinity, alignment: .center)
+            gridForPositions(valueProvider: individualPPW, leagueAvgProvider: leagueIndividualPPW)
         }
     }
 
@@ -1140,14 +1015,75 @@ struct MyTeamView: View {
             return 0
         }
     }
-
+    // League average using starter-based position averages
+    private func leaguePosPPW(_ pos: String) -> Double {
+        let normPos = PositionNormalizer.normalize(pos)
+        if selectedWeek == "SZN" {
+            let vals: [Double] = seasonTeams.map { team in
+                seasonPositionAverage(pos: normPos, teamOverride: team)
+            }
+            return average(vals)
+        } else if let week = getSelectedWeekNumber() {
+            let vals: [Double] = seasonTeams.map { team in
+                weeklyPositionAverage(pos: normPos, week: week, teamOverride: team)
+            }
+            return average(vals)
+        } else {
+            return 0
+        }
+    }
+    private func leagueIndividualPPW(_ pos: String) -> Double {
+        let normPos = PositionNormalizer.normalize(pos)
+        if selectedWeek == "SZN" {
+            return average(seasonTeams.compactMap { $0.individualPositionAverages?[normPos] })
+        } else if let week = getSelectedWeekNumber() {
+            let teamIndPPW = seasonTeams.map { team in
+                let posPoints = positionPPW(normPos)
+                let numStarters = numberOfStarters(in: team, week: week, pos: normPos)
+                return numStarters > 0 ? posPoints / Double(numStarters) : 0
+            }
+            return average(teamIndPPW)
+        } else {
+            return 0
+        }
+    }
     private func baseLeagueAvg(_ selector: (TeamStanding) -> Double) -> Double { average(seasonTeams.map(selector)) }
-
+    private func colorVsLeague(_ value: Double, leagueAvg: Double) -> Color {
+        if value > leagueAvg + 3 { return .green }
+        if value < leagueAvg - 3 { return .red }
+        return .yellow
+    }
+    private func gridForPositions(valueProvider: @escaping (String) -> Double,
+                                  leagueAvgProvider: @escaping (String) -> Double) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(mainPositions, id: \.self) { pos in
+                let val = valueProvider(pos)
+                let avg = leagueAvgProvider(pos)
+                HStack {
+                    Text(pos)
+                        .foregroundColor(positionColor(pos))
+                        .frame(width: 40, alignment: .leading)
+                    Text(String(format: "%.2f", val))
+                        .foregroundColor(colorVsLeague(val, leagueAvg: avg))
+                        .frame(width: 70, alignment: .leading)
+                    Text("Lg \(String(format: "%.2f", avg))")
+                        .foregroundColor(.white.opacity(0.5))
+                        .font(.caption2)
+                    Spacer()
+                }
+                .font(.caption.bold())
+            }
+        }
+        .padding(10)
+        .background(
+            RoundedRectangle(cornerRadius: 10)
+                .fill(Color.white.opacity(0.05))
+        )
+    }
     private func average(_ arr: [Double]) -> Double {
         guard !arr.isEmpty else { return 0 }
         return arr.reduce(0,+) / Double(arr.count)
     }
-
     private func sectionBox<Content: View>(@ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 12, content: content)
             .padding(14)
@@ -1212,173 +1148,6 @@ struct MyTeamView: View {
         }
         // If no raw full name, try to synthesize from id or position
         return fallbackId.isEmpty ? position : fallbackId
-    }
-
-    // MARK: Position metrics helpers (PPW & IPPW)
-    private func positionMetrics(for pos: String) -> (ppw: Double, ippw: Double) {
-        let normPos = PositionNormalizer.normalize(pos)
-        // All Time uses aggregated owner stats if available
-        if appSelection.selectedSeason == "All Time", let agg = aggregated {
-            let ppw = agg.positionAvgPPW[normPos] ?? 0
-            let ippw = agg.individualPositionPPW[normPos] ?? 0
-            return (ppw, ippw)
-        }
-
-        guard let team = selectedTeamSeason,
-              let league = league,
-              let season = league.seasons.first(where: { $0.id == appSelection.selectedSeason }),
-              let weeksMap = season.matchupsByWeek else {
-            return (0, 0)
-        }
-
-        var totalPoints = 0.0
-        var weekCount = 0
-        var startCount = 0
-
-        for week in weeksMap.keys.sorted() {
-            let starts = creditedStarts(team: team, week: week).filter { $0.pos == normPos }
-            if !starts.isEmpty {
-                weekCount += 1
-                startCount += starts.count
-                totalPoints += starts.reduce(0.0) { $0 + $1.points }
-            }
-        }
-
-        let ppw = weekCount > 0 ? totalPoints / Double(weekCount) : 0
-        let ippw = startCount > 0 ? totalPoints / Double(startCount) : 0
-        return (ppw, ippw)
-    }
-
-    private func leaguePositionMetrics(for pos: String) -> (ppw: Double, ippw: Double) {
-        let normPos = PositionNormalizer.normalize(pos)
-
-        // All Time: average across all owner aggregates if present
-        if appSelection.selectedSeason == "All Time",
-           let league = league,
-           let aggregates = league.allTimeOwnerStats?.values, !aggregates.isEmpty {
-            let teamPPWs = aggregates.map { $0.positionAvgPPW[normPos] ?? 0 }
-            let teamIPPWs = aggregates.map { $0.individualPositionPPW[normPos] ?? 0 }
-            let ppw = average(teamPPWs)
-            let ippw = average(teamIPPWs)
-            return (ppw, ippw)
-        }
-
-        guard let league = league,
-              let season = league.seasons.first(where: { $0.id == appSelection.selectedSeason }),
-              let weeksMap = season.matchupsByWeek else {
-            return (0, 0)
-        }
-
-        var totalPoints = 0.0
-        var weekCount = 0
-        var startCount = 0
-
-        for team in seasonTeams {
-            for week in weeksMap.keys.sorted() {
-                let starts = creditedStarts(team: team, week: week).filter { $0.pos == normPos }
-                if !starts.isEmpty {
-                    weekCount += 1       // team-week with at least one start at this position
-                    startCount += starts.count
-                    totalPoints += starts.reduce(0.0) { $0 + $1.points }
-                }
-            }
-        }
-
-        let ppw = weekCount > 0 ? totalPoints / Double(weekCount) : 0
-        let ippw = startCount > 0 ? totalPoints / Double(startCount) : 0
-        return (ppw, ippw)
-    }
-
-    private func colorRelative(to leagueAvg: Double, value: Double) -> Color {
-        guard leagueAvg != 0 else { return .white }
-        let diff = value - leagueAvg
-        if diff > 1.0 { return .green }
-        if diff < -1.0 { return .red }
-        return .yellow
-    }
-
-    // MARK: Season totals helpers
-    private func resolvedSeasonIdForTotals() -> String? {
-        if appSelection.selectedSeason == "All Time" {
-            return currentSeasonId.isEmpty ? nil : currentSeasonId
-        }
-        return appSelection.selectedSeason
-    }
-
-    private func seasonTotalPoints(for player: Player, seasonId: String) -> Double {
-        // Player.weeklyScores are assumed to be for the current season context; no season discriminator is available.
-        // Sum all weeklyScores for the player as best-effort season total.
-        player.weeklyScores.reduce(0.0) { $0 + ($1.points_half_ppr ?? $1.points) }
-    }
-
-    private func seasonLineupAssignments(team: TeamStanding, seasonId: String) -> (assigned: [AssignedSlot], bench: [BenchPlayer])? {
-        guard let league = league else { return nil }
-        let startingSlots = league.startingLineup.filter { !["BN","IR","TAXI"].contains($0) }
-        guard !startingSlots.isEmpty else { return nil }
-
-        let playerCache = leagueManager.playerCache ?? [:]
-        // Build candidate pool with season totals
-        let candidates: [(id: String, pos: String, alt: [String], score: Double, name: String)] = team.roster.map { p in
-            let raw = playerCache[p.id]
-            let name = displayName(for: p, raw: raw, fallbackId: p.id, position: p.position)
-            let total = seasonTotalPoints(for: p, seasonId: seasonId)
-            return (id: p.id,
-                    pos: PositionNormalizer.normalize(p.position),
-                    alt: (p.altPositions ?? raw?.fantasy_positions ?? []).map { PositionNormalizer.normalize($0) },
-                    score: total,
-                    name: name)
-        }
-
-        var strictSlots: [String] = []
-        var flexSlots: [String] = []
-        for slot in startingSlots {
-            let allowed = allowedPositions(for: slot)
-            if allowed.count == 1 &&
-                !isIDPFlex(slot) &&
-                !offensiveFlexSlots.contains(slot.uppercased()) {
-                strictSlots.append(slot)
-            } else {
-                flexSlots.append(slot)
-            }
-        }
-        let optimalOrder = strictSlots + flexSlots
-
-        var used = Set<String>()
-        var assigned: [AssignedSlot] = []
-
-        for slot in optimalOrder {
-            let allowed = allowedPositions(for: slot)
-            let pick = candidates
-                .filter { !used.contains($0.id) && isEligible((id: $0.id, pos: $0.pos, altPos: $0.alt, score: $0.score), allowed: allowed) }
-                .max { $0.score < $1.score }
-            guard let best = pick else { continue }
-            used.insert(best.id)
-            assigned.append(
-                AssignedSlot(
-                    playerId: best.id,
-                    slot: slot,
-                    playerPos: best.pos,
-                    altPositions: best.alt,
-                    displayName: best.name,
-                    score: best.score
-                )
-            )
-        }
-
-        // Bench: remaining candidates
-        let bench = candidates
-            .filter { !used.contains($0.id) }
-            .map { cand in
-                BenchPlayer(
-                    id: cand.id,
-                    pos: cand.pos,
-                    altPositions: cand.alt,
-                    displayName: cand.name,
-                    score: cand.score
-                )
-            }
-
-        return (assigned: assigned, bench: bench)
     }
 
     // MARK: PATCHED: Use weekly player pool, not just team.roster, for all per-week actual lineup and bench logic.
