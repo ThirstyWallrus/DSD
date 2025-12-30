@@ -33,12 +33,14 @@ struct AssignedSlot: Identifiable {
     let id = UUID()
     let slot: String
     let playerPos: String
+    let displayName: String
     let score: Double
 }
 
 struct BenchPlayer: Identifiable {
     let id: String
     let pos: String
+    let displayName: String
     let score: Double
 }
 
@@ -517,13 +519,16 @@ struct MyTeamView: View {
             HStack {
                 Text("Slot")
                     .bold()
-                    .frame(maxWidth: .infinity / 3, alignment: .leading)
+                    .frame(maxWidth: .infinity / 4, alignment: .leading)
                 Text("Pos")
                     .bold()
-                    .frame(maxWidth: .infinity / 3, alignment: .center)
+                    .frame(maxWidth: .infinity / 4, alignment: .center)
+                Text("Name")
+                    .bold()
+                    .frame(maxWidth: .infinity / 4, alignment: .leading)
                 Text("Score")
                     .bold()
-                    .frame(maxWidth: .infinity / 3, alignment: .trailing)
+                    .frame(maxWidth: .infinity / 4, alignment: .trailing)
             }
             if let week = getSelectedWeekNumber(), let t = selectedTeamSeason, let slots = league?.startingLineup, let season = league?.seasons.first(where: { $0.teams.contains(where: { $0.id == t.id }) }), let myEntry = season.matchupsByWeek?[week]?.first(where: { $0.roster_id == Int(t.id) }) {
                 // PATCH: Use weekly player pool for assigned slots & bench
@@ -533,11 +538,13 @@ struct MyTeamView: View {
                 ForEach(assigned) { item in
                     HStack {
                         Text(item.slot)
-                            .frame(maxWidth: .infinity / 3, alignment: .leading)
+                            .frame(maxWidth: .infinity / 4, alignment: .leading)
                         Text(PositionNormalizer.normalize(item.playerPos))
-                            .frame(maxWidth: .infinity / 3, alignment: .center)
+                            .frame(maxWidth: .infinity / 4, alignment: .center)
+                        Text(item.displayName)
+                            .frame(maxWidth: .infinity / 4, alignment: .leading)
                         Text(String(format: "%.2f", item.score))
-                            .frame(maxWidth: .infinity / 3, alignment: .trailing)
+                            .frame(maxWidth: .infinity / 4, alignment: .trailing)
                     }
                     .font(.caption)
                 }
@@ -546,11 +553,13 @@ struct MyTeamView: View {
                 ForEach(bench) { player in
                     HStack {
                         Text("BN")
-                            .frame(maxWidth: .infinity / 3, alignment: .leading)
+                            .frame(maxWidth: .infinity / 4, alignment: .leading)
                         Text(PositionNormalizer.normalize(player.pos))
-                            .frame(maxWidth: .infinity / 3, alignment: .center)
+                            .frame(maxWidth: .infinity / 4, alignment: .center)
+                        Text(player.displayName)
+                            .frame(maxWidth: .infinity / 4, alignment: .leading)
                         Text(String(format: "%.2f", player.score))
-                            .frame(maxWidth: .infinity / 3, alignment: .trailing)
+                            .frame(maxWidth: .infinity / 4, alignment: .trailing)
                     }
                     .font(.caption)
                 }
@@ -671,7 +680,7 @@ struct MyTeamView: View {
         }
     }
     private func fixedSlotCounts() -> [String:Int] {
-        let posSet: Set<String> = ["QB","RB","WR","TE","K","DL","LB","DB"]
+        let posSet: Set = ["QB","RB","WR","TE","K","DL","LB","DB"]
         if let config = selectedTeamSeason?.lineupConfig {
             return config.reduce(into: [String:Int]()) { acc, pair in
                 let key = PositionNormalizer.normalize(pair.key)
@@ -790,35 +799,26 @@ struct MyTeamView: View {
             // If players_points present, prefer to use it; otherwise fallback to 0 values for starts
             let playersPoints = myEntry.players_points ?? [:]
 
-            for idx in 0..<slots.count {
+            for idx in 0..<paddedStarters.count {
                 let pid = paddedStarters[idx]
                 guard pid != "0" else { continue }
-                // Resolve base pos and candidate positions from player cache or team roster
-                var basePosRaw: String = ""
-                var fantasyPositions: [String] = []
-                if let raw = allPlayers[pid] {
-                    basePosRaw = raw.position ?? "UNK"
-                    fantasyPositions = raw.fantasy_positions ?? []
-                } else if let rosterPlayer = t.roster.first(where: { $0.id == pid }) {
-                    basePosRaw = rosterPlayer.position
-                    fantasyPositions = rosterPlayer.altPositions ?? []
-                } else {
-                    basePosRaw = "UNK"
-                    fantasyPositions = []
-                }
-                let candidatePositions = ([basePosRaw] + fantasyPositions).map { PositionNormalizer.normalize($0) }
-                let slotType = slots[idx]
-                // Determine credited position using the same SlotPositionAssigner used elsewhere
-                let credited = SlotPositionAssigner.countedPosition(for: slotType, candidatePositions: candidatePositions, base: PositionNormalizer.normalize(basePosRaw))
-                let creditedNorm = PositionNormalizer.normalize(credited)
-                let pts = playersPoints[pid] ?? 0.0
-                perPosTotals[creditedNorm, default: 0.0] += pts
-                perPosCounts[creditedNorm, default: 0] += 1
+                let rawSlot = slots[safe: idx] ?? "FLEX"
+                let slot = PositionNormalizer.normalize(rawSlot)
+                let player = t.roster.first(where: { $0.id == pid })
+                    ?? allPlayers[pid].map { raw in
+                        Player(id: pid, position: raw.position ?? "UNK", altPositions: raw.fantasy_positions, weeklyScores: [])
+                    }
+                let basePos = PositionNormalizer.normalize(player?.position ?? "UNK")
+                let fantasy = (player?.altPositions ?? []).map { PositionNormalizer.normalize($0) }
+                let credited = SlotPositionAssigner.countedPosition(for: rawSlot, candidatePositions: fantasy, base: basePos)
+                let points = playersPoints[pid] ?? 0.0
+                perPosTotals[credited, default: 0] += points
+                perPosCounts[credited, default: 0] += 1
             }
 
-            let total = perPosTotals[normPos] ?? 0.0
-            let starts = perPosCounts[normPos] ?? 0
-            if starts > 0 { return total / Double(starts) }
+            if let starts = perPosCounts[normPos], starts > 0, let total = perPosTotals[normPos] {
+                return total / Double(starts)
+            }
 
             // Final fallback: preserve old logic if no credited starts matched
             let posPoints = positionPPW(normPos)
@@ -1012,6 +1012,25 @@ struct MyTeamView: View {
         return !allowed.intersection(Set(normAlt)).isEmpty
     }
 
+    // MARK: Display Name Helper
+    private func displayName(for player: Player?, raw: RawSleeperPlayer?, fallbackId: String, position: String) -> String {
+        let full = raw?.full_name
+        if let full, !full.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let parts = full.split(separator: " ").map(String.init)
+            if let first = parts.first {
+                let initial = first.first.map { String($0) } ?? ""
+                let last = parts.dropFirst().last ?? ""
+                if !last.isEmpty {
+                    return "\(initial). \(last)"
+                } else {
+                    return full
+                }
+            }
+        }
+        // If no raw full name, try to synthesize from id or position
+        return fallbackId.isEmpty ? position : fallbackId
+    }
+
     // MARK: PATCHED: Use weekly player pool, not just team.roster, for all per-week actual lineup and bench logic.
 
     private func assignPlayersToSlotsPatched(team: TeamStanding, week: Int, slots: [String], myEntry: MatchupEntry, playerCache: [String: RawSleeperPlayer]) -> [AssignedSlot] {
@@ -1039,8 +1058,10 @@ struct MyTeamView: View {
         for (index, slot) in slots.enumerated() {
             let player_id = paddedStarters[index]
             guard player_id != "0", let p = playerDict[player_id] else { continue }
+            let raw = playerCache[player_id]
+            let name = displayName(for: p, raw: raw, fallbackId: player_id, position: p.position)
             let score = playersPoints[player_id] ?? 0
-            results.append(AssignedSlot(slot: slot, playerPos: p.position, score: score))
+            results.append(AssignedSlot(slot: slot, playerPos: p.position, displayName: name, score: score))
         }
         return results
     }
@@ -1054,9 +1075,11 @@ struct MyTeamView: View {
                 ?? playerCache[pid].map { raw in
                     Player(id: pid, position: raw.position ?? "UNK", altPositions: raw.fantasy_positions, weeklyScores: [])
                 }
+            let raw = playerCache[pid]
             if let p = p {
+                let name = displayName(for: p, raw: raw, fallbackId: pid, position: p.position)
                 let score = playersPoints[pid] ?? 0
-                res.append(BenchPlayer(id: pid, pos: p.position, score: score))
+                res.append(BenchPlayer(id: pid, pos: p.position, displayName: name, score: score))
             }
         }
         return res.sorted { $0.score > $1.score }
@@ -1135,9 +1158,9 @@ struct MyTeamView: View {
     }
 
     // PATCH: All offensive/defensive groupings use normalized positions
-    private let offensivePositions: Set<String> = ["QB", "RB", "WR", "TE", "K"]
-    private let defensivePositions: Set<String> = ["DL", "LB", "DB"]
-    private let offensiveFlexSlots: Set<String> = [
+    private let offensivePositions: Set = ["QB", "RB", "WR", "TE", "K"]
+    private let defensivePositions: Set = ["DL", "LB", "DB"]
+    private let offensiveFlexSlots: Set = [
         "FLEX","WRRB","WRRBTE","WRRB_TE","RBWR","RBWRTE",
         "SUPER_FLEX","QBRBWRTE","QBRBWR","QBSF","SFLX"
     ]
