@@ -579,7 +579,7 @@ struct MyTeamView: View {
                     .frame(maxWidth: .infinity / 3, alignment: .center)
             }
 
-            if let ctx = context {
+            if let ctx = context, let season = currentLineupSeason(), let team = selectedTeamSeason {
                 let assigned = ctx.assigned
                 ForEach(assigned) { item in
                     let creditedPos = PositionNormalizer.normalize(
@@ -589,7 +589,8 @@ struct MyTeamView: View {
                             base: PositionNormalizer.normalize(item.playerPos)
                         )
                     )
-                    let scoreTint = scoreColor(for: item.score, position: creditedPos, week: ctx.week)
+                    let seasonScore = seasonTotalPoints(for: item.playerId, team: team, season: season)
+                    let scoreTint = scoreColor(for: seasonScore, position: creditedPos, week: ctx.week)
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
                         Text(item.slot)
                             .frame(maxWidth: .infinity / 3, alignment: .leading)
@@ -601,7 +602,7 @@ struct MyTeamView: View {
                                 .foregroundColor(positionColor(creditedPos))
                         }
                         .frame(maxWidth: .infinity / 3, alignment: .leading)
-                        Text(String(format: "%.2f", item.score))
+                        Text(String(format: "%.2f", seasonScore))
                             .foregroundColor(scoreTint)
                             .frame(maxWidth: .infinity / 3, alignment: .trailing)
                     }
@@ -616,7 +617,8 @@ struct MyTeamView: View {
                 let bench = ctx.bench
                 ForEach(bench) { player in
                     let posNorm = PositionNormalizer.normalize(player.pos)
-                    let scoreTint = scoreColor(for: player.score, position: posNorm, week: ctx.week)
+                    let seasonScore = seasonTotalPoints(for: player.id, team: team, season: season)
+                    let scoreTint = scoreColor(for: seasonScore, position: posNorm, week: ctx.week)
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
                         Text("BN")
                             .frame(maxWidth: .infinity / 3, alignment: .leading)
@@ -628,7 +630,7 @@ struct MyTeamView: View {
                                 .foregroundColor(positionColor(player.pos))
                         }
                         .frame(maxWidth: .infinity / 3, alignment: .leading)
-                        Text(String(format: "%.2f", player.score))
+                        Text(String(format: "%.2f", seasonScore))
                             .foregroundColor(scoreTint)
                             .frame(maxWidth: .infinity / 3, alignment: .trailing)
                     }
@@ -1507,6 +1509,15 @@ struct MyTeamView: View {
         let players = entry.players ?? []
         let points = entry.players_points ?? [:]
         return !starters.isEmpty || !players.isEmpty || !points.isEmpty
+    }
+
+    private func currentLineupSeason() -> SeasonData? {
+        guard let league else { return nil }
+        if appSelection.selectedSeason == "All Time" {
+            return league.seasons.sorted { $0.id < $1.id }.last
+        } else {
+            return league.seasons.first(where: { $0.id == appSelection.selectedSeason })
+        }
     }
 
     private func currentLineupContext() -> (week: Int, assigned: [AssignedSlot], bench: [BenchPlayer])? {
