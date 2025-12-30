@@ -463,12 +463,15 @@ struct MyTeamView: View {
     private var positionPPWSection: some View {
         sectionBox {
             // Section title uses Phatt + gradient
-            MyTeamView.phattGradientText(
-                Text(selectedWeek == "SZN" ? "Position Avg Points / Week" : "Position Points (Week \(selectedWeek.replacingOccurrences(of: "Wk ", with: "")))"),
-                size: 18
-            )
-                .frame(maxWidth: .infinity, alignment: .leading)
-            gridForPositions(valueProvider: positionPPW, leagueAvgProvider: leaguePosPPW)
+            if selectedWeek == "SZN" {
+                MyTeamView.phattGradientText(Text("PPW Averages"), size: 18)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                let wkText = selectedWeek.replacingOccurrences(of: "Wk ", with: "")
+                MyTeamView.phattGradientText(Text("Position Averages (Week \(wkText))"), size: 18)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            gridForPositions(valueProvider: positionAvg, leagueAvgProvider: leaguePosPPW)
         }
     }
     private var perStartPPWSection: some View {
@@ -756,17 +759,79 @@ struct MyTeamView: View {
             return PositionNormalizer.normalize(player?.position ?? "UNK") == normPos
         }.count
     }
-    private func positionPPW(_ pos: String) -> Double {
+
+    // Starter-based position average for current selection
+    private func positionAvg(_ pos: String) -> Double {
         let normPos = PositionNormalizer.normalize(pos)
-        if let a = aggregated { return a.positionAvgPPW[normPos] ?? 0 }
         if selectedWeek == "SZN" {
-            return selectedTeamSeason?.positionAverages?[normPos] ?? 0
-        } else if let week = getSelectedWeekNumber(), let t = selectedTeamSeason {
-            return positionPoints(in: t, week: week, pos: normPos)
+            // Season-long starter average
+            return seasonPositionAverage(pos: normPos, teamOverride: selectedTeamSeason)
+        } else if let week = getSelectedWeekNumber() {
+            return weeklyPositionAverage(pos: normPos, week: week, teamOverride: selectedTeamSeason)
+        } else if let a = aggregated {
+            return a.positionAvgPPW[normPos] ?? 0
         } else {
             return 0
         }
     }
+
+    // Starter average for a specific week (this team or override)
+    private func weeklyPositionAverage(pos: String, week: Int, teamOverride: TeamStanding? = nil) -> Double {
+        guard let t = teamOverride ?? selectedTeamSeason,
+              let league = league,
+              let season = league.seasons.first(where: { $0.id == appSelection.selectedSeason }),
+              let entry = season.matchupsByWeek?[week]?.first(where: { $0.roster_id == Int(t.id) }),
+              let starters = entry.starters,
+              let playersPoints = entry.players_points
+        else { return 0 }
+
+        let cache = leagueManager.playerCache ?? [:]
+        var total: Double = 0
+        var count: Int = 0
+        for pid in starters {
+            let player = t.roster.first(where: { $0.id == pid })
+                ?? cache[pid].map { raw in Player(id: pid, position: raw.position ?? "UNK", altPositions: raw.fantasy_positions, weeklyScores: []) }
+            let pPos = PositionNormalizer.normalize(player?.position ?? "UNK")
+            if pPos == pos {
+                total += playersPoints[pid] ?? 0
+                count += 1
+            }
+        }
+        return count > 0 ? total / Double(count) : 0
+    }
+
+    // Starter average across the season (this team or override)
+    private func seasonPositionAverage(pos: String, teamOverride: TeamStanding? = nil) -> Double {
+        guard let t = teamOverride ?? selectedTeamSeason,
+              let league = league,
+              let season = league.seasons.first(where: { $0.id == appSelection.selectedSeason }),
+              let map = season.matchupsByWeek
+        else {
+            return teamOverride?.positionAverages?[pos] ?? selectedTeamSeason?.positionAverages?[pos] ?? 0
+        }
+
+        let cache = leagueManager.playerCache ?? [:]
+        var total: Double = 0
+        var count: Int = 0
+        for (_, entries) in map {
+            if let entry = entries.first(where: { $0.roster_id == Int(t.id) }),
+               let starters = entry.starters,
+               let playersPoints = entry.players_points {
+                for pid in starters {
+                    let player = t.roster.first(where: { $0.id == pid })
+                        ?? cache[pid].map { raw in Player(id: pid, position: raw.position ?? "UNK", altPositions: raw.fantasy_positions, weeklyScores: []) }
+                    let pPos = PositionNormalizer.normalize(player?.position ?? "UNK")
+                    if pPos == pos {
+                        total += playersPoints[pid] ?? 0
+                        count += 1
+                    }
+                }
+            }
+        }
+        if count > 0 { return total / Double(count) }
+        return t.positionAverages?[pos] ?? 0
+    }
+
     private func individualPPW(_ pos: String) -> Double {
         // NOTE: Weekly calculation changed to use slot‑credited positions (SlotPositionAssigner)
         // to match how season/all-time individual PPW is computed. This ensures numerator and denominator
@@ -812,7 +877,6 @@ struct MyTeamView: View {
                 let pid = paddedStarters[idx]
                 guard pid != "0" else { continue }
                 let rawSlot = slots[safe: idx] ?? "FLEX"
-                let slot = PositionNormalizer.normalize(rawSlot)
                 let player = t.roster.first(where: { $0.id == pid })
                     ?? allPlayers[pid].map { raw in
                         Player(id: pid, position: raw.position ?? "UNK", altPositions: raw.fantasy_positions, weeklyScores: [])
@@ -909,15 +973,19 @@ struct MyTeamView: View {
             return 0
         }
     }
+    // League average using starter-based position averages
     private func leaguePosPPW(_ pos: String) -> Double {
         let normPos = PositionNormalizer.normalize(pos)
         if selectedWeek == "SZN" {
-            return average(seasonTeams.compactMap { $0.positionAverages?[normPos] })
-        } else if let week = getSelectedWeekNumber() {
-            let teamPosPoints = seasonTeams.map { team in
-                positionPoints(in: team, week: week, pos: normPos)
+            let vals: [Double] = seasonTeams.map { team in
+                seasonPositionAverage(pos: normPos, teamOverride: team)
             }
-            return average(teamPosPoints)
+            return average(vals)
+        } else if let week = getSelectedWeekNumber() {
+            let vals: [Double] = seasonTeams.map { team in
+                weeklyPositionAverage(pos: normPos, week: week, teamOverride: team)
+            }
+            return average(vals)
         } else {
             return 0
         }
