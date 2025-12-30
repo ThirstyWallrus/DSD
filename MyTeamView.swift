@@ -187,7 +187,7 @@ struct MyTeamView: View {
         let resolvedSize = size ?? UIFont.preferredFont(forTextStyle: .body).pointSize
         let styled = text
             .font(.custom(phattPostScriptName, size: resolvedSize))
-            .fontWeight(.bold)
+        .fontWeight(.bold)
 
         return styled
             .foregroundColor(.clear)
@@ -1287,31 +1287,6 @@ struct MyTeamView: View {
         if value > leagueAvg + 1.0 { return .green }
         if value < leagueAvg - 1.0 { return .red }
         return .yellow
-    }
-
-    // MARK: Weekly Computation Helpers continued
-    private func allowedPositions(for slot: String) -> Set<String> {
-        switch slot.uppercased() {
-        case "QB","RB","WR","TE","K","DL","LB","DB": return Set([PositionNormalizer.normalize(slot)])
-        case "FLEX","WRRB","WRRBTE","WRRB_TE","RBWR","RBWRTE": return Set(["RB","WR","TE"].map(PositionNormalizer.normalize))
-        case "SUPER_FLEX","QBRBWRTE","QBRBWR","QBSF","SFLX": return Set(["QB","RB","WR","TE"].map(PositionNormalizer.normalize))
-        case "IDP": return Set(["DL","LB","DB"])
-        default:
-            if slot.uppercased().contains("IDP") { return Set(["DL","LB","DB"]) }
-            return Set([PositionNormalizer.normalize(slot)])
-        }
-    }
-
-    private func isIDPFlex(_ slot: String) -> Bool {
-        let s = slot.uppercased()
-        return s.contains("IDP") && s != "DL" && s != "LB" && s != "DB"
-    }
-
-    private func isEligible(_ c: (id: String, pos: String, altPos: [String], score: Double), allowed: Set<String>) -> Bool {
-        let normBase = PositionNormalizer.normalize(c.pos)
-        let normAlt = c.altPos.map { PositionNormalizer.normalize($0) }
-        if allowed.contains(normBase) { return true }
-        return !allowed.intersection(Set(normAlt)).isEmpty
     }
 
     // MARK: PATCHED: Use weekly player pool, not just team.roster, for all per-week actual lineup and bench logic.
