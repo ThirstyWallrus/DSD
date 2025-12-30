@@ -292,6 +292,13 @@ struct MatchupView: View {
         }
     }
 
+    private func isEligible(_ c: (id: String, pos: String, altPos: [String], score: Double), allowed: Set<String>) -> Bool {
+        let normBase = PositionNormalizer.normalize(c.pos)
+        let normAlt = c.altPos.map { PositionNormalizer.normalize($0) }
+        if allowed.contains(normBase) { return true }
+        return !allowed.intersection(Set(normAlt)).isEmpty
+    }
+
     private func displayName(for player: Player?, raw: RawSleeperPlayer?, fallbackId: String, position: String) -> String {
         let full = raw?.full_name
         if let full, !full.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -775,14 +782,16 @@ struct MatchupView: View {
     }
 
     private func matchupStatsSection(user: TeamStanding, opp: TeamStanding) -> some View {
-        HStack(spacing: 16) {
+        let week = currentWeekNumber
+        let (uPF, uMax) = computeWeeklyLineupPointsPatched(team: user, week: week)
+        let (oPF, oMax) = computeWeeklyLineupPointsPatched(team: opp, week: week)
+
+        return HStack(spacing: 16) {
             VStack(alignment: .leading, spacing: 6) {
                 HStack {
                     Text(user.name).foregroundColor(.cyan).bold()
                     Spacer()
                 }
-                let week = currentWeekNumber
-                let (uPF, uMax) = managementTotals(team: user, week: week)
                 HStack {
                     Text("Points").foregroundColor(.white.opacity(0.9))
                     Spacer()
@@ -807,8 +816,6 @@ struct MatchupView: View {
                     Spacer()
                     Text(opp.name).foregroundColor(.yellow).bold()
                 }
-                let week = currentWeekNumber
-                let (oPF, oMax) = managementTotals(team: opp, week: week)
                 HStack {
                     Text(String(format: "%.2f", oPF)).foregroundColor(.green)
                     Spacer()
@@ -921,8 +928,81 @@ struct MatchupView: View {
 
     // MARK: - Helpers for management stats and names
     private func managementTotals(team: TeamStanding, week: Int) -> (Double, Double) {
-        let (pf, maxPF, _, _, _, _) = ManagementCalculator.computeManagementForWeek(team: team, week: week, league: self.league ?? team.league, leagueManager: leagueManager)
+        let (pf, maxPF, _, _, _, _) = computeWeeklyLineupPointsPatched(team: team, week: week)
         return (pf, maxPF)
+    }
+
+    // MARK: - Lineup scoring (aligned with MyTeamView)
+    private func computeWeeklyLineupPointsPatched(team: TeamStanding, week: Int) -> (Double, Double, Double, Double, Double, Double) {
+        guard let league = league,
+              let season = league.seasons.first(where: { $0.id == appSelection.selectedSeason }),
+              let myEntry = season.matchupsByWeek?[week]?.first(where: { $0.roster_id == Int(team.id) }),
+              let playersPool = myEntry.players,
+              let playersPoints = myEntry.players_points
+        else {
+            return (0,0,0,0,0,0)
+        }
+        let playerCache = leagueManager.playerCache ?? [:]
+        let startingSlots = league.startingLineup.filter { !["BN","IR","TAXI"].contains($0) }
+        // --- ACTUAL ---
+        let starters = myEntry.starters ?? []
+        var actualTotal = 0.0
+        var actualOff = 0.0
+        var actualDef = 0.0
+        for pid in starters {
+            let p = team.roster.first(where: { $0.id == pid })
+                ?? playerCache[pid].map { raw in
+                    Player(id: pid, position: raw.position ?? "UNK", altPositions: raw.fantasy_positions, weeklyScores: [])
+                }
+            let pos = PositionNormalizer.normalize(p?.position ?? "UNK")
+            let score = playersPoints[pid] ?? 0
+            actualTotal += score
+            if offensivePositions.contains(pos) {
+                actualOff += score
+            } else if defensivePositions.contains(pos) {
+                actualDef += score
+            }
+        }
+        // --- MAX/OPTIMAL ---
+        let candidates: [(id: String, pos: String, altPos: [String], score: Double)] = playersPool.compactMap { pid in
+            let p = team.roster.first(where: { $0.id == pid })
+                ?? playerCache[pid].map { raw in
+                    Player(id: pid, position: raw.position ?? "UNK", altPositions: raw.fantasy_positions, weeklyScores: [])
+                }
+            guard let p = p else { return nil }
+            let basePos = PositionNormalizer.normalize(p.position)
+            let altPos = (p.altPositions ?? []).map { PositionNormalizer.normalize($0) }
+            return (id: pid, pos: basePos, altPos: altPos, score: playersPoints[pid] ?? 0)
+        }
+        var strictSlots: [String] = []
+        var flexSlots: [String] = []
+        for slot in startingSlots {
+            let allowed = allowedPositions(for: slot)
+            if allowed.count == 1 &&
+                !idpFlexSlots.contains(canonicalFlexSlot(slot)) &&
+                !offensiveFlexSlots.contains(canonicalFlexSlot(slot)) {
+                strictSlots.append(slot)
+            } else {
+                flexSlots.append(slot)
+            }
+        }
+        let optimalOrder = strictSlots + flexSlots
+        var used = Set<String>()
+        var maxTotal = 0.0
+        var maxOff = 0.0
+        var maxDef = 0.0
+        for slot in optimalOrder {
+            let allowed = allowedPositions(for: slot)
+            let pick = candidates
+                .filter { !used.contains($0.id) && isEligible($0, allowed: allowed) }
+                .max { $0.score < $1.score }
+            guard let best = pick else { continue }
+            used.insert(best.id)
+            maxTotal += best.score
+            if offensivePositions.contains(best.pos) { maxOff += best.score }
+            else if defensivePositions.contains(best.pos) { maxDef += best.score }
+        }
+        return (actualTotal, maxTotal, actualOff, maxOff, actualDef, maxDef)
     }
 
     private var userDisplayName: String {
@@ -957,6 +1037,10 @@ struct MatchupView: View {
         if let team = opponentTeamStanding { return team.name }
         return "Team"
     }
+
+    // MARK: - Position groups
+    private let offensivePositions: Set = ["QB", "RB", "WR", "TE", "K"]
+    private let defensivePositions: Set = ["DL", "LB", "DB"]
 }
 
 // MARK: - Safe index helper (renamed to avoid collisions)
