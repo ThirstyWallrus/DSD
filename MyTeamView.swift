@@ -398,7 +398,7 @@ struct MyTeamView: View {
             .bold()
             .foregroundColor(.orange)
             .font(.custom("Phatt", size: 16))
-            .frame(minHeight: 36)
+        .frame(minHeight: 36)
             .frame(maxWidth: .infinity)
             .padding(.horizontal, 10)
             .background(
@@ -1527,8 +1527,8 @@ struct MyTeamView: View {
             weekToUse = map.keys.sorted().last
         }
         guard let week = weekToUse,
-              let entry = map[week]?.first(where: { $0.roster_id == Int(team.id) }),
-              let slots = league.startingLineup else { return nil }
+              let entry = map[week]?.first(where: { $0.roster_id == Int(team.id) }) else { return nil }
+        let slots = league.startingLineup
 
         // Build a tolerant playersPoints map (defaulting to 0)
         var playersPoints = entry.players_points ?? [:]
@@ -1613,78 +1613,6 @@ struct MyTeamView: View {
             }
         }
         return res
-    }
-
-    private func computeWeeklyLineupPointsPatched(team: TeamStanding, week: Int) -> (Double, Double, Double, Double, Double, Double) {
-        guard let league = league,
-              let season = league.seasons.first(where: { $0.id == appSelection.selectedSeason }),
-              let myEntry = season.matchupsByWeek?[week]?.first(where: { $0.roster_id == Int(team.id) }),
-              let playersPool = myEntry.players,
-              let playersPoints = myEntry.players_points
-        else {
-            return (0,0,0,0,0,0)
-        }
-        let playerCache = leagueManager.playerCache ?? [:]
-        let startingSlots = league.startingLineup.filter { !["BN","IR","TAXI"].contains($0) }
-        // --- ACTUAL ---
-        let starters = myEntry.starters ?? []
-        var actualTotal = 0.0
-        var actualOff = 0.0
-        var actualDef = 0.0
-        for pid in starters {
-            let p = team.roster.first(where: { $0.id == pid })
-                ?? playerCache[pid].map { raw in
-                    Player(id: pid, position: raw.position ?? "UNK", altPositions: raw.fantasy_positions, weeklyScores: [])
-                }
-            let pos = PositionNormalizer.normalize(p?.position ?? "UNK")
-            let score = playersPoints[pid] ?? 0
-            actualTotal += score
-            if offensivePositions.contains(pos) {
-                actualOff += score
-            } else if defensivePositions.contains(pos) {
-                actualDef += score
-            }
-        }
-        // --- MAX/OPTIMAL ---
-        let candidates: [(id: String, pos: String, altPos: [String], score: Double)] = playersPool.compactMap { pid in
-            let p = team.roster.first(where: { $0.id == pid })
-                ?? playerCache[pid].map { raw in
-                    Player(id: pid, position: raw.position ?? "UNK", altPositions: raw.fantasy_positions, weeklyScores: [])
-                }
-            guard let p = p else { return nil }
-            let basePos = PositionNormalizer.normalize(p.position)
-            let altPos = (p.altPositions ?? []).map { PositionNormalizer.normalize($0) }
-            return (id: pid, pos: basePos, altPos: altPos, score: playersPoints[pid] ?? 0)
-        }
-        var strictSlots: [String] = []
-        var flexSlots: [String] = []
-        for slot in startingSlots {
-            let allowed = allowedPositions(for: slot)
-            if allowed.count == 1 &&
-                !isIDPFlex(slot) &&
-                !offensiveFlexSlots.contains(slot.uppercased()) {
-                strictSlots.append(slot)
-            } else {
-                flexSlots.append(slot)
-            }
-        }
-        let optimalOrder = strictSlots + flexSlots
-        var used = Set<String>()
-        var maxTotal = 0.0
-        var maxOff = 0.0
-        var maxDef = 0.0
-        for slot in optimalOrder {
-            let allowed = allowedPositions(for: slot)
-            let pick = candidates
-                .filter { !used.contains($0.id) && isEligible($0, allowed: allowed) }
-                .max { $0.score < $1.score }
-            guard let best = pick else { continue }
-            used.insert(best.id)
-            maxTotal += best.score
-            if offensivePositions.contains(best.pos) { maxOff += best.score }
-            else if defensivePositions.contains(best.pos) { maxDef += best.score }
-        }
-        return (actualTotal, maxTotal, actualOff, maxOff, actualDef, maxDef)
     }
 
     // PATCH: All offensive/defensive groupings use normalized positions
