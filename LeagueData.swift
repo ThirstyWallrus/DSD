@@ -116,10 +116,6 @@ struct SeasonData: Identifiable, Codable, Equatable {
     // NEW: Computed champion owner id for this season (string ownerId) — populated by recompute routine.
     // Keeps original TeamStanding.championships untouched.
     var computedChampionOwnerId: String? = nil
-
-    // NEW: Championship specifics (optional for backward compatibility)
-    let championshipWeek: Int? = nil
-    let championshipIsTwoWeeks: Bool? = nil
 }
 
 // MARK: - Player Weekly Score
@@ -279,4 +275,3 @@ struct SleeperPlayer: Codable {
     let full_name: String?
     let position: String?
 }
-

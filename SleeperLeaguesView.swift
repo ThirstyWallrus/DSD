@@ -12,6 +12,10 @@
 //   • Adds a per-season playoff start week selector (sheet) before importing.
 //   • Uses SleeperLeagueManager.detectPlayoffStartWeek to prefill and persists overrides through import.
 //
+//  UPDATED (Always-on playoff/champ settings):
+//   • Per-season sheet now also captures Championship Week, Championship length (1 vs 2 weeks), and playoff team count.
+//   • Overrides are always applied (auto defaults if user doesn’t adjust) for every league.
+//
 
 import SwiftUI
 
@@ -33,7 +37,7 @@ struct SleeperLeaguesView: View {
 
     // NEW: Playoff start overrides UI state
     @State private var showPlayoffOverridesSheet: Bool = false
-    @State private var seasonPlayoffOverrides: [String: Int] = [:]   // seasonId -> week
+    @State private var seasonOverrides: [String: SeasonImportOverrides] = [:]   // seasonId -> overrides
     @State private var previewSeasons: [SleeperLeague] = []
 
     private var activeSeasonLeagues: [SleeperLeague] {
@@ -70,7 +74,7 @@ struct SleeperLeaguesView: View {
             .sheet(isPresented: $showPlayoffOverridesSheet) {
                 NavigationView {
                     VStack(spacing: 12) {
-                        Text("Playoff start weeks (per season)")
+                        Text("Playoff settings (per season)")
                             .font(.headline)
                             .padding(.top, 8)
 
@@ -83,24 +87,28 @@ struct SleeperLeaguesView: View {
                                 } else {
                                     ForEach(previewSeasons.sorted(by: { ($0.season ?? "") < ($1.season ?? "") }), id: \.league_id) { sl in
                                         let seasonId = sl.season ?? "\(Calendar.current.component(.year, from: Date()))"
-                                        HStack {
-                                            VStack(alignment: .leading) {
-                                                Text("Season: \(seasonId)")
-                                                    .font(.subheadline.bold())
-                                                let auto = manager.detectPlayoffStartWeek(from: sl)
-                                                let used = seasonPlayoffOverrides[seasonId] ?? auto
-                                                Text("Detected: Week \(used) (source: \(seasonPlayoffOverrides[seasonId] != nil ? "override" : "auto"))")
-                                                    .font(.caption)
-                                                    .foregroundColor(.gray)
-                                            }
-                                            Spacer()
-                                            Stepper("\(seasonPlayoffOverrides[seasonId] ?? manager.detectPlayoffStartWeek(from: sl))",
-                                                    value: Binding(
-                                                        get: { seasonPlayoffOverrides[seasonId] ?? manager.detectPlayoffStartWeek(from: sl) },
-                                                        set: { seasonPlayoffOverrides[seasonId] = max(13, min(18, $0)) }
-                                                    ),
+                                        let defaults = defaultOverrides(for: sl)
+                                        VStack(alignment: .leading, spacing: 10) {
+                                            Text("Season: \(seasonId)")
+                                                .font(.subheadline.bold())
+
+                                            Stepper("Playoff start: Week \(playoffStartBinding(seasonId: seasonId, defaults: defaults).wrappedValue)",
+                                                    value: playoffStartBinding(seasonId: seasonId, defaults: defaults),
                                                     in: 13...18)
-                                            .labelsHidden()
+
+                                            Stepper("Championship week: Week \(champWeekBinding(seasonId: seasonId, defaults: defaults).wrappedValue)",
+                                                    value: champWeekBinding(seasonId: seasonId, defaults: defaults),
+                                                    in: 13...21)
+
+                                            Toggle("Championship is two weeks", isOn: champTwoWeekBinding(seasonId: seasonId, defaults: defaults))
+
+                                            Stepper("Playoff teams: \(playoffTeamsBinding(seasonId: seasonId, defaults: defaults).wrappedValue)",
+                                                    value: playoffTeamsBinding(seasonId: seasonId, defaults: defaults),
+                                                    in: 2...16)
+
+                                            Text("Detected start: Week \(defaults.playoffStartWeek ?? 14) • Defaults auto-applied if unchanged.")
+                                                .font(.caption2)
+                                                .foregroundColor(.gray)
                                         }
                                         .padding()
                                         .background(RoundedRectangle(cornerRadius: 12).fill(Color.black.opacity(0.35)))
@@ -263,6 +271,72 @@ struct SleeperLeaguesView: View {
         }
     }
 
+    // MARK: - Bindings/defaults
+
+    private func defaultOverrides(for sl: SleeperLeague) -> SeasonImportOverrides {
+        let autoStart = manager.detectPlayoffStartWeek(from: sl)
+        let autoTeams = manager.detectPlayoffTeamsCount(from: sl)
+        let autoChampWeek = min(18, autoStart + 2)
+        return SeasonImportOverrides(playoffStartWeek: autoStart, championshipWeek: autoChampWeek, championshipIsTwoWeeks: false, playoffTeamsCount: autoTeams)
+    }
+
+    private func playoffStartBinding(seasonId: String, defaults: SeasonImportOverrides) -> Binding<Int> {
+        Binding(
+            get: { seasonOverrides[seasonId]?.playoffStartWeek ?? defaults.playoffStartWeek ?? 14 },
+            set: { newVal in
+                var updated = seasonOverrides[seasonId] ?? defaults
+                updated.playoffStartWeek = max(13, min(18, newVal))
+                seasonOverrides[seasonId] = updated
+            }
+        )
+    }
+
+    private func champWeekBinding(seasonId: String, defaults: SeasonImportOverrides) -> Binding<Int> {
+        Binding(
+            get: { seasonOverrides[seasonId]?.championshipWeek ?? defaults.championshipWeek ?? 17 },
+            set: { newVal in
+                var updated = seasonOverrides[seasonId] ?? defaults
+                updated.championshipWeek = max(13, min(21, newVal))
+                seasonOverrides[seasonId] = updated
+            }
+        )
+    }
+
+    private func champTwoWeekBinding(seasonId: String, defaults: SeasonImportOverrides) -> Binding<Bool> {
+        Binding(
+            get: { seasonOverrides[seasonId]?.championshipIsTwoWeeks ?? defaults.championshipIsTwoWeeks ?? false },
+            set: { newVal in
+                var updated = seasonOverrides[seasonId] ?? defaults
+                updated.championshipIsTwoWeeks = newVal
+                seasonOverrides[seasonId] = updated
+            }
+        )
+    }
+
+    private func playoffTeamsBinding(seasonId: String, defaults: SeasonImportOverrides) -> Binding<Int> {
+        Binding(
+            get: { seasonOverrides[seasonId]?.playoffTeamsCount ?? defaults.playoffTeamsCount ?? 4 },
+            set: { newVal in
+                var updated = seasonOverrides[seasonId] ?? defaults
+                updated.playoffTeamsCount = max(2, min(16, newVal))
+                seasonOverrides[seasonId] = updated
+            }
+        )
+    }
+
+    private func overridesToSend() -> [String: SeasonImportOverrides]? {
+        if !seasonOverrides.isEmpty { return seasonOverrides }
+        guard let selected = fetchedLeagues.first(where: { $0.league_id == selectedLeagueId }) else { return nil }
+        let base = baseLeagueName(selected.name)
+        let matches = fetchedLeagues.filter { baseLeagueName($0.name) == base }
+        var map: [String: SeasonImportOverrides] = [:]
+        for sl in matches {
+            let sid = sl.season ?? "\(Calendar.current.component(.year, from: Date()))"
+            map[sid] = defaultOverrides(for: sl)
+        }
+        return map.isEmpty ? nil : map
+    }
+
     // MARK: - Actions
 
     private func fetchLeagues() async {
@@ -293,21 +367,21 @@ struct SleeperLeaguesView: View {
         let matches = fetchedLeagues.filter { baseLeagueName($0.name) == base }
         previewSeasons = matches
 
-        var map: [String: Int] = [:]
+        var map: [String: SeasonImportOverrides] = [:]
         for sl in previewSeasons {
             let sid = sl.season ?? "\(Calendar.current.component(.year, from: Date()))"
-            if let persisted = manager.leagueSeasonPlayoffOverrides[selectedLeagueId]?[sid] {
+            if let persisted = manager.leagueSeasonOverrides[selectedLeagueId]?[sid] {
                 map[sid] = persisted
             } else {
-                map[sid] = manager.detectPlayoffStartWeek(from: sl)
+                map[sid] = defaultOverrides(for: sl)
             }
         }
-        seasonPlayoffOverrides = map
+        seasonOverrides = map
         showPlayoffOverridesSheet = true
     }
 
     private func importSelectedLeague(useOverrides: Bool) async {
-        guard manager.canImportAnother() || useOverrides, // allow override import even if already fetched (uses same guard as button)
+        guard manager.canImportAnother() || useOverrides,
               !selectedLeagueId.isEmpty else { return }
         isLoading = true
         errorMessage = nil
@@ -324,11 +398,13 @@ struct SleeperLeaguesView: View {
                 UserDefaults.standard.set(username, forKey: "sleeperUsername_\(dsdUser)")
             }
 
-            if useOverrides {
+            let overrides = overridesToSend()
+
+            if let overrides {
                 try await manager.fetchAndImportSingleLeague(
                     leagueId: selectedLeagueId,
                     username: username,
-                    seasonPlayoffOverrides: seasonPlayoffOverrides
+                    seasonOverrides: overrides
                 )
             } else {
                 try await manager.fetchAndImportSingleLeague(

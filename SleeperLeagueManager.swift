@@ -467,7 +467,7 @@ class SleeperLeagueManager: ObservableObject {
         return 14
     }
 
-    private func detectPlayoffTeamsCount(from league: SleeperLeague) -> Int {
+    func detectPlayoffTeamsCount(from league: SleeperLeague) -> Int {
         if let settings = league.settings,
            let val = settings["playoff_teams"]?.value as? Int {
             return max(2, min(16, val))
@@ -537,7 +537,7 @@ class SleeperLeagueManager: ObservableObject {
     // --- PATCHED: Ensure every team has a matchup entry for every week played ---
     private func fetchMatchupsByWeek(leagueId: String) async throws -> [Int: [MatchupEntry]] {
         var out: [Int: [MatchupEntry]] = [:]
-        var allRosterIds: Set = []
+        var allRosterIds: Set<Int> = []
 
         // Heuristic / dynamic detection:
         //  - Try to fetch league metadata to learn currentWeek (if available).
@@ -734,7 +734,7 @@ class SleeperLeagueManager: ObservableObject {
             var weeksCounted = 0
             var actualPosTotals: [String: Double] = [:]
             var actualPosStartCounts: [String: Int] = [:]
-            var actualPosWeeks: [String: Set] = [:]
+            var actualPosWeeks: [String: Set<Int>] = [:]
 
             // --- MAIN PATCHED SECTION: Use robust credited position for per-week actual lineup ---
             for week in weeksToUse {
