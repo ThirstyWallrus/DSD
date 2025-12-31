@@ -50,6 +50,33 @@ private func positionDisplayLabel(base: String, altPositions: [String]) -> Strin
     return parts.isEmpty ? normBase : parts.joined(separator: "/")
 }
 
+// MARK: - Slot label styling (position colors + FLEX gradient)
+private func slotLabel(for slot: String, position: String) -> some View {
+    let flexGradient = LinearGradient(
+        gradient: Gradient(colors: [Color(.sRGB, white: 0.82, opacity: 1.0), Color.blue]),
+        startPoint: .leading,
+        endPoint: .trailing
+    )
+
+    let isFlex = slot.uppercased().contains("FLEX")
+        || ["WRRB", "WRRBTE", "WRRB_TE", "RBWR", "RBWRTE", "SUPER_FLEX", "QBRBWRTE", "QBRBWR", "QBSF", "SFLX"].contains(slot.uppercased())
+        || slot.uppercased().contains("IDP")
+
+    if isFlex {
+        let text = Text(slot)
+        return AnyView(
+            text
+                .foregroundColor(.clear)
+                .overlay(flexGradient.mask(text))
+        )
+    } else {
+        return AnyView(
+            Text(slot)
+                .foregroundColor(positionColor(position))
+        )
+    }
+}
+
 struct AssignedSlot: Identifiable {
     let id = UUID()
     let playerId: String
@@ -542,7 +569,7 @@ struct MyTeamView: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                         Text(String(format: "%.2f", stats.ppw))
                             .foregroundColor(ppwColor)
-                            .frame(maxWidth: .infinity)
+                        .frame(maxWidth: .infinity)
                         Text(String(format: "%.2f", stats.leaguePPW))
                             .foregroundColor(.white.opacity(0.7))
                             .frame(maxWidth: .infinity)
@@ -592,7 +619,7 @@ struct MyTeamView: View {
                     let seasonScore = seasonTotalPoints(for: item.playerId, team: team, season: season)
                     let scoreTint = scoreColor(for: seasonScore, position: creditedPos, week: ctx.week)
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        Text(item.slot)
+                        slotLabel(for: item.slot, position: creditedPos)
                             .frame(maxWidth: .infinity / 3, alignment: .leading)
                         HStack(spacing: 4) {
                             Text(item.displayName)
@@ -620,7 +647,7 @@ struct MyTeamView: View {
                     let seasonScore = seasonTotalPoints(for: player.id, team: team, season: season)
                     let scoreTint = scoreColor(for: seasonScore, position: posNorm, week: ctx.week)
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        Text("BN")
+                        slotLabel(for: "BN", position: posNorm)
                             .frame(maxWidth: .infinity / 3, alignment: .leading)
                         HStack(spacing: 4) {
                             Text(player.displayName)
