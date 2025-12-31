@@ -64,11 +64,11 @@ struct SleeperLeaguesImportView: View {
                                 ForEach(previewSeasons.sorted(by: { ($0.season ?? "") < ($1.season ?? "") }), id: \.league_id) { sl in
                                     let seasonId = sl.season ?? "\(Calendar.current.component(.year, from: Date()))"
                                     let form = seasonForms[seasonId] ?? SeasonInputForm()
-                                    let champBinding = Binding<Int>(
+                                    let champBinding = Binding(
                                         get: { form.championshipWeek ?? 15 },
                                         set: { seasonForms[seasonId, default: SeasonInputForm()].championshipWeek = max(1, min(18, $0)) }
                                     )
-                                    let teamsBinding = Binding<Int>(
+                                    let teamsBinding = Binding(
                                         get: { form.playoffTeams ?? defaultPlayoffTeams(for: sl) },
                                         set: { seasonForms[seasonId, default: SeasonInputForm()].playoffTeams = max(2, min(16, $0)) }
                                     )
@@ -319,12 +319,12 @@ struct SleeperLeaguesImportView: View {
         var map: [String: SeasonInputForm] = [:]
         for sl in previewSeasons {
             let sid = sl.season ?? "\(Calendar.current.component(.year, from: Date()))"
-            if let persisted = leagueManager.leagueSeasonOverrides[selectedLeagueId]?[sid] {
+            if let persisted = leagueManager.leagueSeasonPlayoffOverrides[selectedLeagueId]?[sid] {
                 map[sid] = SeasonInputForm(
-                    playoffStartWeek: persisted.playoffStartWeek,
-                    championshipWeek: persisted.championshipWeek ?? 15,
-                    championshipLength: persisted.championshipIsTwoWeeks == true ? "2" : (persisted.championshipIsTwoWeeks == false ? "1" : ""),
-                    playoffTeams: persisted.playoffTeamsCount ?? defaultPlayoffTeams(for: sl)
+                    playoffStartWeek: persisted,
+                    championshipWeek: 15,
+                    championshipLength: "",
+                    playoffTeams: defaultPlayoffTeams(for: sl)
                 )
             } else {
                 map[sid] = SeasonInputForm(
@@ -363,7 +363,11 @@ struct SleeperLeaguesImportView: View {
                 return
             }
 
-            try await leagueManager.fetchAndImportSingleLeague(leagueId: selectedLeagueId, username: sleeperUsername, seasonOverrides: overrides)
+            try await leagueManager.fetchAndImportSingleLeague(
+                leagueId: selectedLeagueId,
+                username: sleeperUsername,
+                seasonPlayoffOverrides: overrides
+            )
 
             UserDefaults.standard.set(sleeperUsername, forKey: "sleeperUsername_for_\(selectedLeagueId)")
 
@@ -383,24 +387,19 @@ struct SleeperLeaguesImportView: View {
         }
     }
 
-    private func buildOverrides() -> [String: SeasonImportOverrides]? {
+    private func buildOverrides() -> [String: Int]? {
         guard !seasonForms.isEmpty else { return nil }
-        var result: [String: SeasonImportOverrides] = [:]
+        var result: [String: Int] = [:]
         for (sid, form) in seasonForms {
             guard
                 let ps = form.playoffStartWeek, (13...18).contains(ps),
-                let cw = form.championshipWeek, (1...18).contains(cw),
+                let _ = form.championshipWeek, (1...18).contains(form.championshipWeek ?? 0),
                 let len = Int(form.championshipLength), (1...2).contains(len),
-                let teams = form.playoffTeams, (2...16).contains(teams)
+                let _ = form.playoffTeams, (2...16).contains(form.playoffTeams ?? 0)
             else {
                 return nil
             }
-            result[sid] = SeasonImportOverrides(
-                playoffStartWeek: ps,
-                championshipWeek: cw,
-                championshipIsTwoWeeks: (len == 2),
-                playoffTeamsCount: teams
-            )
+            result[sid] = ps
         }
         return result
     }

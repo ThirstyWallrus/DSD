@@ -183,17 +183,10 @@ struct SleeperLeaguesView: View {
                 .padding(.horizontal)
 
                 HStack(spacing: 10) {
-                    Button("Set Playoff Weeks") {
+                    Button("Set Playoff Settings & Import") {
                         preparePreviewSeasonsAndShowSheet()
                     }
                     .disabled(selectedLeagueId.isEmpty || isLoading)
-                    .buttonStyle(.bordered)
-                    .tint(.blue.opacity(0.8))
-
-                    Button("Import Selected") {
-                        Task { await importSelectedLeague(useOverrides: false) }
-                    }
-                    .disabled(!manager.canImportAnother() || selectedLeagueId.isEmpty || isLoading)
                     .buttonStyle(.borderedProminent)
                     .tint(.orange)
                 }
@@ -263,6 +256,42 @@ struct SleeperLeaguesView: View {
         }
     }
 
+    // MARK: - Bindings/defaults
+
+    private func binding(for seasonId: String) -> (
+        playoffStartWeek: Binding<String>,
+        championshipWeek: Binding<String>,
+        championshipLength: Binding<String>,
+        playoffTeams: Binding<String>
+    ) {
+        let form = seasonForms[seasonId] ?? SeasonInputForm()
+        return (
+            playoffStartWeek: Binding(
+                get: { form.playoffStartWeek },
+                set: { seasonForms[seasonId, default: SeasonInputForm()].playoffStartWeek = $0 }
+            ),
+            championshipWeek: Binding(
+                get: { form.championshipWeek },
+                set: { seasonForms[seasonId, default: SeasonInputForm()].championshipWeek = $0 }
+            ),
+            championshipLength: Binding(
+                get: { form.championshipLength },
+                set: { seasonForms[seasonId, default: SeasonInputForm()].championshipLength = $0 }
+            ),
+            playoffTeams: Binding(
+                get: { form.playoffTeams },
+                set: { seasonForms[seasonId, default: SeasonInputForm()].playoffTeams = $0 }
+            )
+        )
+    }
+
+    private func requiredStatus(form: SeasonInputForm) -> String {
+        if form.playoffStartWeek.isEmpty || form.championshipWeek.isEmpty || form.championshipLength.isEmpty || form.playoffTeams.isEmpty {
+            return "All fields required."
+        }
+        return "Ready."
+    }
+
     // MARK: - Actions
 
     private func fetchLeagues() async {
@@ -293,51 +322,50 @@ struct SleeperLeaguesView: View {
         let matches = fetchedLeagues.filter { baseLeagueName($0.name) == base }
         previewSeasons = matches
 
-        var map: [String: Int] = [:]
+        var map: [String: SeasonInputForm] = [:]
         for sl in previewSeasons {
             let sid = sl.season ?? "\(Calendar.current.component(.year, from: Date()))"
-            if let persisted = manager.leagueSeasonPlayoffOverrides[selectedLeagueId]?[sid] {
-                map[sid] = persisted
+            if let persisted = manager.leagueSeasonOverrides[selectedLeagueId]?[sid] {
+                map[sid] = SeasonInputForm(
+                    playoffStartWeek: persisted.playoffStartWeek.map(String.init) ?? "",
+                    championshipWeek: persisted.championshipWeek.map(String.init) ?? "",
+                    championshipLength: persisted.championshipIsTwoWeeks == true ? "2" : (persisted.championshipIsTwoWeeks == false ? "1" : ""),
+                    playoffTeams: persisted.playoffTeamsCount.map(String.init) ?? ""
+                )
             } else {
-                map[sid] = manager.detectPlayoffStartWeek(from: sl)
+                map[sid] = SeasonInputForm()
             }
         }
-        seasonPlayoffOverrides = map
+        seasonForms = map
         showPlayoffOverridesSheet = true
     }
 
-    private func importSelectedLeague(useOverrides: Bool) async {
-        guard manager.canImportAnother() || useOverrides, // allow override import even if already fetched (uses same guard as button)
-              !selectedLeagueId.isEmpty else { return }
+    private func importSelectedLeague() async {
+        guard manager.canImportAnother() || true, !selectedLeagueId.isEmpty else { return }
         isLoading = true
         errorMessage = nil
+        defer { isLoading = false }
         do {
-            // Fetch Sleeper userId for correct team selection
             let sleeperUser = try await manager.fetchUser(username: username)
             let sleeperUserId = sleeperUser.user_id
 
-            // Persist userId in AuthViewModel if logged in
             if let dsdUser = authViewModel.currentUsername {
                 UserDefaults.standard.set(sleeperUserId, forKey: "sleeperUserId_\(dsdUser)")
                 authViewModel.sleeperUserId = sleeperUserId
-                // Persist the Sleeper username for this DSD user so it is pre-filled next time
                 UserDefaults.standard.set(username, forKey: "sleeperUsername_\(dsdUser)")
             }
 
-            if useOverrides {
-                try await manager.fetchAndImportSingleLeague(
-                    leagueId: selectedLeagueId,
-                    username: username,
-                    seasonPlayoffOverrides: seasonPlayoffOverrides
-                )
-            } else {
-                try await manager.fetchAndImportSingleLeague(
-                    leagueId: selectedLeagueId,
-                    username: username
-                )
+            guard let overrides = buildOverrides() else {
+                errorMessage = "Please fill all playoff settings for every season."
+                return
             }
 
-            // Propagate userId (and username) to AppSelection for correct team selection
+            try await manager.fetchAndImportSingleLeague(
+                leagueId: selectedLeagueId,
+                username: username,
+                seasonOverrides: overrides
+            )
+
             if let dsdUser = authViewModel.currentUsername {
                 appSelection.updateLeagues(
                     manager.leagues,
@@ -354,7 +382,28 @@ struct SleeperLeaguesView: View {
         } catch {
             errorMessage = error.localizedDescription
         }
-        isLoading = false
+    }
+
+    private func buildOverrides() -> [String: SeasonImportOverrides]? {
+        guard !seasonForms.isEmpty else { return nil }
+        var result: [String: SeasonImportOverrides] = [:]
+        for (sid, form) in seasonForms {
+            guard
+                let ps = Int(form.playoffStartWeek), (13...18).contains(ps),
+                let cw = Int(form.championshipWeek), (13...21).contains(cw),
+                let len = Int(form.championshipLength), (1...2).contains(len),
+                let teams = Int(form.playoffTeams), (2...16).contains(teams)
+            else {
+                return nil
+            }
+            result[sid] = SeasonImportOverrides(
+                playoffStartWeek: ps,
+                championshipWeek: cw,
+                championshipIsTwoWeeks: (len == 2),
+                playoffTeamsCount: teams
+            )
+        }
+        return result
     }
 
     private func deleteLeague(at offsets: IndexSet) {
