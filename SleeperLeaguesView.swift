@@ -4,9 +4,13 @@
 //
 //  PATCHED:
 //   • Propagates Sleeper userId and username to AppSelection after import, for correct team selection
-//   • Ensures AppSelection picks user's own team (via ownerId) after importing a league
+//   • Ensures AppSelection picks user’s own team (via ownerId) after importing a league
 //   • Prefills the username input with the previously-saved Sleeper username for the current DSD user
 //   • No UI/visual changes, preserves all existing logic and continuity
+//
+//  NEW (Playoff start selection):
+//   • Adds a per-season playoff start week selector (sheet) before importing.
+//   • Uses SleeperLeagueManager.detectPlayoffStartWeek to prefill and persists overrides through import.
 //
 
 import SwiftUI
@@ -26,6 +30,11 @@ struct SleeperLeaguesView: View {
     @State private var errorMessage: String?
     @State private var fetchedLeagues: [SleeperLeague] = []
     @State private var selectedLeagueId: String = ""
+
+    // NEW: Playoff start overrides UI state
+    @State private var showPlayoffOverridesSheet: Bool = false
+    @State private var seasonPlayoffOverrides: [String: Int] = [:]   // seasonId -> week
+    @State private var previewSeasons: [SleeperLeague] = []
 
     private var activeSeasonLeagues: [SleeperLeague] {
         let currentYear = Calendar.current.component(.year, from: Date())
@@ -55,6 +64,70 @@ struct SleeperLeaguesView: View {
                 if let dsdUser = authViewModel.currentUsername,
                    let saved = UserDefaults.standard.string(forKey: "sleeperUsername_\(dsdUser)") {
                     username = saved
+                }
+            }
+            // Playoff overrides sheet
+            .sheet(isPresented: $showPlayoffOverridesSheet) {
+                NavigationView {
+                    VStack(spacing: 12) {
+                        Text("Playoff start weeks (per season)")
+                            .font(.headline)
+                            .padding(.top, 8)
+
+                        ScrollView {
+                            VStack(spacing: 12) {
+                                if previewSeasons.isEmpty {
+                                    Text("No seasons found to override.")
+                                        .foregroundColor(.gray)
+                                        .padding()
+                                } else {
+                                    ForEach(previewSeasons.sorted(by: { ($0.season ?? "") < ($1.season ?? "") }), id: \.league_id) { sl in
+                                        let seasonId = sl.season ?? "\(Calendar.current.component(.year, from: Date()))"
+                                        HStack {
+                                            VStack(alignment: .leading) {
+                                                Text("Season: \(seasonId)")
+                                                    .font(.subheadline.bold())
+                                                let auto = manager.detectPlayoffStartWeek(from: sl)
+                                                let used = seasonPlayoffOverrides[seasonId] ?? auto
+                                                Text("Detected: Week \(used) (source: \(seasonPlayoffOverrides[seasonId] != nil ? "override" : "auto"))")
+                                                    .font(.caption)
+                                                    .foregroundColor(.gray)
+                                            }
+                                            Spacer()
+                                            Stepper("\(seasonPlayoffOverrides[seasonId] ?? manager.detectPlayoffStartWeek(from: sl))",
+                                                    value: Binding(
+                                                        get: { seasonPlayoffOverrides[seasonId] ?? manager.detectPlayoffStartWeek(from: sl) },
+                                                        set: { seasonPlayoffOverrides[seasonId] = max(13, min(18, $0)) }
+                                                    ),
+                                                    in: 13...18)
+                                            .labelsHidden()
+                                        }
+                                        .padding()
+                                        .background(RoundedRectangle(cornerRadius: 12).fill(Color.black.opacity(0.35)))
+                                        .padding(.horizontal)
+                                    }
+                                }
+                            }
+                            .padding(.vertical, 8)
+                        }
+
+                        HStack {
+                            Button("Cancel") { showPlayoffOverridesSheet = false }
+                                .padding()
+                            Spacer()
+                            Button("Import with overrides") {
+                                Task {
+                                    showPlayoffOverridesSheet = false
+                                    await importSelectedLeague(useOverrides: true)
+                                }
+                            }
+                            .disabled(selectedLeagueId.isEmpty || isLoading)
+                            .padding()
+                        }
+                        .padding(.horizontal)
+                        .padding(.bottom, 12)
+                    }
+                    .navigationBarTitle("Playoff Overrides", displayMode: .inline)
                 }
             }
         }
@@ -109,12 +182,21 @@ struct SleeperLeaguesView: View {
                 .pickerStyle(MenuPickerStyle())
                 .padding(.horizontal)
 
-                Button("Import Selected") {
-                    Task { await downloadSelectedLeague() }
+                HStack(spacing: 10) {
+                    Button("Set Playoff Weeks") {
+                        preparePreviewSeasonsAndShowSheet()
+                    }
+                    .disabled(selectedLeagueId.isEmpty || isLoading)
+                    .buttonStyle(.bordered)
+                    .tint(.blue.opacity(0.8))
+
+                    Button("Import Selected") {
+                        Task { await importSelectedLeague(useOverrides: false) }
+                    }
+                    .disabled(!manager.canImportAnother() || selectedLeagueId.isEmpty || isLoading)
+                    .buttonStyle(.borderedProminent)
+                    .tint(.orange)
                 }
-                .disabled(!manager.canImportAnother() || selectedLeagueId.isEmpty || isLoading)
-                .buttonStyle(.borderedProminent)
-                .tint(.orange)
 
                 if !manager.canImportAnother() {
                     Text("League limit reached. Remove one to import another.")
@@ -200,13 +282,37 @@ struct SleeperLeaguesView: View {
         isLoading = false
     }
 
-    private func downloadSelectedLeague() async {
-        guard manager.canImportAnother(),
+    private func preparePreviewSeasonsAndShowSheet() {
+        guard !selectedLeagueId.isEmpty else { return }
+        guard let selected = fetchedLeagues.first(where: { $0.league_id == selectedLeagueId }) else {
+            previewSeasons = []
+            return
+        }
+
+        let base = baseLeagueName(selected.name)
+        let matches = fetchedLeagues.filter { baseLeagueName($0.name) == base }
+        previewSeasons = matches
+
+        var map: [String: Int] = [:]
+        for sl in previewSeasons {
+            let sid = sl.season ?? "\(Calendar.current.component(.year, from: Date()))"
+            if let persisted = manager.leagueSeasonPlayoffOverrides[selectedLeagueId]?[sid] {
+                map[sid] = persisted
+            } else {
+                map[sid] = manager.detectPlayoffStartWeek(from: sl)
+            }
+        }
+        seasonPlayoffOverrides = map
+        showPlayoffOverridesSheet = true
+    }
+
+    private func importSelectedLeague(useOverrides: Bool) async {
+        guard manager.canImportAnother() || useOverrides, // allow override import even if already fetched (uses same guard as button)
               !selectedLeagueId.isEmpty else { return }
         isLoading = true
         errorMessage = nil
         do {
-            // PATCH: Fetch Sleeper userId for correct team selection
+            // Fetch Sleeper userId for correct team selection
             let sleeperUser = try await manager.fetchUser(username: username)
             let sleeperUserId = sleeperUser.user_id
 
@@ -218,8 +324,20 @@ struct SleeperLeaguesView: View {
                 UserDefaults.standard.set(username, forKey: "sleeperUsername_\(dsdUser)")
             }
 
-            try await manager.fetchAndImportSingleLeague(leagueId: selectedLeagueId, username: username)
-            // PATCH: Propagate userId (and username) to AppSelection for correct team selection
+            if useOverrides {
+                try await manager.fetchAndImportSingleLeague(
+                    leagueId: selectedLeagueId,
+                    username: username,
+                    seasonPlayoffOverrides: seasonPlayoffOverrides
+                )
+            } else {
+                try await manager.fetchAndImportSingleLeague(
+                    leagueId: selectedLeagueId,
+                    username: username
+                )
+            }
+
+            // Propagate userId (and username) to AppSelection for correct team selection
             if let dsdUser = authViewModel.currentUsername {
                 appSelection.updateLeagues(
                     manager.leagues,
@@ -244,5 +362,18 @@ struct SleeperLeaguesView: View {
             let league = manager.leagues[index]
             manager.removeLeague(leagueId: league.id)
         }
+    }
+
+    // MARK: - Helpers
+
+    private func baseLeagueName(_ name: String?) -> String {
+        guard let name = name else { return "" }
+        let pattern = "[\\p{Emoji}\\p{Emoji_Presentation}\\p{Emoji_Modifier_Base}\\p{Emoji_Component}\\p{Symbol}\\p{Punctuation}]"
+        if let regex = try? NSRegularExpression(pattern: pattern) {
+            let range = NSRange(location: 0, length: name.utf16.count)
+            let stripped = regex.stringByReplacingMatches(in: name, options: [], range: range, withTemplate: "")
+            return stripped.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return name.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
