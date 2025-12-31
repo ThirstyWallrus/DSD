@@ -11,6 +11,14 @@
 import Foundation
 import SwiftUI
 
+// MARK: - Season override container (UI + import)
+struct SeasonImportOverrides: Codable, Equatable {
+    var playoffStartWeek: Int?
+    var championshipWeek: Int?
+    var championshipIsTwoWeeks: Bool?
+    var playoffTeamsCount: Int?
+}
+
 // MARK: - Import PositionNormalizer for canonical defensive position mapping
 import Foundation
 
@@ -155,8 +163,8 @@ class SleeperLeagueManager: ObservableObject {
     @Published var isRefreshing: Bool = false
 
     // NEW: per-league per-season overrides persisted in memory and to disk
-    // Shape: [leagueId: [seasonId: playoffStartWeek]]
-    @Published var leagueSeasonPlayoffOverrides: [String: [String: Int]] = [:]
+    // Shape: [leagueId: [seasonId: SeasonImportOverrides]]
+    @Published var leagueSeasonOverrides: [String: [String: SeasonImportOverrides]] = [:]
 
     // NEW: Global current week reported from Sleeper API (helps views pick the "current" week)
     @Published var globalCurrentWeek: Int = 1
@@ -183,6 +191,10 @@ class SleeperLeagueManager: ObservableObject {
 
     var weekRosterMatchupMap: [Int: [Int: Int]] = [:]
 
+    // Persist/load overrides keys
+    private let overridesUDKeyV2 = "dsd.leagueSeasonOverrides.v2"
+    private let overridesUDKeyLegacy = "dsd.leagueSeasonPlayoffOverrides.v1"
+
     init(autoLoad: Bool = false) {
         if autoLoad {
             loadLeaguesWithMigrationIfNeeded(for: activeUsername)
@@ -191,20 +203,33 @@ class SleeperLeagueManager: ObservableObject {
     }
 
     // Persist/load overrides in UserDefaults key
-    private let overridesUDKey = "dsd.leagueSeasonPlayoffOverrides.v1"
-
     private func loadPersistedOverrides() {
         let ud = UserDefaults.standard
-        if let data = ud.data(forKey: overridesUDKey),
-           let parsed = try? JSONDecoder().decode([String: [String: Int]].self, from: data) {
-            leagueSeasonPlayoffOverrides = parsed
+        if let data = ud.data(forKey: overridesUDKeyV2),
+           let parsed = try? JSONDecoder().decode([String: [String: SeasonImportOverrides]].self, from: data) {
+            leagueSeasonOverrides = parsed
+            return
+        }
+        // Legacy migration: [leagueId: [seasonId: Int]]
+        if let legacy = ud.data(forKey: overridesUDKeyLegacy),
+           let parsedLegacy = try? JSONDecoder().decode([String: [String: Int]].self, from: legacy) {
+            var converted: [String: [String: SeasonImportOverrides]] = [:]
+            for (leagueId, seasons) in parsedLegacy {
+                var inner: [String: SeasonImportOverrides] = [:]
+                for (seasonId, startWeek) in seasons {
+                    inner[seasonId] = SeasonImportOverrides(playoffStartWeek: startWeek, championshipWeek: nil, championshipIsTwoWeeks: nil, playoffTeamsCount: nil)
+                }
+                converted[leagueId] = inner
+            }
+            leagueSeasonOverrides = converted
+            persistOverrides() // write forward
         }
     }
 
     private func persistOverrides() {
         let ud = UserDefaults.standard
-        if let data = try? JSONEncoder().encode(leagueSeasonPlayoffOverrides) {
-            ud.set(data, forKey: overridesUDKey)
+        if let data = try? JSONEncoder().encode(leagueSeasonOverrides) {
+            ud.set(data, forKey: overridesUDKeyV2)
         }
     }
 
@@ -388,11 +413,11 @@ class SleeperLeagueManager: ObservableObject {
 
     // Existing import entrypoint (keeps previous signature)
     func fetchAndImportSingleLeague(leagueId: String, username: String) async throws {
-        try await fetchAndImportSingleLeague(leagueId: leagueId, username: username, seasonPlayoffOverrides: nil)
+        try await fetchAndImportSingleLeague(leagueId: leagueId, username: username, seasonOverrides: nil)
     }
 
     // Overload that accepts per-season overrides
-    func fetchAndImportSingleLeague(leagueId: String, username: String, seasonPlayoffOverrides: [String: Int]?) async throws {
+    func fetchAndImportSingleLeague(leagueId: String, username: String, seasonOverrides: [String: SeasonImportOverrides]?) async throws {
         clearCaches()
         let user = try await fetchUser(username: username)
         let baseLeague = try await fetchLeague(leagueId: leagueId)
@@ -400,8 +425,8 @@ class SleeperLeagueManager: ObservableObject {
         self.globalCurrentWeek = max(self.globalCurrentWeek, baseLeague.currentWeek)
 
         // Persist per-season overrides for this league if provided
-        if let overrides = seasonPlayoffOverrides {
-            leagueSeasonPlayoffOverrides[leagueId] = overrides
+        if let overrides = seasonOverrides {
+            leagueSeasonOverrides[leagueId] = overrides
             persistOverrides()
         }
 
@@ -411,7 +436,7 @@ class SleeperLeagueManager: ObservableObject {
         playoffStartWeek = playoffStart
 
         // Use fetchAllSeasonsForLeague but pass per-season overrides map for this league
-        var leagueData = try await fetchAllSeasonsForLeague(league: baseLeague, userId: user.user_id, playoffStartWeek: playoffStart, perSeasonOverrides: seasonPlayoffOverrides)
+        var leagueData = try await fetchAllSeasonsForLeague(league: baseLeague, userId: user.user_id, playoffStartWeek: playoffStart, perSeasonOverrides: seasonOverrides)
         // Optionally recompute championships on import if recompute container desired. We leave it untouched here.
         leagueData = AllTimeAggregator.buildAllTime(for: leagueData, playerCache: allPlayers)
 
@@ -440,6 +465,14 @@ class SleeperLeagueManager: ObservableObject {
             return min(max(13, val), 18)
         }
         return 14
+    }
+
+    private func detectPlayoffTeamsCount(from league: SleeperLeague) -> Int {
+        if let settings = league.settings,
+           let val = settings["playoff_teams"]?.value as? Int {
+            return max(2, min(16, val))
+        }
+        return 4
     }
 
     // NEW: Expose fetchAllLeaguesForUser (already present below) - reused by UI
@@ -504,7 +537,7 @@ class SleeperLeagueManager: ObservableObject {
     // --- PATCHED: Ensure every team has a matchup entry for every week played ---
     private func fetchMatchupsByWeek(leagueId: String) async throws -> [Int: [MatchupEntry]] {
         var out: [Int: [MatchupEntry]] = [:]
-        var allRosterIds: Set<Int> = []
+        var allRosterIds: Set = []
 
         // Heuristic / dynamic detection:
         //  - Try to fetch league metadata to learn currentWeek (if available).
@@ -701,7 +734,7 @@ class SleeperLeagueManager: ObservableObject {
             var weeksCounted = 0
             var actualPosTotals: [String: Double] = [:]
             var actualPosStartCounts: [String: Int] = [:]
-            var actualPosWeeks: [String: Set<Int>] = [:]
+            var actualPosWeeks: [String: Set] = [:]
 
             // --- MAIN PATCHED SECTION: Use robust credited position for per-week actual lineup ---
             for week in weeksToUse {
@@ -725,62 +758,71 @@ class SleeperLeagueManager: ObservableObject {
 
                     var startersForThisWeek: [String] = []
                     // --- PATCH: Assign only ONE start per slot (not per eligible position!) ---
-                    for idx in 0..<slots.count {
-                        let starterId = paddedStarters[safe: idx] ?? "0"
-                        guard starterId != "0" else { continue }
-                        let points = playersPoints[starterId] ?? 0.0
-                        thisWeekActual += points
-                        weekHadValidScore = weekHadValidScore || points != 0.0
+                    for idx in 0..<paddedStarters.count {
+                        let pid = paddedStarters[idx]
+                        guard pid != "0" else { continue }
+                        let pts = playersPoints[pid] ?? 0.0
+                        let player = players.first(where: { $0.id == pid })
+                        let basePos = PositionNormalizer.normalize(player?.position ?? "UNK")
+                        let slot = slots[safe: idx] ?? basePos
+                        let candidatePositions = ([player?.position ?? "UNK"] + (player?.altPositions ?? [])).map { PositionNormalizer.normalize($0) }
+                        let credited = SlotPositionAssigner.countedPosition(for: canonicalFlexSlot(slot), candidatePositions: candidatePositions, base: basePos)
+                        let normCredited = PositionNormalizer.normalize(credited)
 
-                        let basePos = PositionNormalizer.normalize(players.first(where: { $0.id == starterId })?.position ?? self.playerCache?[starterId]?.position ?? self.allPlayers[starterId]?.position ?? "UNK")
-                        let candidateFantasy = players.first(where: { $0.id == starterId })?.altPositions ?? self.playerCache?[starterId]?.fantasy_positions ?? self.allPlayers[starterId]?.fantasy_positions ?? []
-                        let credited = SlotPositionAssigner.countedPosition(for: slots[idx], candidatePositions: candidateFantasy.map(PositionNormalizer.normalize), base: basePos)
+                        thisWeekActual += pts
+                        if offensivePositions.contains(normCredited) { actualOff += pts }
+                        else if defensivePositions.contains(normCredited) { actualDef += pts }
 
-                        startersForThisWeek.append(starterId)
+                        actualPosTotals[normCredited, default: 0] += pts
+                        actualPosStartCounts[normCredited, default: 0] += 1
+                        actualPosWeeks[normCredited, default: []].insert(week)
 
-                        if offensivePositions.contains(credited) {
-                            actualOff += points
-                        } else if defensivePositions.contains(credited) {
-                            actualDef += points
-                        }
-
-                        posTotals[credited, default: 0] += points
-                        posStartCounts[credited, default: 0] += 1
-                        actualPosTotals[credited, default: 0] += points
-                        actualPosStartCounts[credited, default: 0] += 1
-                        actualPosWeeks[credited, default: []].insert(week)
+                        startersForThisWeek.append(pid)
+                        weekHadValidScore = true
                     }
 
-                    if weekHadValidScore {
-                        weeklyActualLineupPoints[week] = thisWeekActual
-                        actualStarterWeeks += 1
-                        actualStartersByWeek[week] = startersForThisWeek
-                    }
-                    actualTotal += thisWeekActual
+                    actualStartersByWeek[week] = startersForThisWeek
+                }
+
+                if weekHadValidScore {
+                    weeklyActualLineupPoints[week] = thisWeekActual
                     weeksCounted += 1
+                    actualTotal += thisWeekActual
                 }
+            }
 
-                // Compute max for week
-                let candidates: [Candidate] = (myEntry.players_points ?? [:]).map { key, val in
-                    let base = PositionNormalizer.normalize(players.first(where: { $0.id == key })?.position ?? allPlayers[key]?.position ?? "UNK")
-                    let fantasy = players.first(where: { $0.id == key })?.altPositions ?? allPlayers[key]?.fantasy_positions ?? []
-                    return Candidate(id: key, basePos: base, fantasy: fantasy.map(PositionNormalizer.normalize), points: val)
-                }
-
-                var strictSlots: [String] = []
-                var flexSlots: [String] = []
+            // Compute max totals using a greedy fill per week
+            let optimalOrder: [String] = {
+                var strict: [String] = []
+                var flex: [String] = []
                 for slot in orderedSlots {
                     let allowed = allowedPositions(for: slot)
                     if allowed.count == 1 &&
                         !isIDPFlex(slot) &&
-                        !offensiveFlexSlots.contains(canonicalFlexSlot(slot)) {
-                        strictSlots.append(slot)
+                        !offensiveFlexSlots.contains(slot.uppercased()) {
+                        strict.append(slot)
                     } else {
-                        flexSlots.append(slot)
+                        flex.append(slot)
                     }
                 }
-                let optimalOrder = strictSlots + flexSlots
+                return strict + flex
+            }()
 
+            for week in weeksToUse {
+                guard let entries = matchupsByWeek[week],
+                      let me = entries.first(where: { $0.roster_id == roster.roster_id }),
+                      let poolIds = me.players,
+                      let playersPoints = me.players_points else { continue }
+
+                let candidatePool: [Candidate] = poolIds.compactMap { pid in
+                    let player = players.first(where: { $0.id == pid })
+                    let basePos = PositionNormalizer.normalize(player?.position ?? "UNK")
+                    let fantasy = (player?.altPositions ?? []).map(PositionNormalizer.normalize)
+                    let pts = playersPoints[pid] ?? 0.0
+                    return Candidate(id: pid, basePos: basePos, fantasy: fantasy, points: pts)
+                }
+
+                var candidates = candidatePool.sorted { $0.points > $1.points }
                 var used = Set<String>()
                 var weekMax = 0.0, weekOff = 0.0, weekDef = 0.0
 
@@ -1007,7 +1049,7 @@ class SleeperLeagueManager: ObservableObject {
     }
 
     // Updated to accept per-season overrides map; uses override when building SeasonData.playoffStartWeek
-    private func fetchAllSeasonsForLeague(league: SleeperLeague, userId: String, playoffStartWeek: Int, perSeasonOverrides: [String: Int]?) async throws -> LeagueData {
+    private func fetchAllSeasonsForLeague(league: SleeperLeague, userId: String, playoffStartWeek: Int, perSeasonOverrides: [String: SeasonImportOverrides]?) async throws -> LeagueData {
         let currentYear = Calendar.current.component(.year, from: Date())
         let startYear = currentYear - 9
         let base = baseLeagueName(league.name ?? "")
@@ -1036,10 +1078,15 @@ class SleeperLeagueManager: ObservableObject {
                 print("[SlotSanitize] using starting positions: \(sanitizedPositions) for league \(seasonLeague.league_id)")
 
                 // Auto-detect playoff start
-                let autoDetected = detectPlayoffStartWeek(from: seasonLeague)
-                let seasonOverride = perSeasonOverrides?[seasonId]
-                let seasonPlayoffStart = seasonOverride ?? autoDetected
-                let source = seasonOverride != nil ? "explicit" : "auto"
+                let autoDetectedStart = detectPlayoffStartWeek(from: seasonLeague)
+                let autoTeams = detectPlayoffTeamsCount(from: seasonLeague)
+                let defaultChampWeek = min(18, autoDetectedStart + 2)
+                let override = perSeasonOverrides?[seasonId]
+                    ?? leagueSeasonOverrides[league.league_id]?[seasonId]
+                    ?? SeasonImportOverrides(playoffStartWeek: autoDetectedStart, championshipWeek: defaultChampWeek, championshipIsTwoWeeks: false, playoffTeamsCount: autoTeams)
+
+                let seasonPlayoffStart = override.playoffStartWeek ?? autoDetectedStart
+                let source = override.playoffStartWeek != nil ? "override" : "auto"
                 print("[PlayoffDetect] season=\(seasonId) league=\(seasonLeague.league_id) detectedPlayoffStart=\(seasonPlayoffStart) source=\(source)")
 
                 // Pass sanitized lineup positions into buildTeams
@@ -1055,8 +1102,20 @@ class SleeperLeagueManager: ObservableObject {
                     sleeperLeague: seasonLeague
                 )
                 let matchups = convertToSleeperMatchups(matchupsByWeek)
-                // Use season-specific playoff start here (was incorrectly using outer playoffStartWeek)
-                seasonData.append(SeasonData(id: seasonId, season: seasonId, teams: teams, playoffStartWeek: seasonPlayoffStart, playoffTeamsCount: nil, matchups: matchups, matchupsByWeek: matchupsByWeek))
+                seasonData.append(
+                    SeasonData(
+                        id: seasonId,
+                        season: seasonId,
+                        teams: teams,
+                        playoffStartWeek: seasonPlayoffStart,
+                        playoffTeamsCount: override.playoffTeamsCount ?? autoTeams,
+                        matchups: matchups,
+                        matchupsByWeek: matchupsByWeek,
+                        computedChampionOwnerId: nil,
+                        championshipWeek: override.championshipWeek ?? defaultChampWeek,
+                        championshipIsTwoWeeks: override.championshipIsTwoWeeks
+                    )
+                )
             }
         }
 
@@ -1243,7 +1302,11 @@ class SleeperLeagueManager: ObservableObject {
         // Populate players_slots from roster settings where possible
         populatePlayersSlots(&matchupsByWeek, rosters: rosters)
 
-        let playoffStart = leagueSeasonPlayoffOverrides[league.id]?[latestSeason.id] ?? leaguePlayoffStartWeeks[league.id] ?? playoffStartWeek
+        let perSeason = leagueSeasonOverrides[league.id] ?? [:]
+        let autoTeams = detectPlayoffTeamsCount(from: baseLeague)
+        let autoChampWeek = detectPlayoffStartWeek(from: baseLeague) + 2
+        let overrides = perSeason[latestSeason.id] ?? SeasonImportOverrides(playoffStartWeek: detectPlayoffStartWeek(from: baseLeague), championshipWeek: autoChampWeek, championshipIsTwoWeeks: false, playoffTeamsCount: autoTeams)
+        let playoffStart = overrides.playoffStartWeek ?? leaguePlayoffStartWeeks[league.id] ?? playoffStartWeek
 
         // Sanitize lineup positions from league.startingLineup before passing to buildTeams
         let sanitized = SlotUtils.sanitizeStartingSlots(league.startingLineup).map(canonicalFlexSlot)
@@ -1268,7 +1331,18 @@ class SleeperLeagueManager: ObservableObject {
         if let i = newSeasons.firstIndex(where: { $0.id == latestSeason.id }) {
             let matchups = convertToSleeperMatchups(matchupsByWeek)
             // Use the local playoffStart variable (was incorrectly using property playoffStartWeek)
-            newSeasons[i] = SeasonData(id: latestSeason.id, season: latestSeason.season, teams: teams, playoffStartWeek: playoffStart, playoffTeamsCount: nil, matchups: matchups, matchupsByWeek: matchupsByWeek)
+            newSeasons[i] = SeasonData(
+                id: latestSeason.id,
+                season: latestSeason.season,
+                teams: teams,
+                playoffStartWeek: playoffStart,
+                playoffTeamsCount: overrides.playoffTeamsCount ?? autoTeams,
+                matchups: matchups,
+                matchupsByWeek: matchupsByWeek,
+                computedChampionOwnerId: latestSeason.computedChampionOwnerId,
+                championshipWeek: overrides.championshipWeek ?? autoChampWeek,
+                championshipIsTwoWeeks: overrides.championshipIsTwoWeeks
+            )
         }
 
         let updated = LeagueData(
