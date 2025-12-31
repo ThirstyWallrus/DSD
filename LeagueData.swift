@@ -116,6 +116,34 @@ struct SeasonData: Identifiable, Codable, Equatable {
     // NEW: Computed champion owner id for this season (string ownerId) — populated by recompute routine.
     // Keeps original TeamStanding.championships untouched.
     var computedChampionOwnerId: String? = nil
+
+    // NEW: Championship specifics
+    let championshipWeek: Int?
+    let championshipIsTwoWeeks: Bool?
+
+    init(
+        id: String,
+        season: String,
+        teams: [TeamStanding],
+        playoffStartWeek: Int?,
+        playoffTeamsCount: Int?,
+        matchups: [SleeperMatchup]?,
+        matchupsByWeek: [Int: [MatchupEntry]]?,
+        computedChampionOwnerId: String? = nil,
+        championshipWeek: Int? = nil,
+        championshipIsTwoWeeks: Bool? = nil
+    ) {
+        self.id = id
+        self.season = season
+        self.teams = teams
+        self.playoffStartWeek = playoffStartWeek
+        self.playoffTeamsCount = playoffTeamsCount
+        self.matchups = matchups
+        self.matchupsByWeek = matchupsByWeek
+        self.computedChampionOwnerId = computedChampionOwnerId
+        self.championshipWeek = championshipWeek
+        self.championshipIsTwoWeeks = championshipIsTwoWeeks
+    }
 }
 
 // MARK: - Player Weekly Score
@@ -275,3 +303,4 @@ struct SleeperPlayer: Codable {
     let full_name: String?
     let position: String?
 }
+

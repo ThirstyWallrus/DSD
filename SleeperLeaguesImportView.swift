@@ -2,21 +2,18 @@
 //  SleeperLeaguesImportView.swift
 //  DynastyStatDrop
 //
-//  Import UI for Sleeper leagues.
-//  - Allows user to fetch their Sleeper leagues by username
-//  - Presents a per-season "Playoff start week" override UI prior to importing a league
-//  - Passes per-season overrides into SleeperLeagueManager.fetchAndImportSingleLeague(..., seasonPlayoffOverrides:)
-//  - Persists the chosen sleeper username per DSD user (UserDefaults) to prefill later
-//
-//  Notes:
-//  - This file intentionally contains all import/UI wiring for per-season overrides.
-//  - The manager is responsible for persisting the overrides to disk when fetchAndImportSingleLeague is called.
-//  - The UI presents a sheet that lists all seasons we discovered that seem to belong to the same base league
-//    and allows adjusting a week integer between 13 and 18 per season.
-//  - No destructive changes are performed in this view; it only calls manager APIs.
+//  Updated: Playoff settings are mandatory for every season before import.
+//  No auto-detected defaults; user must enter all four fields per season.
 //
 
 import SwiftUI
+
+private struct SeasonInputForm: Equatable {
+    var playoffStartWeek: String = ""
+    var championshipWeek: String = ""
+    var championshipLength: String = "" // "1" or "2"
+    var playoffTeams: String = ""
+}
 
 struct SleeperLeaguesImportView: View {
     @Environment(\.dismiss) private var dismiss
@@ -24,32 +21,20 @@ struct SleeperLeaguesImportView: View {
     @EnvironmentObject var appSelection: AppSelection
     @EnvironmentObject var leagueManager: SleeperLeagueManager
 
-    /// Optional callback so the caller (Dashboard) can auto-select the imported league
     let onLeagueImported: ((String) -> Void)?
 
-    // MARK: - UI state
     @State private var sleeperUsername: String = ""
     @State private var isLoading: Bool = false
     @State private var errorMessage: String? = nil
 
-    // Raw fetched Sleeper league objects (multi-season results for the entered username)
     @State private var fetchedLeagues: [SleeperLeague] = []
-
-    // Selected league (the user picks from current-season leagues)
     @State private var selectedLeagueId: String = ""
     @State private var selectedPlatform: Platform? = nil
 
-    // Per-season overrides (seasonId -> selected playoff start week)
-    // This is the map we populate prior to calling the manager's import overload.
-    @State private var seasonPlayoffOverrides: [String: Int] = [:]
-
-    // Preview seasons that belong to the selected base league (used to show the sheet)
+    @State private var seasonForms: [String: SeasonInputForm] = [:]
     @State private var previewSeasons: [SleeperLeague] = []
-
-    // Controls sheet presentation
     @State private var showPlayoffOverridesSheet: Bool = false
 
-    // UI constants
     private let menuHeight: CGFloat = 36
     private let leagueMenuWidth: CGFloat = 220
 
@@ -65,39 +50,46 @@ struct SleeperLeaguesImportView: View {
         .sheet(isPresented: $showPlayoffOverridesSheet) {
             NavigationView {
                 VStack(spacing: 12) {
-                    Text("Playoff start weeks (per season)")
+                    Text("Playoff settings (required per season)")
                         .font(.headline)
                         .padding(.top, 8)
 
                     ScrollView {
                         VStack(spacing: 12) {
                             if previewSeasons.isEmpty {
-                                Text("No seasons found to override.")
+                                Text("No seasons found.")
                                     .foregroundColor(.gray)
                                     .padding()
                             } else {
-                                // Sort seasons ascending by year for nicer ordering
                                 ForEach(previewSeasons.sorted(by: { ($0.season ?? "") < ($1.season ?? "") }), id: \.league_id) { sl in
                                     let seasonId = sl.season ?? "\(Calendar.current.component(.year, from: Date()))"
-                                    HStack {
-                                        VStack(alignment: .leading) {
-                                            Text("Season: \(seasonId)")
-                                                .font(.subheadline.bold())
-                                            // Show detected/default value and whether override exists
-                                            let auto = leagueManager.detectPlayoffStartWeek(from: sl)
-                                            let used = seasonPlayoffOverrides[seasonId] ?? auto
-                                            Text("Detected: Week \(used) (source: \(seasonPlayoffOverrides[seasonId] != nil ? "override" : "auto"))")
-                                                .font(.caption)
-                                                .foregroundColor(.gray)
+                                    let form = seasonForms[seasonId] ?? SeasonInputForm()
+                                    VStack(alignment: .leading, spacing: 10) {
+                                        Text("Season: \(seasonId)")
+                                            .font(.subheadline.bold())
+
+                                        TextField("Playoff Start Week (13-18)", text: binding(for: seasonId).playoffStartWeek)
+                                            .keyboardType(.numberPad)
+                                            .textFieldStyle(RoundedBorderTextFieldStyle())
+
+                                        TextField("Championship Week (13-21)", text: binding(for: seasonId).championshipWeek)
+                                            .keyboardType(.numberPad)
+                                            .textFieldStyle(RoundedBorderTextFieldStyle())
+
+                                        Picker("Championship length", selection: binding(for: seasonId).championshipLength) {
+                                            Text("Select").tag("")
+                                            Text("1 week").tag("1")
+                                            Text("2 weeks").tag("2")
                                         }
-                                        Spacer()
-                                        Stepper("\(seasonPlayoffOverrides[seasonId] ?? leagueManager.detectPlayoffStartWeek(from: sl))",
-                                                value: Binding(
-                                                    get: { seasonPlayoffOverrides[seasonId] ?? leagueManager.detectPlayoffStartWeek(from: sl) },
-                                                    set: { seasonPlayoffOverrides[seasonId] = max(13, min(18, $0)) }
-                                                ),
-                                                in: 13...18)
-                                            .labelsHidden()
+                                        .pickerStyle(SegmentedPickerStyle())
+
+                                        TextField("Playoff Teams (2-16)", text: binding(for: seasonId).playoffTeams)
+                                            .keyboardType(.numberPad)
+                                            .textFieldStyle(RoundedBorderTextFieldStyle())
+
+                                        Text(requiredStatus(form: form))
+                                            .font(.caption2)
+                                            .foregroundColor(.gray)
                                     }
                                     .padding()
                                     .background(RoundedRectangle(cornerRadius: 12).fill(Color.black.opacity(0.35)))
@@ -114,10 +106,10 @@ struct SleeperLeaguesImportView: View {
                         }
                         .padding()
                         Spacer()
-                        Button("Import with overrides") {
+                        Button("Save & Import") {
                             Task {
                                 showPlayoffOverridesSheet = false
-                                await performImportWithOverrides()
+                                await performImport()
                             }
                         }
                         .disabled(selectedLeagueId.isEmpty || isLoading)
@@ -126,16 +118,14 @@ struct SleeperLeaguesImportView: View {
                     .padding(.horizontal)
                     .padding(.bottom, 12)
                 }
-                .navigationBarTitle("Playoff Overrides", displayMode: .inline)
+                .navigationBarTitle("Playoff Settings", displayMode: .inline)
             }
         }
         .onAppear {
             if let dsdUser = authViewModel.currentUsername {
-                // Pre-fill Sleeper username persisted per DSD user
                 if let saved = UserDefaults.standard.string(forKey: "sleeperUsername_\(dsdUser)") {
                     sleeperUsername = saved
                 }
-                // Ensure manager is set to current DSD user context
                 leagueManager.setActiveUser(username: dsdUser)
             }
         }
@@ -233,15 +223,8 @@ struct SleeperLeaguesImportView: View {
                 .background(RoundedRectangle(cornerRadius: 12).fill(Color.black.opacity(0.35)))
 
                 HStack(spacing: 12) {
-                    Button("Preview / Set Playoff Weeks") {
+                    Button("Set Playoff Settings & Import") {
                         preparePreviewSeasonsAndShowSheet()
-                    }
-                    .disabled(selectedLeagueId.isEmpty)
-                    .padding()
-                    .background(RoundedRectangle(cornerRadius: 12).fill(Color.black.opacity(0.4)))
-
-                    Button("Import using detected defaults") {
-                        Task { await importSelectedLeague(useOverrides: false) }
                     }
                     .disabled(selectedLeagueId.isEmpty || isLoading)
                     .padding()
@@ -257,9 +240,44 @@ struct SleeperLeaguesImportView: View {
         }
     }
 
+    // MARK: - Helpers / Bindings
+
+    private func binding(for seasonId: String) -> (
+        playoffStartWeek: Binding<String>,
+        championshipWeek: Binding<String>,
+        championshipLength: Binding<String>,
+        playoffTeams: Binding<String>
+    ) {
+        let form = seasonForms[seasonId] ?? SeasonInputForm()
+        return (
+            playoffStartWeek: Binding(
+                get: { form.playoffStartWeek },
+                set: { seasonForms[seasonId, default: SeasonInputForm()].playoffStartWeek = $0 }
+            ),
+            championshipWeek: Binding(
+                get: { form.championshipWeek },
+                set: { seasonForms[seasonId, default: SeasonInputForm()].championshipWeek = $0 }
+            ),
+            championshipLength: Binding(
+                get: { form.championshipLength },
+                set: { seasonForms[seasonId, default: SeasonInputForm()].championshipLength = $0 }
+            ),
+            playoffTeams: Binding(
+                get: { form.playoffTeams },
+                set: { seasonForms[seasonId, default: SeasonInputForm()].playoffTeams = $0 }
+            )
+        )
+    }
+
+    private func requiredStatus(form: SeasonInputForm) -> String {
+        if form.playoffStartWeek.isEmpty || form.championshipWeek.isEmpty || form.championshipLength.isEmpty || form.playoffTeams.isEmpty {
+            return "All fields required."
+        }
+        return "Ready."
+    }
+
     // MARK: - Actions
 
-    /// Fetch leagues for the provided Sleeper username across recent seasons (uses manager helper)
     private func fetchLeagues() async {
         isLoading = true
         errorMessage = nil
@@ -271,7 +289,6 @@ struct SleeperLeaguesImportView: View {
             let seasons = (startYear...currentYear).map { "\($0)" }
             let leagues = try await leagueManager.fetchAllLeaguesForUser(username: sleeperUsername, seasons: seasons)
             fetchedLeagues = leagues
-            // preselect first current-season league if any
             if let first = fetchedLeagues.first(where: { $0.season == "\(currentYear)" }) {
                 selectedLeagueId = first.league_id
             } else {
@@ -283,89 +300,63 @@ struct SleeperLeaguesImportView: View {
         isLoading = false
     }
 
-    /// Prepares previewSeasons by grouping all fetchedLeagues that share the same base league name
-    /// and initializes seasonPlayoffOverrides with detected values.
     private func preparePreviewSeasonsAndShowSheet() {
         guard !selectedLeagueId.isEmpty else { return }
-        // Find the selected league object (current-season)
         guard let selected = fetchedLeagues.first(where: { $0.league_id == selectedLeagueId }) else {
-            // Fallback: use any league with the same id (shouldn't happen)
             previewSeasons = []
             return
         }
 
-        // Determine base name (strip emoji/punctuation similar to manager's baseLeagueName)
-        func baseLeagueName(_ name: String?) -> String {
-            guard let name = name else { return "" }
-            let pattern = "[\\p{Emoji}\\p{Emoji_Presentation}\\p{Emoji_Modifier_Base}\\p{Emoji_Component}\\p{Symbol}\\p{Punctuation}]"
-            if let regex = try? NSRegularExpression(pattern: pattern) {
-                let range = NSRange(location: 0, length: name.utf16.count)
-                let stripped = regex.stringByReplacingMatches(in: name, options: [], range: range, withTemplate: "")
-                return stripped.trimmingCharacters(in: .whitespacesAndNewlines)
-            }
-            return name.trimmingCharacters(in: .whitespacesAndNewlines)
-        }
-
         let base = baseLeagueName(selected.name)
-        // Keep any fetched league whose base name equals the selected one (cross-season)
         let matches = fetchedLeagues.filter { baseLeagueName($0.name) == base }
-
         previewSeasons = matches
 
-        // Initialize overrides for each season (prefill with either previously persisted override or auto-detected)
-        var map: [String: Int] = [:]
+        var map: [String: SeasonInputForm] = [:]
         for sl in previewSeasons {
             let sid = sl.season ?? "\(Calendar.current.component(.year, from: Date()))"
-            // If manager has a persisted override for this league+season, prefer it
-            if let persisted = leagueManager.leagueSeasonPlayoffOverrides[selectedLeagueId]?[sid] {
-                map[sid] = persisted
+            if let persisted = leagueManager.leagueSeasonOverrides[selectedLeagueId]?[sid] {
+                map[sid] = SeasonInputForm(
+                    playoffStartWeek: persisted.playoffStartWeek.map(String.init) ?? "",
+                    championshipWeek: persisted.championshipWeek.map(String.init) ?? "",
+                    championshipLength: persisted.championshipIsTwoWeeks == true ? "2" : (persisted.championshipIsTwoWeeks == false ? "1" : ""),
+                    playoffTeams: persisted.playoffTeamsCount.map(String.init) ?? ""
+                )
             } else {
-                // Otherwise auto-detect using manager helper
-                let auto = leagueManager.detectPlayoffStartWeek(from: sl)
-                map[sid] = auto
+                map[sid] = SeasonInputForm() // empty -> forces user input
             }
         }
-        seasonPlayoffOverrides = map
+        seasonForms = map
         showPlayoffOverridesSheet = true
     }
 
-    /// Import selected league. If useOverrides==true this will use existing seasonPlayoffOverrides map
-    /// otherwise it will call the manager overload with nil overrides (defaults are used).
-    private func importSelectedLeague(useOverrides: Bool) async {
+    private func performImport() async {
         guard !selectedLeagueId.isEmpty else { return }
         isLoading = true
-        errorMessage = nil
+        defer { isLoading = false }
 
         do {
-            // Ensure manager context set
             if let dsdUser = authViewModel.currentUsername {
                 leagueManager.setActiveUser(username: dsdUser)
             }
 
-            // Fetch Sleeper user to obtain user_id (used to update appSelection)
             let sleeperUser = try await leagueManager.fetchUser(username: sleeperUsername)
             let sleeperUserId = sleeperUser.user_id
 
-            // Persist userId and username per DSD user if logged in
             if let dsdUser = authViewModel.currentUsername {
                 UserDefaults.standard.set(sleeperUserId, forKey: "sleeperUserId_\(dsdUser)")
                 authViewModel.sleeperUserId = sleeperUserId
-                // Persist username for this DSD user so field is prefilled later
                 UserDefaults.standard.set(sleeperUsername, forKey: "sleeperUsername_\(dsdUser)")
             }
 
-            if useOverrides {
-                // Pass per-season overrides to manager; manager will persist them for the league.
-                try await leagueManager.fetchAndImportSingleLeague(leagueId: selectedLeagueId, username: sleeperUsername, seasonPlayoffOverrides: seasonPlayoffOverrides)
-            } else {
-                // No overrides param => manager will auto-detect per season
-                try await leagueManager.fetchAndImportSingleLeague(leagueId: selectedLeagueId, username: sleeperUsername, seasonPlayoffOverrides: nil)
+            guard let overrides = buildOverrides() else {
+                errorMessage = "Please fill all playoff settings for every season."
+                return
             }
 
-            // Persist a quick mapping of the username to league id for convenience on re-sync
+            try await leagueManager.fetchAndImportSingleLeague(leagueId: selectedLeagueId, username: sleeperUsername, seasonOverrides: overrides)
+
             UserDefaults.standard.set(sleeperUsername, forKey: "sleeperUsername_for_\(selectedLeagueId)")
 
-            // Update the appSelection and notify caller
             if let dsdUser = authViewModel.currentUsername {
                 appSelection.updateLeagues(leagueManager.leagues, username: dsdUser, sleeperUserId: sleeperUserId)
                 UserDefaults.standard.set(true, forKey: "hasImportedLeague_\(dsdUser)")
@@ -373,45 +364,53 @@ struct SleeperLeaguesImportView: View {
                 appSelection.updateLeagues(leagueManager.leagues, sleeperUserId: sleeperUserId)
             }
 
-            // Callback to parent (dashboard) so it can auto-select the imported league
             onLeagueImported?(selectedLeagueId)
-
-            // Persist last selected league for this DSD user
             let key = "dsd.lastSelectedLeague.\(authViewModel.currentUsername ?? "anon")"
             UserDefaults.standard.set(selectedLeagueId, forKey: key)
-
-            // Dismiss UI
             dismiss()
         } catch {
             errorMessage = error.localizedDescription
         }
-        isLoading = false
     }
 
-    /// Called from the "Import with overrides" button in the Sheet
-    private func performImportWithOverrides() async {
-        // showPlayoffOverridesSheet already dismissed by caller
-        await importSelectedLeague(useOverrides: true)
+    private func buildOverrides() -> [String: SeasonImportOverrides]? {
+        guard !seasonForms.isEmpty else { return nil }
+        var result: [String: SeasonImportOverrides] = [:]
+        for (sid, form) in seasonForms {
+            guard
+                let ps = Int(form.playoffStartWeek), (13...18).contains(ps),
+                let cw = Int(form.championshipWeek), (13...21).contains(cw),
+                let len = Int(form.championshipLength), (1...2).contains(len),
+                let teams = Int(form.playoffTeams), (2...16).contains(teams)
+            else {
+                return nil
+            }
+            result[sid] = SeasonImportOverrides(
+                playoffStartWeek: ps,
+                championshipWeek: cw,
+                championshipIsTwoWeeks: (len == 2),
+                playoffTeamsCount: teams
+            )
+        }
+        return result
     }
 }
 
-// MARK: - Platform enum (same as other files)
+// MARK: - Helpers (local)
+private func baseLeagueName(_ name: String?) -> String {
+    guard let name = name else { return "" }
+    let pattern = "[\\p{Emoji}\\p{Emoji_Presentation}\\p{Emoji_Modifier_Base}\\p{Emoji_Component}\\p{Symbol}\\p{Punctuation}]"
+    if let regex = try? NSRegularExpression(pattern: pattern) {
+        let range = NSRange(location: 0, length: name.utf16.count)
+        let stripped = regex.stringByReplacingMatches(in: name, options: [], range: range, withTemplate: "")
+        return stripped.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    return name.trimmingCharacters(in: .whitespacesAndNewlines)
+}
+
+// MARK: - Platform enum
 enum Platform: String, CaseIterable {
     case sleeper = "Sleeper"
     case yahoo = "Yahoo"
     case espn = "ESPN"
-}
-
-// MARK: - Previews
-struct SleeperLeaguesImportView_Previews: PreviewProvider {
-    static var previews: some View {
-        // Minimal preview harness: create dummy environment objects to avoid crashes in preview.
-        let auth = AuthViewModel()
-        let appSel = AppSelection()
-        let mgr = SleeperLeagueManager(autoLoad: false)
-        SleeperLeaguesImportView(onLeagueImported: nil)
-            .environmentObject(auth)
-            .environmentObject(appSel)
-            .environmentObject(mgr)
-    }
 }
