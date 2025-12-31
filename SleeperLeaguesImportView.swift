@@ -9,10 +9,10 @@
 import SwiftUI
 
 private struct SeasonInputForm: Equatable {
-    var playoffStartWeek: String = ""
-    var championshipWeek: String = ""
+    var playoffStartWeek: Int? = nil
+    var championshipWeek: Int? = nil
     var championshipLength: String = "" // "1" or "2"
-    var playoffTeams: String = ""
+    var playoffTeams: Int? = nil
 }
 
 struct SleeperLeaguesImportView: View {
@@ -64,30 +64,62 @@ struct SleeperLeaguesImportView: View {
                                 ForEach(previewSeasons.sorted(by: { ($0.season ?? "") < ($1.season ?? "") }), id: \.league_id) { sl in
                                     let seasonId = sl.season ?? "\(Calendar.current.component(.year, from: Date()))"
                                     let form = seasonForms[seasonId] ?? SeasonInputForm()
+                                    let champBinding = Binding<Int>(
+                                        get: { form.championshipWeek ?? 15 },
+                                        set: { seasonForms[seasonId, default: SeasonInputForm()].championshipWeek = max(1, min(18, $0)) }
+                                    )
+                                    let teamsBinding = Binding<Int>(
+                                        get: { form.playoffTeams ?? defaultPlayoffTeams(for: sl) },
+                                        set: { seasonForms[seasonId, default: SeasonInputForm()].playoffTeams = max(2, min(16, $0)) }
+                                    )
                                     VStack(alignment: .leading, spacing: 10) {
                                         Text("Season: \(seasonId)")
                                             .font(.subheadline.bold())
 
-                                        TextField("Playoff Start Week (13-18)", text: binding(for: seasonId).playoffStartWeek)
-                                            .keyboardType(.numberPad)
-                                            .textFieldStyle(RoundedBorderTextFieldStyle())
+                                        TextField("Playoff Start Week (13-18)", text: Binding(
+                                            get: { (seasonForms[seasonId]?.playoffStartWeek).map(String.init) ?? "" },
+                                            set: { seasonForms[seasonId, default: SeasonInputForm()].playoffStartWeek = Int($0) }
+                                        ))
+                                        .keyboardType(.numberPad)
+                                        .textFieldStyle(RoundedBorderTextFieldStyle())
 
-                                        TextField("Championship Week (13-21)", text: binding(for: seasonId).championshipWeek)
-                                            .keyboardType(.numberPad)
-                                            .textFieldStyle(RoundedBorderTextFieldStyle())
+                                        HStack {
+                                            Text("Championship Week")
+                                                .font(.custom("Phatt", size: 15))
+                                                .foregroundColor(.orange)
+                                            Spacer()
+                                            Stepper(value: champBinding, in: 1...18) {
+                                                Text("Week \(champBinding.wrappedValue)")
+                                                    .font(.custom("Phatt", size: 15))
+                                                    .foregroundColor(.orange)
+                                            }
+                                            .tint(.orange)
+                                        }
 
-                                        Picker("Championship length", selection: binding(for: seasonId).championshipLength) {
+                                        Picker("Championship length", selection: Binding(
+                                            get: { seasonForms[seasonId]?.championshipLength ?? "" },
+                                            set: { seasonForms[seasonId, default: SeasonInputForm()].championshipLength = $0 }
+                                        )) {
                                             Text("Select").tag("")
                                             Text("1 week").tag("1")
                                             Text("2 weeks").tag("2")
                                         }
                                         .pickerStyle(SegmentedPickerStyle())
 
-                                        TextField("Playoff Teams (2-16)", text: binding(for: seasonId).playoffTeams)
-                                            .keyboardType(.numberPad)
-                                            .textFieldStyle(RoundedBorderTextFieldStyle())
+                                        HStack {
+                                            Text("Playoff Teams")
+                                                .font(.custom("Phatt", size: 15))
+                                                .foregroundColor(.orange)
+                                            Spacer()
+                                            Stepper(value: teamsBinding, in: 2...16) {
+                                                Text("\(teamsBinding.wrappedValue)")
+                                                    .font(.custom("Phatt", size: 15))
+                                                    .foregroundColor(.orange)
+                                            }
+                                            .tint(.orange)
+                                        }
 
-                                        Text(requiredStatus(form: form))
+                                        Text(requiredStatus(form: seasonForms[seasonId] ?? SeasonInputForm()))
                                             .font(.caption2)
                                             .foregroundColor(.gray)
                                     }
@@ -242,35 +274,8 @@ struct SleeperLeaguesImportView: View {
 
     // MARK: - Helpers / Bindings
 
-    private func binding(for seasonId: String) -> (
-        playoffStartWeek: Binding<String>,
-        championshipWeek: Binding<String>,
-        championshipLength: Binding<String>,
-        playoffTeams: Binding<String>
-    ) {
-        let form = seasonForms[seasonId] ?? SeasonInputForm()
-        return (
-            playoffStartWeek: Binding(
-                get: { form.playoffStartWeek },
-                set: { seasonForms[seasonId, default: SeasonInputForm()].playoffStartWeek = $0 }
-            ),
-            championshipWeek: Binding(
-                get: { form.championshipWeek },
-                set: { seasonForms[seasonId, default: SeasonInputForm()].championshipWeek = $0 }
-            ),
-            championshipLength: Binding(
-                get: { form.championshipLength },
-                set: { seasonForms[seasonId, default: SeasonInputForm()].championshipLength = $0 }
-            ),
-            playoffTeams: Binding(
-                get: { form.playoffTeams },
-                set: { seasonForms[seasonId, default: SeasonInputForm()].playoffTeams = $0 }
-            )
-        )
-    }
-
     private func requiredStatus(form: SeasonInputForm) -> String {
-        if form.playoffStartWeek.isEmpty || form.championshipWeek.isEmpty || form.championshipLength.isEmpty || form.playoffTeams.isEmpty {
+        if form.playoffStartWeek == nil || form.championshipWeek == nil || form.championshipLength.isEmpty || form.playoffTeams == nil {
             return "All fields required."
         }
         return "Ready."
@@ -286,7 +291,7 @@ struct SleeperLeaguesImportView: View {
         do {
             let currentYear = Calendar.current.component(.year, from: Date())
             let startYear = currentYear - 9
-            let seasons = (startYear...currentYear).map { "\($0)" }
+            let seasons = (startYear...currentYear).map { "\( $0)" }
             let leagues = try await leagueManager.fetchAllLeaguesForUser(username: sleeperUsername, seasons: seasons)
             fetchedLeagues = leagues
             if let first = fetchedLeagues.first(where: { $0.season == "\(currentYear)" }) {
@@ -316,13 +321,18 @@ struct SleeperLeaguesImportView: View {
             let sid = sl.season ?? "\(Calendar.current.component(.year, from: Date()))"
             if let persisted = leagueManager.leagueSeasonOverrides[selectedLeagueId]?[sid] {
                 map[sid] = SeasonInputForm(
-                    playoffStartWeek: persisted.playoffStartWeek.map(String.init) ?? "",
-                    championshipWeek: persisted.championshipWeek.map(String.init) ?? "",
+                    playoffStartWeek: persisted.playoffStartWeek,
+                    championshipWeek: persisted.championshipWeek ?? 15,
                     championshipLength: persisted.championshipIsTwoWeeks == true ? "2" : (persisted.championshipIsTwoWeeks == false ? "1" : ""),
-                    playoffTeams: persisted.playoffTeamsCount.map(String.init) ?? ""
+                    playoffTeams: persisted.playoffTeamsCount ?? defaultPlayoffTeams(for: sl)
                 )
             } else {
-                map[sid] = SeasonInputForm() // empty -> forces user input
+                map[sid] = SeasonInputForm(
+                    playoffStartWeek: nil,
+                    championshipWeek: 15,
+                    championshipLength: "",
+                    playoffTeams: defaultPlayoffTeams(for: sl)
+                )
             }
         }
         seasonForms = map
@@ -378,10 +388,10 @@ struct SleeperLeaguesImportView: View {
         var result: [String: SeasonImportOverrides] = [:]
         for (sid, form) in seasonForms {
             guard
-                let ps = Int(form.playoffStartWeek), (13...18).contains(ps),
-                let cw = Int(form.championshipWeek), (13...21).contains(cw),
+                let ps = form.playoffStartWeek, (13...18).contains(ps),
+                let cw = form.championshipWeek, (1...18).contains(cw),
                 let len = Int(form.championshipLength), (1...2).contains(len),
-                let teams = Int(form.playoffTeams), (2...16).contains(teams)
+                let teams = form.playoffTeams, (2...16).contains(teams)
             else {
                 return nil
             }
@@ -393,6 +403,11 @@ struct SleeperLeaguesImportView: View {
             )
         }
         return result
+    }
+
+    private func defaultPlayoffTeams(for league: SleeperLeague) -> Int {
+        let count = league.total_rosters ?? 10
+        return count >= 10 ? 6 : 4
     }
 }
 

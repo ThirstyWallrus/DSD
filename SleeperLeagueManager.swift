@@ -108,6 +108,7 @@ struct SleeperLeague: Codable {
     let season: String?
     let roster_positions: [String]?
     let settings: [String: AnyCodable]?
+    let total_rosters: Int?   // NEW: used for default playoff team count selection
 
     var scoringType: String {
         guard let scoring = settings?["scoring_settings"]?.value as? [String: AnyCodable],
