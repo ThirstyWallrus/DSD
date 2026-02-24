@@ -87,7 +87,7 @@ struct TheDeck: View {
                 .frame(maxWidth: .infinity)
 
                 if !models.isEmpty {
-                    // NEW: Selector row ABOVE (not overlapping) the deck
+                    // Selector row ABOVE (not overlapping) the deck
                     VStack(spacing: 12) {
                         HStack {
                             Button {
@@ -132,18 +132,10 @@ struct TheDeck: View {
                 }
             }
         }
-        .onAppear {
-            reloadStacks()
-        }
-        .onChange(of: appSelection.selectedLeagueId) {
-            reloadStacks()
-        }
-        .onChange(of: appSelection.leagues) {
-            reloadStacks()
-        }
-        .onChange(of: appSelection.selectedSeason) {
-            reloadStacks()
-        }
+        .onAppear { reloadStacks() }
+        .onChange(of: appSelection.selectedLeagueId) { reloadStacks() }
+        .onChange(of: appSelection.leagues) { reloadStacks() }
+        .onChange(of: appSelection.selectedSeason) { reloadStacks() }
     }
 
     private func cardStack(width: CGFloat, height: CGFloat) -> some View {
@@ -165,26 +157,14 @@ struct TheDeck: View {
                         onCycleDown: { cycleDown() },
                         leagueName: league?.name ?? ""
                     )
-                    .offset(x: xOffset - CGFloat(pos) * (STACK_OFFSET_X/2),
+                    .offset(x: xOffset - CGFloat(pos) * (STACK_OFFSET_X / 2),
                             y: yOffset)
-                    .rotation3DEffect(.degrees(yaw), axis: (0,1,0), perspective: 0.9/1200)
-                    .rotation3DEffect(.degrees(pitch), axis: (1,0,0), perspective: 0.9/1200)
+                    .rotation3DEffect(.degrees(yaw), axis: (0, 1, 0), perspective: 0.9 / 1200)
+                    .rotation3DEffect(.degrees(pitch), axis: (1, 0, 0), perspective: 0.9 / 1200)
                     .zIndex(Double(models.count - pos))
                 }
             }
         }
-        .contentShape(Rectangle())
-        .gesture(
-            DragGesture()
-                .onEnded { val in
-                    let vertical = val.translation.height
-                    if vertical < -65 {
-                        withAnimation(.spring(response: 0.45, dampingFraction: 0.85)) { cycleDown() }
-                    } else if vertical > 65 {
-                        withAnimation(.spring(response: 0.45, dampingFraction: 0.85)) { cycleUp() }
-                    }
-                }
-        )
     }
 
     private func reloadStacks() {
@@ -192,18 +172,19 @@ struct TheDeck: View {
         flip = Array(repeating: false, count: models.count)
     }
 
-    private func cycleDown() {
-        guard let first = order.first else { return }
-        order.removeFirst()
+    private func cycleUp() {
+        guard order.count > 1 else { return }
+        let first = order.removeFirst()
         order.append(first)
     }
 
-    private func cycleUp() {
-        guard let last = order.last else { return }
-        order.removeLast()
+    private func cycleDown() {
+        guard order.count > 1 else { return }
+        let last = order.removeLast()
         order.insert(last, at: 0)
     }
 
+    // MARK: - Actual weekly totals helper (kept from existing file; best-effort compact)
     private func actualWeeklyTotals(ownerId: String, league: LeagueData, seasonId: String) -> [Double] {
         var timeline: [(String, Int, Double)] = []
         let targetSeasons: [SeasonData]
@@ -212,26 +193,36 @@ struct TheDeck: View {
         } else {
             targetSeasons = league.seasons.filter { $0.id == seasonId }
         }
+
         for season in targetSeasons {
             guard let team = season.teams.first(where: { $0.ownerId == ownerId }) else { continue }
             let playoffStart = season.playoffStartWeek ?? defaultPlayoffStart(for: season)
-            let regularWeeks = Set(1..<playoffStart)
-            if let dict = team.weeklyActualLineupPoints, !dict.isEmpty {
-                for (week, pts) in dict where regularWeeks.contains(week) {
-                    timeline.append((season.id, week, pts))
-                }
+            let regularWeeks = (team.weeklyActualLineupPoints ?? [:]).keys
+                .filter { $0 < playoffStart }
+                .sorted()
+            for wk in regularWeeks {
+                let pts = team.weeklyActualLineupPoints?[wk] ?? 0.0
+                timeline.append((season.id, wk, pts))
             }
         }
-        return timeline
-            .sorted { a, b in a.0 == b.0 ? a.1 < b.1 : a.0 < b.0 }
-            .map { $0.2 }
+
+        timeline.sort { a, b in
+            let asn = Int(a.0) ?? 0
+            let bsn = Int(b.0) ?? 0
+            if asn != bsn { return asn < bsn }
+            return a.1 < b.1
+        }
+
+        return timeline.map { $0.2 }
     }
 
     private func defaultPlayoffStart(for season: SeasonData) -> Int {
-        let allWeeks = season.teams.flatMap { $0.weeklyActualLineupPoints?.keys.map { $0 } ?? [] }.max() ?? 13
+        let allWeeks = season.teams
+            .flatMap { $0.weeklyActualLineupPoints?.keys.map { $0 } ?? [] }
+            .max() ?? 13
         let playoffTeams = season.playoffTeamsCount ?? 4
         let rounds = Int(ceil(log2(Double(playoffTeams))))
-        return allWeeks - rounds + 1
+        return max(13, allWeeks - rounds + 1)
     }
 }
 
@@ -289,7 +280,16 @@ struct DeckLeagueAverages {
 // MARK: - DeckCard
 
 struct DeckCard: View {
-    enum CardFace: CaseIterable { case front, back, bonus }
+    // NEW: Face set aligned to your requested sides.
+    enum CardFace: CaseIterable {
+        case front          // Team
+        case backOffense    // Offensive
+        case defDefense     // Defensive (new)
+        case bonus          // Playoff
+        case chip           // Champ cards placeholder (new)
+        case finishes       // Placeholder (requested navigation from bonus)
+    }
+
     let model: DeckFranchiseModel
     let allModels: [DeckFranchiseModel]
     let leagueAverages: DeckLeagueAverages
@@ -302,22 +302,14 @@ struct DeckCard: View {
     @State private var showGradeInfo = false
     @State private var cardFace: CardFace = .front
 
+    // Chip side paging placeholder (future: multiple chip cards)
+    @State private var chipPageIndex: Int = 0
+    private var chipPageCount: Int { 1 } // placeholder until we add real chip cards
+
     @State private var isLoaded: Bool = false
     @State private var imageScale: CGFloat = 1.0
     @State private var statsOpacity: Double = 1.0
     @State private var currentImage: Image = Image("DefaultAvatar")
-
-    private let catPairs: [(String, (AggregatedOwnerStats) -> Double)] = [
-        ("PF", { $0.totalPointsFor }),
-        ("PPW", { $0.teamPPW }),
-        ("OPF", { $0.totalOffensivePointsFor }),
-        ("OPPW", { $0.offensivePPW }),
-        ("DPF", { $0.totalDefensivePointsFor }),
-        ("DPPW", { $0.defensivePPW }),
-        ("Mgmt%", { $0.managementPercent }),
-        ("OMgmt%", { $0.offensiveManagementPercent }),
-        ("DMgmt%", { $0.defensiveManagementPercent })
-    ]
 
     private let offensePositions = ["QB", "RB", "WR", "TE", "K"]
     private let idpPositions = ["DL", "LB", "DB"]
@@ -340,11 +332,21 @@ struct DeckCard: View {
 
     var body: some View {
         let gradeCol = gradeColor(for: statGradeForModel(model: model, allModels: allModels).grade)
+
         ZStack {
             switch cardFace {
-            case .front: frontContent
-            case .back: backContent
-            case .bonus: bonusContent
+            case .front:
+                frontContent
+            case .backOffense:
+                offenseBackContent
+            case .defDefense:
+                defenseContent
+            case .bonus:
+                bonusContent
+            case .chip:
+                chipContent
+            case .finishes:
+                finishesContent
             }
         }
         .frame(width: cardSize.width, height: cardSize.height)
@@ -356,26 +358,7 @@ struct DeckCard: View {
         )
         .shadow(color: .blue.opacity(0.55), radius: 16)
         .contentShape(RoundedRectangle(cornerRadius: 26))
-        .gesture(
-            DragGesture()
-                .onEnded { val in
-                    let dx = val.translation.width
-                    let dy = val.translation.height
-                    if abs(dy) > abs(dx) {
-                        if dy < -30 {
-                            withAnimation { cardFace = .back }
-                        } else if dy > 30 {
-                            withAnimation { cardFace = .bonus }
-                        }
-                    } else {
-                        if dx > 30 {
-                            withAnimation { onCycleUp() }
-                        } else if dx < -30 {
-                            withAnimation { onCycleDown() }
-                        }
-                    }
-                }
-        )
+        .gesture(deckNavigationGesture())
         .sheet(isPresented: $showPicker) {
             ImagePickerView { image in
                 if let img = image { OwnerAssetStore.shared.setImage(for: model.ownerId, image: img) }
@@ -394,14 +377,123 @@ struct DeckCard: View {
         }
     }
 
-    // MARK: - Face-specific backgrounds (NEW)
+    // MARK: - New navigation gesture (matches requested rules)
+    private func deckNavigationGesture() -> some Gesture {
+        DragGesture()
+            .onEnded { val in
+                let dx = val.translation.width
+                let dy = val.translation.height
+
+                // Determine dominant direction
+                if abs(dx) > abs(dy) {
+                    // Horizontal swipe
+                    if dx > 30 {
+                        handleSwipe(.right)
+                    } else if dx < -30 {
+                        handleSwipe(.left)
+                    }
+                } else {
+                    // Vertical swipe
+                    if dy < -65 {
+                        handleSwipe(.up)
+                    } else if dy > 65 {
+                        handleSwipe(.down)
+                    }
+                }
+            }
+    }
+
+    private enum SwipeDirection { case up, down, left, right }
+
+    private func handleSwipe(_ dir: SwipeDirection) {
+        switch cardFace {
+        case .front:
+            switch dir {
+            case .up:
+                onCycleDown() // "next card in deck"
+            case .down:
+                onCycleUp()   // "previous card in deck"
+            case .right:
+                withAnimation { cardFace = .backOffense }
+            case .left:
+                withAnimation { cardFace = .bonus }
+            }
+
+        case .backOffense:
+            // Up/Down do nothing
+            switch dir {
+            case .left:
+                withAnimation { cardFace = .front }
+            case .right:
+                withAnimation { cardFace = .defDefense }
+            case .up, .down:
+                break
+            }
+
+        case .defDefense:
+            // Up/Down do nothing
+            switch dir {
+            case .left:
+                withAnimation { cardFace = .backOffense }
+            case .right, .up, .down:
+                break
+            }
+
+        case .bonus:
+            // Up/Down do nothing
+            switch dir {
+            case .right:
+                withAnimation { cardFace = .front }
+            case .left:
+                withAnimation { cardFace = .finishes }
+            case .up, .down:
+                break
+            }
+
+        case .finishes:
+            // Up/Down do nothing
+            switch dir {
+            case .right:
+                withAnimation { cardFace = .bonus }
+            case .left, .up, .down:
+                break
+            }
+
+        case .chip:
+            // Up/Down do nothing; left/right cycles chip pages only (placeholder)
+            switch dir {
+            case .left:
+                // next chip card
+                guard chipPageCount > 1 else { return }
+                withAnimation {
+                    chipPageIndex = min(chipPageIndex + 1, chipPageCount - 1)
+                }
+            case .right:
+                // previous chip card
+                guard chipPageCount > 1 else { return }
+                withAnimation {
+                    chipPageIndex = max(chipPageIndex - 1, 0)
+                }
+            case .up, .down:
+                break
+            }
+        }
+    }
+
+    // MARK: - Face-specific backgrounds
     private var cardBackgroundForCurrentFace: some View {
         switch cardFace {
         case .front:
             return AnyView(cardBackground(imageName: "CardBack"))
-        case .back:
+        case .backOffense:
+            return AnyView(cardBackground(imageName: "CardBack2"))
+        case .defDefense:
             return AnyView(cardBackground(imageName: "CardBack2"))
         case .bonus:
+            return AnyView(cardBackground(imageName: "CardBackground"))
+        case .chip:
+            return AnyView(cardBackground(imageName: "CardBackground"))
+        case .finishes:
             return AnyView(cardBackground(imageName: "CardBackground"))
         }
     }
@@ -413,7 +505,6 @@ struct DeckCard: View {
                 .scaledToFill()
                 .clipped()
 
-            // Keep your existing readability overlays
             LinearGradient(colors: [
                 Color.black.opacity(0.90),
                 Color.black.opacity(0.70),
@@ -428,7 +519,7 @@ struct DeckCard: View {
         }
     }
 
-    // PATCH: Ensure all computed views return a concrete view, not just a modifier.
+    // MARK: - FRONT (Team)
     private var frontContent: some View {
         let cardName = model.displayName
         let cardTeam = model.stats.latestDisplayName
@@ -445,7 +536,6 @@ struct DeckCard: View {
         ]
 
         return VStack(spacing: 0) {
-            // Card image (art/photo region)
             ZStack {
                 cardImage
                     .resizable()
@@ -465,11 +555,8 @@ struct DeckCard: View {
                     ]),
                     startPoint: .top, endPoint: .bottom)
             )
-            .onTapGesture {
-                showPicker = true
-            }
+            .onTapGesture { showPicker = true }
 
-            // League name (above user name, under image, with small font)
             if !leagueName.isEmpty {
                 Text(leagueName)
                     .font(.system(size: 13, weight: .medium))
@@ -479,7 +566,7 @@ struct DeckCard: View {
                     .padding(.top, 2)
                     .padding(.horizontal, 8)
             }
-            // Name + Type/Grade
+
             HStack {
                 Text(cardName)
                     .font(.custom("Phatt", size: 22))
@@ -498,13 +585,11 @@ struct DeckCard: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 8)
 
-            // Team info
             Text("Team: \(cardTeam)")
                 .font(.subheadline)
                 .foregroundColor(Color("DeckCardTeam", bundle: nil).opacity(0.95))
                 .padding(.horizontal, 8)
 
-            // Grade badge
             HStack(spacing: 7) {
                 Text("Grade:")
                     .font(.callout.bold())
@@ -515,10 +600,8 @@ struct DeckCard: View {
             }
             .padding(.horizontal, 8)
 
-            Divider()
-                .padding(.horizontal, 8)
+            Divider().padding(.horizontal, 8)
 
-            // Stats grid
             LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
                 ForEach(stats, id: \.0) { label, value in
                     HStack {
@@ -536,7 +619,6 @@ struct DeckCard: View {
             .animation(.easeInOut(duration: 0.5).delay(0.3), value: statsOpacity)
             .padding(.horizontal, 8)
 
-            // Accolades
             if model.championships > 0 || !myAccolades.isEmpty {
                 HStack(spacing: 8) {
                     ForEach(myAccolades, id: \.self) { _ in
@@ -597,59 +679,23 @@ struct DeckCard: View {
         currentImage = img ?? Image("DefaultAvatar")
     }
 
-    private var backContent: some View {
+    // MARK: - Shared header for non-front faces (keeps everything inside borders)
+    private func faceContainer(@ViewBuilder _ content: () -> some View) -> some View {
         VStack(spacing: 10) {
-            header
-            sectionHeader("Offensive Positions")
-            positionTable(for: offensePositions)
-            sectionHeader("Defensive Positions")
-            positionTable(for: idpPositions)
-            legend
-            Spacer()
+            headerCompact
+            content()
+            Spacer(minLength: 0)
         }
         .padding(.horizontal, 12)
         .padding(.top, 10)
         .padding(.bottom, 12)
+        .frame(width: cardSize.width, height: cardSize.height, alignment: .top)
     }
 
-    private var bonusContent: some View {
-        VStack(spacing: 10) {
-            header
-            sectionHeader("Playoff Stats")
-            VStack(spacing: 8) {
-                HStack(spacing: 10) {
-                    metricBox(label: "Playoff PF", value: model.playoffStats.pointsFor)
-                    metricBox(label: "Playoff PPW", value: model.playoffStats.ppw)
-                }
-                HStack(spacing: 10) {
-                    metricBox(label: "Playoff Mgmt%", value: model.playoffStats.managementPercent ?? 0)
-                    metricBox(label: "Record", value: Double(model.playoffStats.wins), isRecord: true)
-                }
-            }
-            .padding(12)
-            .background(
-                RoundedRectangle(cornerRadius: 20)
-                    .fill(
-                        LinearGradient(colors: [.black.opacity(0.70), .black.opacity(0.45)],
-                                       startPoint: .topLeading, endPoint: .bottomTrailing)
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 20)
-                            .stroke(LinearGradient(colors: [.blue.opacity(0.8), .cyan.opacity(0.35), .blue.opacity(0.8)],
-                                                   startPoint: .topLeading, endPoint: .bottomTrailing),
-                                    lineWidth: 0.8)
-                    )
-            )
-            Spacer()
-        }
-        .padding(.horizontal, 12)
-        .padding(.top, 10)
-        .padding(.bottom, 12)
-    }
-
-    private var header: some View {
+    private var headerCompact: some View {
         VStack(spacing: 6) {
-            profileImage
+            profileImageCompact
+
             if !leagueName.isEmpty {
                 Text(leagueName)
                     .font(.system(size: 13, weight: .medium))
@@ -658,93 +704,50 @@ struct DeckCard: View {
                     .minimumScaleFactor(0.7)
                     .padding(.top, 2)
             }
+
             Text(model.displayName)
-                .font(.system(size: 20, weight: .semibold))
+                .font(.system(size: 18, weight: .semibold))
                 .foregroundColor(.white)
                 .lineLimit(1)
                 .minimumScaleFactor(0.8)
+
             Text(recordString)
-                .font(.system(size: 13))
+                .font(.system(size: 12))
                 .foregroundColor(.white.opacity(0.65))
-            if model.championships > 0 {
-                Text("\(model.championships) Championship\(model.championships == 1 ? "" : "s")")
-                    .font(.caption)
-                    .foregroundColor(.yellow)
-            }
-            Button(action: { showGradeInfo = true }) {
-                Text("Grade Info")
-                    .font(.caption.bold())
-                    .foregroundColor(.white)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 5)
-                    .background(Capsule().fill(Color.blue.opacity(0.3)))
-                    .overlay(Capsule().stroke(Color.blue.opacity(0.5), lineWidth: 0.7))
-            }
+
+            // Face hint (small, helps navigation clarity)
+            Text(faceTitle)
+                .font(.caption.bold())
+                .foregroundColor(.orange.opacity(0.9))
         }
     }
 
-    private var accoladeStats: [String] {
-        ["PF", "PPW", "OPF", "OPPW", "DPF", "DPPW", "Mgmt%", "OMgmt%", "DMgmt%"]
-    }
-
-    private var accoladeHolders: [String: String] {
-        var result: [String: String] = [:]
-        for stat in accoladeStats {
-            let max = allModels.max { $0.stats.statValue(for: stat) < $1.stats.statValue(for: stat) }
-            if let leader = max { result[stat] = leader.ownerId }
+    private var faceTitle: String {
+        switch cardFace {
+        case .front: return "TEAM"
+        case .backOffense: return "OFFENSE"
+        case .defDefense: return "DEFENSE"
+        case .bonus: return "PLAYOFF"
+        case .chip: return "CHIP"
+        case .finishes: return "FINISHES"
         }
-        return result
     }
 
-    private var myAccolades: [String] {
-        accoladeStats.filter { accoladeHolders[$0] == model.ownerId }
-    }
-
-    private var leftAccolades: [String] { Array(myAccolades.prefix(myAccolades.count/2)) }
-    private var rightAccolades: [String] { Array(myAccolades.suffix(myAccolades.count/2)) }
-
-    private var profileImage: some View {
+    private var profileImageCompact: some View {
         let img = OwnerAssetStore.shared.image(for: model.ownerId) ?? Image("DefaultAvatar")
         return ZStack {
             img
                 .resizable()
                 .scaledToFill()
-                .frame(width: 110, height: 110)
+                .frame(width: 86, height: 86)
                 .clipShape(Circle())
                 .overlay(
                     Circle()
                         .stroke(gradeColor(for: statGradeForModel(model: model, allModels: allModels).grade).opacity(0.65), lineWidth: 2)
                 )
-                .onTapGesture { showPicker = true }
 
-            if model.championships > 0 {
-                HStack {
-                    VStack {
-                        ForEach(leftAccolades, id: \.self) { _ in
-                            Image("Trophy")
-                                .resizable()
-                                .scaledToFit()
-                                .frame(width: 20)
-                        }
-                        Spacer()
-                    }
-                    Spacer()
-                    VStack {
-                        ForEach(rightAccolades, id: \.self) { _ in
-                            Image("Trophy")
-                                .resizable()
-                                .scaledToFit()
-                                .frame(width: 20)
-                        }
-                        Spacer()
-                    }
-                }
-                .padding(.vertical, 10)
-                .padding(.horizontal, 5)
-            }
-
-            ElectrifiedGrade(grade: statGradeForModel(model: model, allModels: allModels).grade, fontSize: 28)
-                .frame(width: 44, height: 44)
+            ElectrifiedGrade(grade: statGradeForModel(model: model, allModels: allModels).grade, fontSize: 24)
+                .frame(width: 40, height: 40)
         }
     }
 
@@ -752,9 +755,150 @@ struct DeckCard: View {
         "\(model.wins)-\(model.losses)\(model.ties > 0 ? "-\(model.ties)" : "")"
     }
 
+    // MARK: - BACK (Offensive) — now offense only
+    private var offenseBackContent: some View {
+        faceContainer {
+            ScrollView(.vertical, showsIndicators: false) {
+                VStack(spacing: 10) {
+                    sectionHeader("Offensive Positions")
+                    positionTable(for: offensePositions)
+                    legend
+                }
+            }
+        }
+        // Tap on Back should flip to Def side per your request
+        .onTapGesture {
+            withAnimation { cardFace = .defDefense }
+        }
+    }
+
+    // MARK: - DEF SIDE (Defensive) — new face, matches backside layout
+    private var defenseContent: some View {
+        faceContainer {
+            ScrollView(.vertical, showsIndicators: false) {
+                VStack(spacing: 10) {
+                    // Placeholder: defensive performance grade (source later)
+                    HStack {
+                        Text("Def Grade:")
+                            .font(.caption.bold())
+                            .foregroundColor(.blue.opacity(0.9))
+                        Spacer()
+                        Text("—")
+                            .font(.caption.bold())
+                            .foregroundColor(.orange)
+                    }
+                    .padding(.horizontal, 6)
+
+                    sectionHeader("Defensive Positions")
+                    positionTable(for: idpPositions)
+                    legend
+                }
+            }
+        }
+    }
+
+    // MARK: - BONUS (Playoff)
+    private var bonusContent: some View {
+        faceContainer {
+            ScrollView(.vertical, showsIndicators: false) {
+                VStack(spacing: 10) {
+                    sectionHeader("Playoff Stats")
+                    VStack(spacing: 8) {
+                        HStack(spacing: 10) {
+                            metricBox(label: "Playoff PF", value: model.playoffStats.pointsFor)
+                            metricBox(label: "Playoff PPW", value: model.playoffStats.ppw)
+                        }
+                        HStack(spacing: 10) {
+                            metricBox(label: "Playoff Mgmt%", value: model.playoffStats.managementPercent ?? 0)
+                            metricBox(label: "Record", value: Double(model.playoffStats.wins), isRecord: true)
+                        }
+                    }
+                    .padding(12)
+                    .background(
+                        RoundedRectangle(cornerRadius: 20)
+                            .fill(
+                                LinearGradient(colors: [.black.opacity(0.70), .black.opacity(0.45)],
+                                               startPoint: .topLeading, endPoint: .bottomTrailing)
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 20)
+                                    .stroke(LinearGradient(colors: [.blue.opacity(0.8), .cyan.opacity(0.35), .blue.opacity(0.8)],
+                                                           startPoint: .topLeading, endPoint: .bottomTrailing),
+                                            lineWidth: 0.8)
+                            )
+                    )
+
+                    if model.championships > 0 {
+                        Text("Tap for Chip Side")
+                            .font(.caption.bold())
+                            .foregroundColor(.yellow.opacity(0.9))
+                            .padding(.top, 4)
+                    }
+                }
+            }
+        }
+        .onTapGesture {
+            // Only apply when championships > 0
+            guard model.championships > 0 else { return }
+            withAnimation { cardFace = .chip }
+        }
+    }
+
+    // MARK: - CHIP (placeholder)
+    private var chipContent: some View {
+        faceContainer {
+            VStack(spacing: 12) {
+                Text("CHIP SIDE")
+                    .font(.custom("Phatt", size: 28))
+                    .foregroundColor(.orange)
+
+                Text("Placeholder — championship card content coming later.")
+                    .font(.caption)
+                    .foregroundColor(.white.opacity(0.75))
+                    .multilineTextAlignment(.center)
+
+                if chipPageCount > 1 {
+                    Text("Card \(chipPageIndex + 1) of \(chipPageCount)")
+                        .font(.caption2.bold())
+                        .foregroundColor(.white.opacity(0.7))
+                } else {
+                    Text("Tap to return to Playoff side")
+                        .font(.caption2.bold())
+                        .foregroundColor(.white.opacity(0.7))
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .center)
+        }
+        .onTapGesture {
+            withAnimation { cardFace = .bonus }
+        }
+    }
+
+    // MARK: - FINISHES (placeholder)
+    private var finishesContent: some View {
+        faceContainer {
+            VStack(spacing: 12) {
+                Text("FINISHES")
+                    .font(.custom("Phatt", size: 26))
+                    .foregroundColor(.orange)
+
+                Text("Placeholder content coming later.")
+                    .font(.caption)
+                    .foregroundColor(.white.opacity(0.75))
+                    .multilineTextAlignment(.center)
+
+                Text("Swipe Right to return to Playoff side")
+                    .font(.caption2.bold())
+                    .foregroundColor(.white.opacity(0.7))
+            }
+            .frame(maxWidth: .infinity, alignment: .center)
+        }
+    }
+
+    // MARK: - Components reused
     private func metricBox(label: String, value: Double, isRecord: Bool = false) -> some View {
         let avg = leagueAverages.average(for: label)
-        let glow = isRecord ? .yellow : glowColor(value: value, avg: avg, label: label)
+        let glow = isRecord ? Color.yellow : glowColor(value: value, avg: avg, label: label)
         let textColor: Color = label.contains("Mgmt") ? Color.mgmtPercentColor(value) : Color.white
 
         return VStack(spacing: 4) {
@@ -782,7 +926,7 @@ struct DeckCard: View {
     }
 
     private func formatMetric(_ label: String, _ v: Double) -> String {
-        if ["PF", "OPF", "DPF", "Max PF"].contains(label) { return String(format: "%.0f", v) }
+        if ["PF", "OPF", "DPF", "Max PF", "Playoff PF"].contains(label) { return String(format: "%.0f", v) }
         return String(format: "%.2f", v)
     }
 
@@ -809,6 +953,7 @@ struct DeckCard: View {
                 let teamInd = model.stats.individualPositionPPW[pos] ?? 0
                 let lgPos = leagueAvgPos[pos] ?? 0
                 let lgInd = leagueAvgInd[pos] ?? 0
+
                 PositionLine(position: pos,
                              ppw: teamPos,
                              ppwAvg: lgPos,
@@ -944,7 +1089,7 @@ struct DeckCard: View {
                 Text("Your Grade: \(gradeBreakdown.grade) (Composite: \(String(format: "%.2f", gradeBreakdown.composite)))")
                     .font(.callout.bold())
                 ForEach(gradeBreakdown.percentiles.sorted(by: { $0.key < $1.key }), id: \.key) { stat, perc in
-                    Text("\(stat): Top \(Int((1.0 - perc)*100))%")
+                    Text("\(stat): Top \(Int((1.0 - perc) * 100))%")
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
@@ -962,6 +1107,24 @@ struct DeckCard: View {
             }
             .font(.caption)
         }
+    }
+
+    // MARK: - Accolades logic (kept)
+    private var accoladeStats: [String] {
+        ["PF", "PPW", "OPF", "OPPW", "DPF", "DPPW", "Mgmt%", "OMgmt%", "DMgmt%"]
+    }
+
+    private var accoladeHolders: [String: String] {
+        var result: [String: String] = [:]
+        for stat in accoladeStats {
+            let max = allModels.max { $0.stats.statValue(for: stat) < $1.stats.statValue(for: stat) }
+            if let leader = max { result[stat] = leader.ownerId }
+        }
+        return result
+    }
+
+    private var myAccolades: [String] {
+        accoladeStats.filter { accoladeHolders[$0] == model.ownerId }
     }
 }
 
@@ -1010,7 +1173,7 @@ private func statGradeForModel(
         "Def Mgmt%": defMgmtP,
         "Record": recP
     ]
-    let summary = "\(grade) (Composite: \(String(format: "%.2f", composite))) ● Top \(Int((1.0 - pfP)*100))% Points, Top \(Int((1.0 - mgmtP)*100))% Mgmt"
+    let summary = "\(grade) (Composite: \(String(format: "%.2f", composite))) ● Top \(Int((1.0 - pfP) * 100))% Points, Top \(Int((1.0 - mgmtP) * 100))% Mgmt"
     return StatGradeBreakdown(grade: grade, composite: composite, percentiles: percentiles, summary: summary)
 }
 
@@ -1032,22 +1195,6 @@ extension View {
 }
 
 // MARK: - Utilities
-
-extension Array {
-    func chunked(into size: Int) -> [[Element]] {
-        guard size > 0 else { return [] }
-        var out: [[Element]] = []
-        var idx = 0
-        while idx < count {
-            let end = Swift.min(idx + size, count)
-            out.append(Array(self[idx..<end]))
-            idx = end
-        }
-        return out
-    }
-}
-
-// MARK: - AggregatedOwnerStats stat value helper
 
 extension AggregatedOwnerStats {
     func statValue(for key: String) -> Double {
