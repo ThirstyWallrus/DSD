@@ -87,9 +87,43 @@ struct TheDeck: View {
                 .frame(maxWidth: .infinity)
 
                 if !models.isEmpty {
-                    cardStack(width: cardWidth, height: cardHeight)
-                        .frame(width: cardWidth, height: stackHeight)
-                        .position(x: geo.size.width / 2, y: geo.size.height / 2)
+                    // NEW: Selector row ABOVE (not overlapping) the deck
+                    VStack(spacing: 12) {
+                        HStack {
+                            Button {
+                                withAnimation(.spring(response: 0.45, dampingFraction: 0.85)) {
+                                    cycleUp() // Previous
+                                }
+                            } label: {
+                                Text("Previous")
+                                    .font(.custom("Phatt", size: 22))
+                                    .foregroundColor(.white.opacity(0.75))
+                                    .shadow(color: .black.opacity(0.55), radius: 6, y: 2)
+                            }
+                            .buttonStyle(.plain)
+
+                            Spacer()
+
+                            Button {
+                                withAnimation(.spring(response: 0.45, dampingFraction: 0.85)) {
+                                    cycleDown() // Next
+                                }
+                            } label: {
+                                Text("Next")
+                                    .font(.custom("Phatt", size: 22))
+                                    .foregroundColor(.white.opacity(0.75))
+                                    .shadow(color: .black.opacity(0.55), radius: 6, y: 2)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        .padding(.horizontal, 18)
+                        .frame(width: cardWidth)
+
+                        cardStack(width: cardWidth, height: cardHeight)
+                            .frame(width: cardWidth, height: stackHeight)
+                    }
+                    .position(x: geo.size.width / 2, y: geo.size.height / 2)
+
                 } else {
                     Text("No current franchises")
                         .foregroundColor(.white.opacity(0.6))
@@ -121,7 +155,7 @@ struct TheDeck: View {
                     let yOffset = CGFloat(pos) * STACK_OFFSET_Y
                     let yaw = -STACK_TILT_Y_DEG * Double(pos)
                     let pitch = STACK_TILT_X_DEG * Double(pos)
-                    
+
                     DeckCard(
                         model: model,
                         allModels: models,
@@ -279,7 +313,7 @@ struct DeckCard: View {
         ("OPF", { $0.totalOffensivePointsFor }),
         ("OPPW", { $0.offensivePPW }),
         ("DPF", { $0.totalDefensivePointsFor }),
-        ("DPPW", { $0.defensivePPW }), // FIXED: AggregatedOwnerStats is already the stats object; use defensivePPW directly
+        ("DPPW", { $0.defensivePPW }),
         ("Mgmt%", { $0.managementPercent }),
         ("OMgmt%", { $0.offensiveManagementPercent }),
         ("DMgmt%", { $0.defensiveManagementPercent })
@@ -314,7 +348,7 @@ struct DeckCard: View {
             }
         }
         .frame(width: cardSize.width, height: cardSize.height)
-        .background(cardBackground)
+        .background(cardBackgroundForCurrentFace)
         .clipShape(RoundedRectangle(cornerRadius: 26))
         .overlay(
             RoundedRectangle(cornerRadius: 26)
@@ -360,6 +394,40 @@ struct DeckCard: View {
         }
     }
 
+    // MARK: - Face-specific backgrounds (NEW)
+    private var cardBackgroundForCurrentFace: some View {
+        switch cardFace {
+        case .front:
+            return AnyView(cardBackground(imageName: "CardBack"))
+        case .back:
+            return AnyView(cardBackground(imageName: "CardBack2"))
+        case .bonus:
+            return AnyView(cardBackground(imageName: "CardBackground"))
+        }
+    }
+
+    private func cardBackground(imageName: String) -> some View {
+        ZStack {
+            Image(imageName)
+                .resizable()
+                .scaledToFill()
+                .clipped()
+
+            // Keep your existing readability overlays
+            LinearGradient(colors: [
+                Color.black.opacity(0.90),
+                Color.black.opacity(0.70),
+                Color.black.opacity(0.90)
+            ], startPoint: .topLeading, endPoint: .bottomTrailing)
+
+            RadialGradient(colors: [.blue.opacity(0.25), .clear],
+                           center: .topLeading,
+                           startRadius: 8,
+                           endRadius: 350)
+                .blendMode(.overlay)
+        }
+    }
+
     // PATCH: Ensure all computed views return a concrete view, not just a modifier.
     private var frontContent: some View {
         let cardName = model.displayName
@@ -400,10 +468,9 @@ struct DeckCard: View {
             .onTapGesture {
                 showPicker = true
             }
-            
+
             // League name (above user name, under image, with small font)
             if !leagueName.isEmpty {
-                // CHANGE: Remove Group, attach .padding directly to Text
                 Text(leagueName)
                     .font(.system(size: 13, weight: .medium))
                     .foregroundColor(Color.white.opacity(0.75))
@@ -430,13 +497,13 @@ struct DeckCard: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 8)
-            
+
             // Team info
             Text("Team: \(cardTeam)")
                 .font(.subheadline)
                 .foregroundColor(Color("DeckCardTeam", bundle: nil).opacity(0.95))
                 .padding(.horizontal, 8)
-            
+
             // Grade badge
             HStack(spacing: 7) {
                 Text("Grade:")
@@ -447,10 +514,10 @@ struct DeckCard: View {
                 Spacer()
             }
             .padding(.horizontal, 8)
-            
+
             Divider()
                 .padding(.horizontal, 8)
-            
+
             // Stats grid
             LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
                 ForEach(stats, id: \.0) { label, value in
@@ -468,11 +535,11 @@ struct DeckCard: View {
             .opacity(statsOpacity)
             .animation(.easeInOut(duration: 0.5).delay(0.3), value: statsOpacity)
             .padding(.horizontal, 8)
-            
+
             // Accolades
             if model.championships > 0 || !myAccolades.isEmpty {
                 HStack(spacing: 8) {
-                    ForEach(myAccolades, id: \.self) { stat in
+                    ForEach(myAccolades, id: \.self) { _ in
                         Image("Trophy")
                             .resizable()
                             .scaledToFit()
@@ -584,7 +651,6 @@ struct DeckCard: View {
         VStack(spacing: 6) {
             profileImage
             if !leagueName.isEmpty {
-                // CHANGE: Remove Group, attach .padding directly to Text
                 Text(leagueName)
                     .font(.system(size: 13, weight: .medium))
                     .foregroundColor(Color.white.opacity(0.75))
@@ -654,7 +720,7 @@ struct DeckCard: View {
             if model.championships > 0 {
                 HStack {
                     VStack {
-                        ForEach(leftAccolades, id: \.self) { stat in
+                        ForEach(leftAccolades, id: \.self) { _ in
                             Image("Trophy")
                                 .resizable()
                                 .scaledToFit()
@@ -664,7 +730,7 @@ struct DeckCard: View {
                     }
                     Spacer()
                     VStack {
-                        ForEach(rightAccolades, id: \.self) { stat in
+                        ForEach(rightAccolades, id: \.self) { _ in
                             Image("Trophy")
                                 .resizable()
                                 .scaledToFit()
@@ -686,37 +752,9 @@ struct DeckCard: View {
         "\(model.wins)-\(model.losses)\(model.ties > 0 ? "-\(model.ties)" : "")"
     }
 
-    private var metricsGrid: some View {
-        let rows = catPairs.chunked(into: 2)
-        return VStack(spacing: 8) {
-            ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
-                HStack(spacing: 10) {
-                    ForEach(row, id: \.0) { pair in
-                        metricBox(label: pair.0, value: pair.1(model.stats))
-                    }
-                }
-            }
-        }
-        .padding(12)
-        .background(
-            RoundedRectangle(cornerRadius: 20)
-                .fill(
-                    LinearGradient(colors: [.black.opacity(0.70), .black.opacity(0.45)],
-                                   startPoint: .topLeading, endPoint: .bottomTrailing)
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 20)
-                        .stroke(LinearGradient(colors: [.blue.opacity(0.8), .cyan.opacity(0.35), .blue.opacity(0.8)],
-                                               startPoint: .topLeading, endPoint: .bottomTrailing),
-                                lineWidth: 0.8)
-                )
-        )
-    }
-
     private func metricBox(label: String, value: Double, isRecord: Bool = false) -> some View {
         let avg = leagueAverages.average(for: label)
         let glow = isRecord ? .yellow : glowColor(value: value, avg: avg, label: label)
-        // Use mgmtPercentColor for management percent textual coloring; preserve glowShadow and other styling.
         let textColor: Color = label.contains("Mgmt") ? Color.mgmtPercentColor(value) : Color.white
 
         return VStack(spacing: 4) {
@@ -806,25 +844,6 @@ struct DeckCard: View {
         case "C+": return Color.purple
         case "C": return Color.pink
         default: return Color.gray.opacity(0.6)
-        }
-    }
-
-    private var cardBackground: some View {
-        ZStack {
-            Image("CardBackground")
-                .resizable()
-                .scaledToFill()
-                .clipped()
-            LinearGradient(colors: [
-                Color.black.opacity(0.90),
-                Color.black.opacity(0.70),
-                Color.black.opacity(0.90)
-            ], startPoint: .topLeading, endPoint: .bottomTrailing)
-            RadialGradient(colors: [.blue.opacity(0.25), .clear],
-                           center: .topLeading,
-                           startRadius: 8,
-                           endRadius: 350)
-                .blendMode(.overlay)
         }
     }
 
