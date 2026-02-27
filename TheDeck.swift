@@ -73,7 +73,7 @@ struct TheDeck: View {
                     .resizable()
                     .scaledToFill()
                     .ignoresSafeArea()
-                    .overlay(Color.black.opacity(0.55))
+                    .overlay(Color.black.opacity(0.10))
 
                 VStack(spacing: 14) {
                     Text("The Deck")
@@ -507,7 +507,7 @@ struct DeckCard: View {
 
             LinearGradient(colors: [
                 Color.black.opacity(0.90),
-                Color.black.opacity(0.70),
+                Color.black.opacity(0.90),
                 Color.black.opacity(0.90)
             ], startPoint: .topLeading, endPoint: .bottomTrailing)
 

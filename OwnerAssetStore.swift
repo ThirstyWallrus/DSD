@@ -58,16 +58,29 @@ final class OwnerAssetStore: ObservableObject {
 
     /// Underlying UIImage (lazy loads from disk if needed).
     func uiImage(for ownerId: String) -> UIImage? {
+        // Check @Published dictionary first (fastest path)
         if let mem = images[ownerId] { return mem }
+        
+        // Check NSCache (avoids re-decoding from disk)
         if let cached = cache.object(forKey: ownerId as NSString) {
-            images[ownerId] = cached
+            // Force @Published update by creating new dictionary reference
+            var updated = images
+            updated[ownerId] = cached
+            images = updated  // ← Triggers @Published change notification
+            print("✅ [OwnerAssetStore] Retrieved from cache for \(ownerId)")
             return cached
         }
+        
+        // Load from disk as last resort
         guard let fileName = index[ownerId],
               let data = try? Data(contentsOf: imageDirectory().appendingPathComponent(fileName)),
               let img = UIImage(data: data) else { return nil }
+        
         cache.setObject(img, forKey: ownerId as NSString)
-        images[ownerId] = img
+        var updated = images
+        updated[ownerId] = img
+        images = updated  // ← Triggers @Published change notification
+        print("✅ [OwnerAssetStore] Loaded from disk for \(ownerId)")
         return img
     }
 
@@ -91,17 +104,19 @@ final class OwnerAssetStore: ObservableObject {
                 persistIndex()
                 cache.setObject(image, forKey: ownerId as NSString)
                 images[ownerId] = image
+                print("✅ [OwnerAssetStore] Stored image (JPEG) for \(ownerId)")
                 return
             } else {
-                print("[OwnerAssetStore] Failed to encode image for ownerId \(ownerId)")
+                print("❌ [OwnerAssetStore] Failed to encode image for ownerId \(ownerId)")
                 return
             }
             index[ownerId] = fileName
             persistIndex()
             cache.setObject(image, forKey: ownerId as NSString)
             images[ownerId] = image
+            print("✅ [OwnerAssetStore] Stored image (PNG) for \(ownerId)")
         } catch {
-            print("[OwnerAssetStore] setImage error: \(error)")
+            print("❌ [OwnerAssetStore] setImage error: \(error)")
         }
     }
 
