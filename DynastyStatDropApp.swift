@@ -82,6 +82,7 @@ extension UserDefaults {
 
 @main
 struct DynastyStatDropApp: App {
+    @UIApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @StateObject var authViewModel = AuthViewModel()
     @StateObject var appSelection = AppSelection()
     @StateObject var leagueManager = SleeperLeagueManager()
