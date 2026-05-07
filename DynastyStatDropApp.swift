@@ -4,81 +4,11 @@
 //
 //  Adds foreground (scenePhase) & post-login throttled refresh
 //  while preserving existing per-user league loading.
-//  Includes DEBUG big-write probe for UserDefaults (detects large Data blobs).
-//
-//  Concurrency-safe version: removed mutable static vars that triggered
-//  Swift Concurrency diagnostics. Idempotence is handled via an
-//  associated object flag on the UserDefaults meta-class instead of
-//  shared mutable state.
 //
 
 import SwiftUI
 import Foundation
 import ObjectiveC.runtime
-import CoreText   // Added for runtime font registration diagnostics / CoreText helper usage
-
-// MARK: - DEBUG Big Write Probe (UserDefaults)
-//
-// Detects large Data values (>= threshold) written to UserDefaults.
-// Swizzles only the (Any?, String) overload of set(_:forKey:).
-// Idempotent: uses associated object marker instead of mutable static vars.
-//
-#if DEBUG
-private let DSD_DEFAULTS_BIG_WRITE_THRESHOLD = 3_500_000 // ~3.3 MB (warn before 4 MB hard limit)
-
-private enum _DSDProbeAssoc {
-    // Unique key address
-    nonisolated(unsafe) static var installedFlagKey: UInt8 = 0
-}
-
-extension UserDefaults {
-
-    static func installBigWriteProbe(threshold: Int = DSD_DEFAULTS_BIG_WRITE_THRESHOLD) {
-        // Obtain the dynamic class of the singleton instance
-        guard let cls: AnyClass = object_getClass(UserDefaults.standard) else {
-            print("[BigWriteProbe] Could not get UserDefaults meta-class.")
-            return
-        }
-
-        // If already installed (associated flag present), exit.
-        if objc_getAssociatedObject(cls, &_DSDProbeAssoc.installedFlagKey) != nil {
-            return
-        }
-
-        // Disambiguate overloaded selector (Any?, String)
-        let originalSelector = #selector(
-            UserDefaults.set(_:forKey:) as (UserDefaults) -> (Any?, String) -> Void
-        )
-        let swizzledSelector = #selector(UserDefaults.dsd_probe_setAny(_:forKey:))
-
-        guard
-            let originalMethod = class_getInstanceMethod(cls, originalSelector),
-            let swizzledMethod = class_getInstanceMethod(cls, swizzledSelector)
-        else {
-            print("[BigWriteProbe] Swizzle failed (methods not found).")
-            return
-        }
-
-        method_exchangeImplementations(originalMethod, swizzledMethod)
-        objc_setAssociatedObject(
-            cls,
-            &_DSDProbeAssoc.installedFlagKey,
-            NSNumber(value: true),
-            .OBJC_ASSOCIATION_RETAIN_NONATOMIC
-        )
-        print("[BigWriteProbe] Installed (threshold: \(threshold) bytes).")
-    }
-
-    /// Swizzled implementation replacing set(_:forKey:) (Any?, String).
-    @objc private func dsd_probe_setAny(_ value: Any?, forKey defaultName: String) {
-        if let data = value as? Data, data.count >= DSD_DEFAULTS_BIG_WRITE_THRESHOLD {
-            print("[BigWriteProbe] Data write \(data.count) bytes for key '\(defaultName)'")
-        }
-        // Call original (now at dsd_probe_setAny because of the exchange).
-        dsd_probe_setAny(value, forKey: defaultName)
-    }
-}
-#endif
 
 @main
 struct DynastyStatDropApp: App {
@@ -102,10 +32,6 @@ struct DynastyStatDropApp: App {
         // If FontLoader finds a matching internal name use that; otherwise keep the friendly name
         // (Font.custom will failover to system font if that name is not present).
         resolvedPhattPostScriptName = FontLoader.postScriptName(matching: preferredFontFriendlyName)
-
-#if DEBUG
-        UserDefaults.installBigWriteProbe()
-#endif
 
         // Apply UIKit appearance defaults as a fallback for UIKit-hosted text.
         applyUIKitAppearanceForPhatt()
