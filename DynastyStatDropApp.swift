@@ -113,90 +113,68 @@ struct DynastyStatDropApp: App {
     var body: some Scene {
         WindowGroup {
             Group {
-                if !authViewModel.isLoggedIn {
-                    SignIn()
-                        .environmentObject(authViewModel)
-                        .environmentObject(appSelection)
-                        .environmentObject(leagueManager)
-                } else {
-                    MainTabView()
-                        .environmentObject(authViewModel)
-                        .environmentObject(appSelection)
-                        .environmentObject(leagueManager)
-                        .task {
-                            // Run migration first
-                            migrationManager.runMigrationIfNeeded(leagueManager: leagueManager)
+                // FIXED: ContentView is now the root, managing the video intro + sign-in flow
+                ContentView()
+                    .environmentObject(authViewModel)
+                    .environmentObject(appSelection)
+                    .environmentObject(leagueManager)
+                    .task {
+                        // Run migration first
+                        migrationManager.runMigrationIfNeeded(leagueManager: leagueManager)
 
-                            // If we have a restored logged-in user, ensure the leagueManager
-                            // is made aware of that user and attempts to load their leagues.
-                            //
-                            // Problem being fixed:
-                            // When a session is restored (isLoggedIn == true from UserDefaults)
-                            // the onChange handlers below are not triggered. That meant
-                            // leagueManager.setActiveUser(...) wasn't called and leagues from
-                            // disk weren't loaded until the user triggered an action that
-                            // caused setActiveUser/load to run (e.g., navigating to Upload).
-                            //
-                            // Fix: if we already have a currentUsername and the user is logged in,
-                            // explicitly set the active user on leagueManager and ask it to refresh
-                            // / load leagues, then update appSelection when complete.
-                            if let user = authViewModel.currentUsername, authViewModel.isLoggedIn {
-                                leagueManager.setActiveUser(username: user)
-                                // Ask leagueManager to refresh/load leagues if needed. This is async.
+                        // If we have a restored logged-in user, ensure the leagueManager
+                        // is made aware of that user and attempts to load their leagues.
+                        if let user = authViewModel.currentUsername, authViewModel.isLoggedIn {
+                            leagueManager.setActiveUser(username: user)
+                            await leagueManager.refreshAllLeaguesIfNeeded(username: user, force: false)
+                            await MainActor.run {
+                                appSelection.updateLeagues(leagueManager.leagues, username: user)
+                            }
+                        } else {
+                            appSelection.updateLeagues(leagueManager.leagues, username: authViewModel.currentUsername)
+                        }
+                    }
+                    .onChange(of: authViewModel.isLoggedIn) { _, loggedIn in
+                        if loggedIn, let user = authViewModel.currentUsername {
+                            leagueManager.setActiveUser(username: user)
+                            appSelection.updateLeagues(leagueManager.leagues, username: user)
+                            Task {
                                 await leagueManager.refreshAllLeaguesIfNeeded(username: user, force: false)
                                 await MainActor.run {
                                     appSelection.updateLeagues(leagueManager.leagues, username: user)
                                 }
-                            } else {
-                                // No restored user; keep existing behavior (populate UI from in-memory leagues if any).
-                                appSelection.updateLeagues(leagueManager.leagues, username: authViewModel.currentUsername)
                             }
                         }
-                        .onChange(of: authViewModel.isLoggedIn) { _, loggedIn in
-                            if loggedIn, let user = authViewModel.currentUsername {
-                                leagueManager.setActiveUser(username: user)
-                                appSelection.updateLeagues(leagueManager.leagues, username: user)
-                                Task {
-                                    await leagueManager.refreshAllLeaguesIfNeeded(username: user, force: false)
-                                    await MainActor.run {
-                                        appSelection.updateLeagues(leagueManager.leagues, username: user)
-                                    }
-                                }
-                            }
-                        }
-                        .onChange(of: authViewModel.currentUsername) { _, user in
-                            guard let user else { return }
-                            leagueManager.setActiveUser(username: user)
-                            appSelection.updateLeagues(leagueManager.leagues, username: user)
-                        }
-                        .onChange(of: scenePhase) { _, phase in
-                            if phase == .active,
-                               authViewModel.isLoggedIn,
-                               let user = authViewModel.currentUsername {
-                                Task {
-                                    await leagueManager.refreshAllLeaguesIfNeeded(username: user, force: false)
-                                    await MainActor.run {
-                                        appSelection.updateLeagues(leagueManager.leagues, username: user)
-                                    }
-                                }
-                            }
-                        }
-                        .onChange(of: leagueManager.leagues) { _ in
-                            appSelection.updateLeagues(
-                                leagueManager.leagues,
-                                username: authViewModel.currentUsername
-                            )
-                        }
-                        // NEW: When the appSelection.selectedLeagueId changes (user selects a different imported league),
-                        // refresh the league metadata to update globalCurrentWeek from the Sleeper API.
-                        .onChange(of: appSelection.selectedLeagueId) { _, newLeagueId in
-                            guard let leagueId = newLeagueId else { return }
+                    }
+                    .onChange(of: authViewModel.currentUsername) { _, user in
+                        guard let user else { return }
+                        leagueManager.setActiveUser(username: user)
+                        appSelection.updateLeagues(leagueManager.leagues, username: user)
+                    }
+                    .onChange(of: scenePhase) { _, phase in
+                        if phase == .active,
+                           authViewModel.isLoggedIn,
+                           let user = authViewModel.currentUsername {
                             Task {
-                                // Ask the manager to refresh the "global current week" for this league.
-                                await leagueManager.refreshGlobalCurrentWeek(for: leagueId)
+                                await leagueManager.refreshAllLeaguesIfNeeded(username: user, force: false)
+                                await MainActor.run {
+                                    appSelection.updateLeagues(leagueManager.leagues, username: user)
+                                }
                             }
                         }
-                }
+                    }
+                    .onChange(of: leagueManager.leagues) { _ in
+                        appSelection.updateLeagues(
+                            leagueManager.leagues,
+                            username: authViewModel.currentUsername
+                        )
+                    }
+                    .onChange(of: appSelection.selectedLeagueId) { _, newLeagueId in
+                        guard let leagueId = newLeagueId else { return }
+                        Task {
+                            await leagueManager.refreshGlobalCurrentWeek(for: leagueId)
+                        }
+                    }
             }
             // Apply Phatt as default environment font (size 16 default) if we resolved a PostScript name.
             // If we didn't resolve it, fall back to the friendly name (Font.custom will fail silently to system).
