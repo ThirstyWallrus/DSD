@@ -21,20 +21,6 @@ struct ContentView: View {
     @State private var logoOpacity = 0.0
     @State private var selectedTab: Tab = .dashboard
 
-    // Optional: track if first frame appeared (for fallback)
-    @State private var firstFrameConfirmed = false
-
-    // MARK: - Configuration
-    private let DEBUG_VIDEO = true
-    private let fallbackIfNoFrameAfter: TimeInterval = 2.0   // Set to 0 to disable
-
-    // Uncomment to bypass intro on simulator during rapid dev cycles
-    #if targetEnvironment(simulator)
-    private let SKIP_VIDEO_ON_SIMULATOR = false  // Set to true to skip video on simulator during testing
-    #else
-    private let SKIP_VIDEO_ON_SIMULATOR = false
-    #endif
-
     // MARK: - Player
     private let player: AVPlayer = {
         if let url = Bundle.main.url(forResource: "TeaseDSD", withExtension: "mp4") {
@@ -54,7 +40,7 @@ struct ContentView: View {
 
     // MARK: - Derived
     private var showIntroVideo: Bool {
-        !hasPlayedVideo && !SKIP_VIDEO_ON_SIMULATOR
+        !hasPlayedVideo
     }
 
     // MARK: - Body
@@ -96,15 +82,7 @@ struct ContentView: View {
 
     // MARK: - On Appear
     private func handleOnAppear() {
-        // Check if simulator skip is enabled
-        if SKIP_VIDEO_ON_SIMULATOR {
-            log("[VideoDebug] Simulator skip active; bypassing video.")
-            endVideo()
-            return
-        }
-
         if player.currentItem == nil {
-            log("[VideoDebug] Resource TeaseDSD.mp4 not found in bundle.")
             showError = true
             endVideo()
         }
@@ -150,31 +128,17 @@ struct ContentView: View {
             VideoPlayer(player: player)
                 .onAppear { startVideoIfNeeded() }
                 .onReceive(NotificationCenter.default.publisher(for: .AVPlayerItemDidPlayToEndTime)) { _ in
-                    log("[VideoDebug] Playback finished.")
                     endVideo()
                 }
                 .onReceive(videoStatusPublisher) { status in
                     switch status {
                     case .readyToPlay:
-                        log("[VideoDebug] Item readyToPlay.")
                         isVideoLoading = false
-                        // Only do deep inspection when debugging
-                        if DEBUG_VIDEO {
-                            testFirstFrame()
-                        }
                     case .failed:
-                        log("[VideoDebug] Item failed: \(String(describing: player.currentItem?.error))")
                         showError = true
                         endVideo()
                     default:
                         break
-                    }
-                }
-                .onReceive(player.publisher(for: \.timeControlStatus)) { tcs in
-                    log("[VideoDebug] timeControlStatus=\(tcs.rawValue)") // 0=paused,1=waiting,2=playing
-                    if tcs == .playing && !firstFrameConfirmed {
-                        // We rely on frame extraction test to confirm actual rendering
-                        checkPresentationSize()
                     }
                 }
                 .frame(width: geo.size.width, height: geo.size.height)
@@ -183,70 +147,17 @@ struct ContentView: View {
         }
     }
 
-    // MARK: - Video Control / Debug
+    // MARK: - Video Control
     private func startVideoIfNeeded() {
         guard !hasPlayedVideo else { return }
         guard player.currentItem != nil else {
             showError = true
-            log("[VideoDebug] startVideoIfNeeded: currentItem nil (resource missing or init failure).")
             return
         }
         isVideoLoading = true
         setupAudio()
         player.seek(to: .zero)
         player.play()
-        scheduleNoFrameFallbackIfNeeded()
-    }
-
-    private func scheduleNoFrameFallbackIfNeeded() {
-        guard fallbackIfNoFrameAfter > 0 else { return }
-        DispatchQueue.main.asyncAfter(deadline: .now() + fallbackIfNoFrameAfter) {
-            if !hasPlayedVideo && !firstFrameConfirmed {
-                self.log("[VideoDebug] No first frame after \(fallbackIfNoFrameAfter)s — fallback endVideo().")
-                showError = true
-                endVideo()
-            }
-        }
-    }
-
-    private func checkPresentationSize() {
-        guard let item = player.currentItem else { return }
-        let size = item.presentationSize
-        if size != .zero {
-            if !firstFrameConfirmed {
-                firstFrameConfirmed = true
-                log("[VideoDebug] First non-zero presentationSize=\(size)")
-            }
-        } else {
-            // Recheck a bit later until fallback timer triggers
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-                self.checkPresentationSize()
-            }
-        }
-    }
-
-    private func testFirstFrame() {
-        guard let asset = player.currentItem?.asset else { return }
-        let gen = AVAssetImageGenerator(asset: asset)
-        gen.appliesPreferredTrackTransform = true
-        let t = CMTime(seconds: 0.1, preferredTimescale: 600)
-        DispatchQueue.global().async {
-            do {
-                let cg = try gen.copyCGImage(at: t, actualTime: nil)
-                DispatchQueue.main.async {
-                    self.firstFrameConfirmed = true
-                    self.log("[FrameTest] Extracted frame: \(cg.width)x\(cg.height)")
-                }
-            } catch {
-                DispatchQueue.main.async {
-                    self.log("[FrameTest] Frame extract error: \(error)")
-                }
-            }
-        }
-    }
-
-    private func log(_ message: String) {
-        if DEBUG_VIDEO { print(message) }
     }
 
     // MARK: - Audio
@@ -256,7 +167,7 @@ struct ContentView: View {
             do {
                 try AVAudioSession.sharedInstance().setCategory(.playback, options: [.mixWithOthers])
             } catch {
-                self.log("[VideoDebug] Audio session setCategory error: \(error)")
+                // Silently handle audio session errors
             }
             self.player.isMuted = self.isMuted
         }
