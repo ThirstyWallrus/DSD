@@ -44,7 +44,7 @@ struct ContentView: View {
     }()
 
     // Unified publisher for player item status (prevents Combine type mismatch)
-    private var videoStatusPublisher: AnyPublisher<AVPlayerItem.Status, Never> {
+    private var videoStatusPublisher: AnyPublisher {
         if let item = player.currentItem {
             return item.publisher(for: \.status).eraseToAnyPublisher()
         } else {
@@ -219,8 +219,8 @@ struct ContentView: View {
             }
         } else {
             // Recheck a bit later until fallback timer triggers
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
-                self?.checkPresentationSize()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                self.checkPresentationSize()
             }
         }
     }
@@ -234,11 +234,13 @@ struct ContentView: View {
             do {
                 let cg = try gen.copyCGImage(at: t, actualTime: nil)
                 DispatchQueue.main.async {
-                    firstFrameConfirmed = true
-                    log("[FrameTest] Extracted frame: \(cg.width)x\(cg.height)")
+                    self.firstFrameConfirmed = true
+                    self.log("[FrameTest] Extracted frame: \(cg.width)x\(cg.height)")
                 }
             } catch {
-                log("[FrameTest] Frame extract error: \(error)")
+                DispatchQueue.main.async {
+                    self.log("[FrameTest] Frame extract error: \(error)")
+                }
             }
         }
     }
@@ -254,9 +256,9 @@ struct ContentView: View {
             do {
                 try AVAudioSession.sharedInstance().setCategory(.playback, options: [.mixWithOthers])
             } catch {
-                log("[VideoDebug] Audio session setCategory error: \(error)")
+                self.log("[VideoDebug] Audio session setCategory error: \(error)")
             }
-            player.isMuted = isMuted
+            self.player.isMuted = self.isMuted
         }
     }
 
