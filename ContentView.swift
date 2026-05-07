@@ -3,7 +3,6 @@
 //  DynastyStatDrop / DSD
 //
 
-
 import SwiftUI
 import AVKit
 @preconcurrency import AVFoundation
@@ -20,7 +19,6 @@ struct ContentView: View {
     @State private var showError = false
     @State private var isMuted = false
     @State private var logoOpacity = 0.0
-    @State private var showSignIn = false
     @State private var selectedTab: Tab = .dashboard
 
     // Optional: track if first frame appeared (for fallback)
@@ -29,11 +27,10 @@ struct ContentView: View {
     // MARK: - Configuration
     private let DEBUG_VIDEO = true
     private let fallbackIfNoFrameAfter: TimeInterval = 2.0   // Set to 0 to disable
-    // private let playIntroOnlyOnceKey = "introPlayedOnce"   // Uncomment to persist
 
     // Uncomment to bypass intro on simulator during rapid dev cycles
     #if targetEnvironment(simulator)
-    private let SKIP_VIDEO_ON_SIMULATOR = true
+    private let SKIP_VIDEO_ON_SIMULATOR = false  // Set to true to skip video on simulator during testing
     #else
     private let SKIP_VIDEO_ON_SIMULATOR = false
     #endif
@@ -57,7 +54,7 @@ struct ContentView: View {
 
     // MARK: - Derived
     private var showIntroVideo: Bool {
-        !hasPlayedVideo
+        !hasPlayedVideo && !SKIP_VIDEO_ON_SIMULATOR
     }
 
     // MARK: - Body
@@ -66,11 +63,13 @@ struct ContentView: View {
             ZStack {
                 Color.black.ignoresSafeArea()
 
+                // Show intro video if not yet played
                 if showIntroVideo {
                     introVideoLayer
                         .transition(.opacity)
                 }
 
+                // Show logo during/after video
                 Image("DynastyStatDropLogo")
                     .resizable()
                     .scaledToFit()
@@ -78,11 +77,12 @@ struct ContentView: View {
                     .opacity(logoOpacity)
                     .animation(.easeInOut(duration: 0.8), value: logoOpacity)
 
+                // After video finishes, show appropriate auth view
                 if hasPlayedVideo {
                     if authViewModel.isLoggedIn {
                         MainTabView()
                             .transition(.opacity)
-                    } else if showSignIn {
+                    } else {
                         SignIn()
                             .transition(.opacity.combined(with: .scale))
                     }
@@ -96,29 +96,12 @@ struct ContentView: View {
 
     // MARK: - On Appear
     private func handleOnAppear() {
-
-        // If you had old logic forcing logout here, re-add carefully:
-        // authViewModel.isLoggedIn = false  // Removed to avoid side-effects
-
-        // Optional: Play intro only once per install/session:
-        /*
-        if UserDefaults.standard.bool(forKey: playIntroOnlyOnceKey) {
-            log("[VideoDebug] Intro previously played; skipping.")
-            endVideo()
-            return
-        } else {
-            UserDefaults.standard.set(true, forKey: playIntroOnlyOnceKey)
-        }
-        */
-
-        // Optional simulator skip:
-        /*
+        // Check if simulator skip is enabled
         if SKIP_VIDEO_ON_SIMULATOR {
-            log("[VideoDebug] Simulator skip active.")
+            log("[VideoDebug] Simulator skip active; bypassing video.")
             endVideo()
             return
         }
-        */
 
         if player.currentItem == nil {
             log("[VideoDebug] Resource TeaseDSD.mp4 not found in bundle.")
@@ -190,8 +173,8 @@ struct ContentView: View {
                 .onReceive(player.publisher(for: \.timeControlStatus)) { tcs in
                     log("[VideoDebug] timeControlStatus=\(tcs.rawValue)") // 0=paused,1=waiting,2=playing
                     if tcs == .playing && !firstFrameConfirmed {
-                        // We rely on frame extraction test to confirm actual rendering;
-                        // this just marks that playback advanced.
+                        // We rely on frame extraction test to confirm actual rendering
+                        checkPresentationSize()
                     }
                 }
                 .frame(width: geo.size.width, height: geo.size.height)
@@ -226,6 +209,21 @@ struct ContentView: View {
         }
     }
 
+    private func checkPresentationSize() {
+        guard let item = player.currentItem else { return }
+        let size = item.presentationSize
+        if size != .zero {
+            if !firstFrameConfirmed {
+                firstFrameConfirmed = true
+                log("[VideoDebug] First non-zero presentationSize=\(size)")
+            }
+        } else {
+            // Recheck a bit later until fallback timer triggers
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+                self?.checkPresentationSize()
+            }
+        }
+    }
 
     private func testFirstFrame() {
         guard let asset = player.currentItem?.asset else { return }
@@ -237,13 +235,14 @@ struct ContentView: View {
                 let cg = try gen.copyCGImage(at: t, actualTime: nil)
                 DispatchQueue.main.async {
                     firstFrameConfirmed = true
-                    print("[FrameTest] Extracted frame: \(cg.width)x\(cg.height)")
+                    log("[FrameTest] Extracted frame: \(cg.width)x\(cg.height)")
                 }
             } catch {
-                print("[FrameTest] Frame extract error: \(error)")
+                log("[FrameTest] Frame extract error: \(error)")
             }
         }
     }
+
     private func log(_ message: String) {
         if DEBUG_VIDEO { print(message) }
     }
@@ -267,10 +266,6 @@ struct ContentView: View {
         player.pause()
         hasPlayedVideo = true
         withAnimation(.easeInOut(duration: 1.0)) { logoOpacity = 1.0 }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
-            if !authViewModel.isLoggedIn {
-                withAnimation { showSignIn = true }
-            }
-        }
+        // Logo stays visible while auth view transitions in
     }
 }
