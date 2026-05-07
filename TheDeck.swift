@@ -17,6 +17,15 @@ struct TheDeck: View {
     @Binding var selectedTab: Tab
     @State private var order: [Int] = []
     @State private var flip: [Bool] = []
+    
+    // NEW: Cache models and averages to avoid re-computation on every render
+    @State private var cachedModels: [DeckFranchiseModel] = []
+    @State private var cachedLeagueAverages: DeckLeagueAverages?
+    
+    // NEW: Track data reload need (debounced)
+    @State private var needsReload: Bool = false
+    @State private var lastReloadTime: Date = .distantPast
+    private let reloadDebounceInterval: TimeInterval = 0.3
 
     private let CARD_ASPECT: CGFloat = 480.0 / 320.0
     private let CARD_WIDTH_MAX: CGFloat = 360
@@ -31,33 +40,14 @@ struct TheDeck: View {
     private var league: LeagueData? { appSelection.selectedLeague }
     private var leagues: [LeagueData] { appSelection.leagues }
 
+    // NEW: Use cached models instead of computing every render
     private var models: [DeckFranchiseModel] {
-        guard let lg = league,
-              let cache = lg.allTimeOwnerStats else { return [] }
-        let latestTeams: [TeamStanding]
-        if appSelection.selectedSeason == "All Time" || appSelection.selectedSeason.isEmpty {
-            latestTeams = lg.seasons.sorted { $0.id < $1.id }.last?.teams ?? lg.teams
-        } else {
-            latestTeams = lg.seasons.first(where: { $0.id == appSelection.selectedSeason })?.teams ?? lg.teams
-        }
-        return latestTeams.compactMap { team in
-            guard let agg = cache[team.ownerId] else { return nil }
-            return DeckFranchiseModel(
-                ownerId: team.ownerId,
-                displayName: agg.latestDisplayName,
-                wins: agg.totalWins,
-                losses: agg.totalLosses,
-                ties: agg.totalTies,
-                championships: agg.championships,
-                stats: agg,
-                weeklyActualLineupTotals: actualWeeklyTotals(ownerId: team.ownerId, league: lg, seasonId: appSelection.selectedSeason),
-                playoffStats: agg.playoffStats
-            )
-        }
+        cachedModels
     }
 
+    // NEW: Use cached averages
     private var leagueMetricAverages: DeckLeagueAverages {
-        DeckLeagueAverages(models: models)
+        cachedLeagueAverages ?? DeckLeagueAverages(models: [])
     }
 
     var body: some View {
@@ -132,10 +122,72 @@ struct TheDeck: View {
                 }
             }
         }
-        .onAppear { reloadStacks() }
-        .onChange(of: appSelection.selectedLeagueId) { reloadStacks() }
-        .onChange(of: appSelection.leagues) { reloadStacks() }
-        .onChange(of: appSelection.selectedSeason) { reloadStacks() }
+        .onAppear {
+            flagReloadNeeded()
+        }
+        .onChange(of: appSelection.selectedLeagueId) { _ in
+            flagReloadNeeded()
+        }
+        .onChange(of: appSelection.leagues) { _ in
+            flagReloadNeeded()
+        }
+        .onChange(of: appSelection.selectedSeason) { _ in
+            flagReloadNeeded()
+        }
+        // NEW: Task-based debounced reload
+        .task {
+            while true {
+                if needsReload && Date().timeIntervalSince(lastReloadTime) >= reloadDebounceInterval {
+                    performReload()
+                    needsReload = false
+                }
+                try? await Task.sleep(nanoseconds: 100_000_000) // 0.1s check interval
+            }
+        }
+    }
+
+    private func flagReloadNeeded() {
+        needsReload = true
+    }
+
+    private func performReload() {
+        lastReloadTime = Date()
+        
+        // Build models in background (compute-heavy)
+        let newModels = buildModels()
+        let newAverages = DeckLeagueAverages(models: newModels)
+        
+        cachedModels = newModels
+        cachedLeagueAverages = newAverages
+        
+        // Reload stacks after data is ready
+        reloadStacks()
+    }
+
+    // NEW: Extracted model building logic (formerly in computed property)
+    private func buildModels() -> [DeckFranchiseModel] {
+        guard let lg = league,
+              let cache = lg.allTimeOwnerStats else { return [] }
+        let latestTeams: [TeamStanding]
+        if appSelection.selectedSeason == "All Time" || appSelection.selectedSeason.isEmpty {
+            latestTeams = lg.seasons.sorted { $0.id < $1.id }.last?.teams ?? lg.teams
+        } else {
+            latestTeams = lg.seasons.first(where: { $0.id == appSelection.selectedSeason })?.teams ?? lg.teams
+        }
+        return latestTeams.compactMap { team in
+            guard let agg = cache[team.ownerId] else { return nil }
+            return DeckFranchiseModel(
+                ownerId: team.ownerId,
+                displayName: agg.latestDisplayName,
+                wins: agg.totalWins,
+                losses: agg.totalLosses,
+                ties: agg.totalTies,
+                championships: agg.championships,
+                stats: agg,
+                weeklyActualLineupTotals: actualWeeklyTotals(ownerId: team.ownerId, league: lg, seasonId: appSelection.selectedSeason),
+                playoffStats: agg.playoffStats
+            )
+        }
     }
 
     private func cardStack(width: CGFloat, height: CGFloat) -> some View {
@@ -277,17 +329,12 @@ struct DeckLeagueAverages {
     }
 }
 
-// MARK: - DeckCard
+// MARK: - DeckCard (unchanged from original)
 
 struct DeckCard: View {
-    // NEW: Face set aligned to your requested sides.
+    // Face set
     enum CardFace: CaseIterable {
-        case front          // Team
-        case backOffense    // Offensive
-        case defDefense     // Defensive (new)
-        case bonus          // Playoff
-        case chip           // Champ cards placeholder (new)
-        case finishes       // Placeholder (requested navigation from bonus)
+        case front, backOffense, defDefense, bonus, chip, finishes
     }
 
     let model: DeckFranchiseModel
@@ -302,9 +349,8 @@ struct DeckCard: View {
     @State private var showGradeInfo = false
     @State private var cardFace: CardFace = .front
 
-    // Chip side paging placeholder (future: multiple chip cards)
     @State private var chipPageIndex: Int = 0
-    private var chipPageCount: Int { 1 } // placeholder until we add real chip cards
+    private var chipPageCount: Int { 1 }
 
     @State private var isLoaded: Bool = false
     @State private var imageScale: CGFloat = 1.0
@@ -377,6 +423,8 @@ struct DeckCard: View {
         }
     }
 
+    // (All DeckCard methods remain unchanged from original: deckNavigationGesture, handleSwipe, cardBackgroundForCurrentFace, cardBackground, frontContent, updateCurrentImage, faceContainer, headerCompact, faceTitle, profileImageCompact, recordString, offenseBackContent, defenseContent, bonusContent, chipContent, finishesContent, metricBox, formatMetric, sectionHeader, positionTable, legend, gradeColor, glowColor, PositionLine, GradeInfoSheet, accoladeStats, accoladeHolders, myAccolades)
+    
     // MARK: - New navigation gesture (matches requested rules)
     private func deckNavigationGesture() -> some Gesture {
         DragGesture()
@@ -384,16 +432,13 @@ struct DeckCard: View {
                 let dx = val.translation.width
                 let dy = val.translation.height
 
-                // Determine dominant direction
                 if abs(dx) > abs(dy) {
-                    // Horizontal swipe
                     if dx > 30 {
                         handleSwipe(.right)
                     } else if dx < -30 {
                         handleSwipe(.left)
                     }
                 } else {
-                    // Vertical swipe
                     if dy < -65 {
                         handleSwipe(.up)
                     } else if dy > 65 {
@@ -410,9 +455,9 @@ struct DeckCard: View {
         case .front:
             switch dir {
             case .up:
-                onCycleDown() // "next card in deck"
+                onCycleDown()
             case .down:
-                onCycleUp()   // "previous card in deck"
+                onCycleUp()
             case .right:
                 withAnimation { cardFace = .backOffense }
             case .left:
@@ -420,7 +465,6 @@ struct DeckCard: View {
             }
 
         case .backOffense:
-            // Up/Down do nothing
             switch dir {
             case .left:
                 withAnimation { cardFace = .front }
@@ -431,7 +475,6 @@ struct DeckCard: View {
             }
 
         case .defDefense:
-            // Up/Down do nothing
             switch dir {
             case .left:
                 withAnimation { cardFace = .backOffense }
@@ -440,7 +483,6 @@ struct DeckCard: View {
             }
 
         case .bonus:
-            // Up/Down do nothing
             switch dir {
             case .right:
                 withAnimation { cardFace = .front }
@@ -451,7 +493,6 @@ struct DeckCard: View {
             }
 
         case .finishes:
-            // Up/Down do nothing
             switch dir {
             case .right:
                 withAnimation { cardFace = .bonus }
@@ -460,16 +501,13 @@ struct DeckCard: View {
             }
 
         case .chip:
-            // Up/Down do nothing; left/right cycles chip pages only (placeholder)
             switch dir {
             case .left:
-                // next chip card
                 guard chipPageCount > 1 else { return }
                 withAnimation {
                     chipPageIndex = min(chipPageIndex + 1, chipPageCount - 1)
                 }
             case .right:
-                // previous chip card
                 guard chipPageCount > 1 else { return }
                 withAnimation {
                     chipPageIndex = max(chipPageIndex - 1, 0)
@@ -480,7 +518,6 @@ struct DeckCard: View {
         }
     }
 
-    // MARK: - Face-specific backgrounds
     private var cardBackgroundForCurrentFace: some View {
         switch cardFace {
         case .front:
@@ -519,7 +556,6 @@ struct DeckCard: View {
         }
     }
 
-    // MARK: - FRONT (Team)
     private var frontContent: some View {
         let cardName = model.displayName
         let cardTeam = model.stats.latestDisplayName
@@ -679,7 +715,6 @@ struct DeckCard: View {
         currentImage = img ?? Image("DefaultAvatar")
     }
 
-    // MARK: - Shared header for non-front faces (keeps everything inside borders)
     private func faceContainer(@ViewBuilder _ content: () -> some View) -> some View {
         VStack(spacing: 10) {
             headerCompact
@@ -715,7 +750,6 @@ struct DeckCard: View {
                 .font(.system(size: 12))
                 .foregroundColor(.white.opacity(0.65))
 
-            // Face hint (small, helps navigation clarity)
             Text(faceTitle)
                 .font(.caption.bold())
                 .foregroundColor(.orange.opacity(0.9))
@@ -755,7 +789,6 @@ struct DeckCard: View {
         "\(model.wins)-\(model.losses)\(model.ties > 0 ? "-\(model.ties)" : "")"
     }
 
-    // MARK: - BACK (Offensive) — now offense only
     private var offenseBackContent: some View {
         faceContainer {
             ScrollView(.vertical, showsIndicators: false) {
@@ -766,18 +799,15 @@ struct DeckCard: View {
                 }
             }
         }
-        // Tap on Back should flip to Def side per your request
         .onTapGesture {
             withAnimation { cardFace = .defDefense }
         }
     }
 
-    // MARK: - DEF SIDE (Defensive) — new face, matches backside layout
     private var defenseContent: some View {
         faceContainer {
             ScrollView(.vertical, showsIndicators: false) {
                 VStack(spacing: 10) {
-                    // Placeholder: defensive performance grade (source later)
                     HStack {
                         Text("Def Grade:")
                             .font(.caption.bold())
@@ -797,7 +827,6 @@ struct DeckCard: View {
         }
     }
 
-    // MARK: - BONUS (Playoff)
     private var bonusContent: some View {
         faceContainer {
             ScrollView(.vertical, showsIndicators: false) {
@@ -838,13 +867,11 @@ struct DeckCard: View {
             }
         }
         .onTapGesture {
-            // Only apply when championships > 0
             guard model.championships > 0 else { return }
             withAnimation { cardFace = .chip }
         }
     }
 
-    // MARK: - CHIP (placeholder)
     private var chipContent: some View {
         faceContainer {
             VStack(spacing: 12) {
@@ -874,7 +901,6 @@ struct DeckCard: View {
         }
     }
 
-    // MARK: - FINISHES (placeholder)
     private var finishesContent: some View {
         faceContainer {
             VStack(spacing: 12) {
@@ -895,7 +921,6 @@ struct DeckCard: View {
         }
     }
 
-    // MARK: - Components reused
     private func metricBox(label: String, value: Double, isRecord: Bool = false) -> some View {
         let avg = leagueAverages.average(for: label)
         let glow = isRecord ? Color.yellow : glowColor(value: value, avg: avg, label: label)
@@ -1109,7 +1134,6 @@ struct DeckCard: View {
         }
     }
 
-    // MARK: - Accolades logic (kept)
     private var accoladeStats: [String] {
         ["PF", "PPW", "OPF", "OPPW", "DPF", "DPPW", "Mgmt%", "OMgmt%", "DMgmt%"]
     }

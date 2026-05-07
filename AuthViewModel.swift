@@ -3,6 +3,7 @@
 //  DynastyStatDrop
 //
 //  Added "Remember Me" support (username persistence).
+//  Auto-login when "Remember Me" was previously selected.
 //
 
 import SwiftUI
@@ -33,14 +34,34 @@ class AuthViewModel: ObservableObject {
     private let rememberedKey = "lastRememberedUsername"
 
     init() {
-        // Restore login state
-        self.isLoggedIn = UserDefaults.standard.bool(forKey: "isLoggedIn")
-        self.currentUsername = UserDefaults.standard.string(forKey: "currentUsername")
-        // Load any remembered username (does NOT log in automatically, just pre-fills)
-        if let stored = UserDefaults.standard.string(forKey: rememberedKey),
-           UserDefaults.standard.bool(forKey: "rememberMe_\(stored)") {
-            rememberedUsername = stored
+        // Restore login state from UserDefaults
+        let storedIsLoggedIn = UserDefaults.standard.bool(forKey: "isLoggedIn")
+        let storedUsername = UserDefaults.standard.string(forKey: "currentUsername")
+        
+        // Check if "Remember Me" was previously enabled for this username
+        var shouldAutoLogin = false
+        if let username = storedUsername,
+           UserDefaults.standard.bool(forKey: "rememberMe_\(username)") {
+            shouldAutoLogin = true
+            self.rememberedUsername = username
+            print("[AuthViewModel] Remember Me detected for user: \(username)")
         }
+
+        // NEW: Auto-login if both conditions are met:
+        // 1. isLoggedIn was true on last app close
+        // 2. "Remember Me" was enabled for the stored username
+        if storedIsLoggedIn && shouldAutoLogin {
+            self.isLoggedIn = true
+            self.currentUsername = storedUsername
+            print("[AuthViewModel] Auto-login enabled for: \(storedUsername ?? "unknown")")
+            loadUserData(username: storedUsername ?? "")
+        } else {
+            // Otherwise, show SignIn screen
+            self.isLoggedIn = false
+            self.currentUsername = nil
+            print("[AuthViewModel] No auto-login; user must sign in")
+        }
+
         // Load Sleeper userId if present
         if let username = self.currentUsername {
             self.sleeperUserId = UserDefaults.standard.string(forKey: "sleeperUserId_\(username)")
@@ -65,7 +86,7 @@ class AuthViewModel: ObservableObject {
         signIn(username: username, password: password, remember: false)
     }
 
-    /// Legacy signature for existing calls (assumes remember=false).
+    /// Login with remember preference (persists to UserDefaults).
     func login(identifier: String, password: String, remember: Bool) {
         isLoggedIn = true
         UserDefaults.standard.set(true, forKey: "isLoggedIn")
@@ -100,6 +121,7 @@ class AuthViewModel: ObservableObject {
         if let username = currentUsername {
             UserDefaults.standard.removeObject(forKey: "currentUsername")
             UserDefaults.standard.removeObject(forKey: "sleeperUserId_\(username)")
+            // Keep rememberMe preference so username pre-fills on next SignIn
         }
         currentUsername = nil
         sleeperUserId = nil
@@ -112,6 +134,7 @@ class AuthViewModel: ObservableObject {
             UserDefaults.standard.set(true, forKey: "rememberMe_\(username)")
             UserDefaults.standard.set(username, forKey: rememberedKey)
             rememberedUsername = username
+            print("[AuthViewModel] Remember Me enabled for: \(username)")
         } else {
             UserDefaults.standard.set(false, forKey: "rememberMe_\(username)")
             if let stored = UserDefaults.standard.string(forKey: rememberedKey),
@@ -120,6 +143,7 @@ class AuthViewModel: ObservableObject {
                 UserDefaults.standard.removeObject(forKey: rememberedKey)
             }
             rememberedUsername = nil
+            print("[AuthViewModel] Remember Me disabled for: \(username)")
         }
     }
 
@@ -150,7 +174,7 @@ class AuthViewModel: ObservableObject {
         task.resume()
     }
 
-    // MARK: Entitlement Helpers (unchanged from previous extended version)
+    // MARK: Entitlement Helpers
 
     func grantPro(for username: String) {
         UserDefaults.standard.set(true, forKey: "dsd.entitlement.pro.\(username)")
