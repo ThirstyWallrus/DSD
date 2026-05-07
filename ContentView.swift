@@ -44,7 +44,7 @@ struct ContentView: View {
     }()
 
     // Unified publisher for player item status (prevents Combine type mismatch)
-    private var videoStatusPublisher: AnyPublisher {
+    private var videoStatusPublisher: AnyPublisher<AVPlayerItem.Status, Never> {
         if let item = player.currentItem {
             return item.publisher(for: \.status).eraseToAnyPublisher()
         } else {
@@ -202,7 +202,7 @@ struct ContentView: View {
         guard fallbackIfNoFrameAfter > 0 else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + fallbackIfNoFrameAfter) {
             if !hasPlayedVideo && !firstFrameConfirmed {
-                log("[VideoDebug] No first frame after \(fallbackIfNoFrameAfter)s — fallback endVideo().")
+                self.log("[VideoDebug] No first frame after \(fallbackIfNoFrameAfter)s — fallback endVideo().")
                 showError = true
                 endVideo()
             }
