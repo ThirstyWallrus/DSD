@@ -105,7 +105,7 @@ struct DynastyStatDropApp: App {
             }
             // Apply Phatt as default environment font (size 16 default) if we resolved a PostScript name.
             // If we didn't resolve it, fall back to the friendly name (Font.custom will fail silently to system).
-            .environment(\.font, Font.custom(resolvedPhattPostScriptName ?? preferredFontFriendlyName, size: 16))
+            //.environment(\.font, Font.custom(resolvedPhattPostScriptName ?? preferredFontFriendlyName, size: 16))
         }
     }
     

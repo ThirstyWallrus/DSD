@@ -14,7 +14,7 @@ struct ContentView: View {
     @EnvironmentObject var authViewModel: AuthViewModel
 
     // MARK: - Intro / Video State
-    @State private var hasPlayedVideo = false
+    @State private var hasPlayedVideo = true
     @State private var isVideoLoading = false
     @State private var showError = false
     @State private var isMuted = false
@@ -49,6 +49,7 @@ struct ContentView: View {
             ZStack {
                 Color.black.ignoresSafeArea()
 
+                
                 // Show intro video if not yet played
                 if showIntroVideo {
                     introVideoLayer

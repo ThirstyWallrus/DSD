@@ -507,12 +507,6 @@ class SleeperLeagueManager: ObservableObject {
         var out: [Int: [MatchupEntry]] = [:]
         var allRosterIds: Set<Int> = []
 
-        // Heuristic / dynamic detection:
-        //  - Try to fetch league metadata to learn currentWeek (if available).
-        //  - Iterate weeks starting at 1 until we see a short run of consecutive empty results
-        //    (consecutiveThreshold) OR until we reach a safe cap (maxCap).
-        //  - This avoids hardcoding 1...18 and reduces wasted network calls while still capturing
-        //    leagues with more or fewer weeks.
         let maxCap = 26                   // safety cap for worst case leagues
         let consecutiveThreshold = 3     // stop after this many empty weeks in a row (heuristic)
         var consecutiveEmpty = 0
@@ -521,10 +515,9 @@ class SleeperLeagueManager: ObservableObject {
         // Try to fetch league metadata for heuristic currentWeek
         let leagueInfo: SleeperLeague? = try? await fetchLeague(leagueId: leagueId)
         let heuristicCurrentWeek = leagueInfo?.currentWeek ?? 1
-        // Update the global current week on the manager so views can observe it
+
         self.globalCurrentWeek = max(self.globalCurrentWeek, heuristicCurrentWeek)
 
-        // searchMax is at least 18 and includes a small buffer beyond currentWeek
         let searchMax = max(18, heuristicCurrentWeek + 2)
         let cap = min(maxCap, searchMax)
 
@@ -539,11 +532,9 @@ class SleeperLeagueManager: ObservableObject {
                     consecutiveEmpty = 0
                     lastNonEmptyWeek = week
                 } else {
-                    // empty array returned -> increment empty counter
                     consecutiveEmpty += 1
                 }
             } catch {
-                // network or decode error -> treat as an empty result for heuristics
                 consecutiveEmpty += 1
             }
             week += 1
@@ -560,7 +551,7 @@ class SleeperLeagueManager: ObservableObject {
         // Prefer lastNonEmptyWeek, else use heuristicCurrentWeek, otherwise fallback to 18.
         let effectiveLastWeek: Int = {
             if let last = lastNonEmptyWeek { return last }
-            if heuristicCurrentWeek > 1 { return heuristicCurrentWeek - 1 } // if currentWeek points to in-progress week, use previous
+            if heuristicCurrentWeek > 1 { return heuristicCurrentWeek - 1 }
             return 18
         }()
 

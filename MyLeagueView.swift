@@ -348,12 +348,12 @@ struct MyLeagueView: View {
                 switch selectedContext {
                 case .full: return DSDStatsService.shared.stat(for: team, type: type) as? Double ?? 0
                 case .offense:
-                    if [.offensivePointsFor, .maxOffensivePointsFor, .offensiveManagementPercent, .averageOffensivePPW, .qbPositionPPW, .rbPositionPPW, .wrPositionPPW, .tePositionPPW, .kickerPPW].contains(type) {
+                    if Set([.offensivePointsFor, .maxOffensivePointsFor, .offensiveManagementPercent, .averageOffensivePPW, .qbPositionPPW, .rbPositionPPW, .wrPositionPPW, .tePositionPPW, .kickerPPW]).contains(type) {
                         return DSDStatsService.shared.stat(for: team, type: type) as? Double ?? 0
                     }
                     return 0
                 case .defense:
-                    if [.defensivePointsFor, .maxDefensivePointsFor, .defensiveManagementPercent, .averageDefensivePPW, .dlPositionPPW, .lbPositionPPW, .dbPositionPPW].contains(type) {
+                    if Set([.defensivePointsFor, .maxDefensivePointsFor, .defensiveManagementPercent, .averageDefensivePPW, .dlPositionPPW, .lbPositionPPW, .dbPositionPPW]).contains(type) {
                         return DSDStatsService.shared.stat(for: team, type: type) as? Double ?? 0
                     }
                     return 0
